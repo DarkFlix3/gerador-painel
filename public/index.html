@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quantum Generator | Gerador de Links Ultrarrápido</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#eef2ff',
+              100: '#e0e7ff',
+              500: '#6366f1',
+              600: '#4f46e5',
+              700: '#4338ca',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- QRCode.js CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body class="min-h-screen flex flex-col justify-between selection:bg-indigo-500 selection:text-white">
+
+  <!-- Background Orbs -->
+  <div class="bg-glow">
+    <div class="glow-orb-1"></div>
+    <div class="glow-orb-2"></div>
+    <div class="glow-orb-3"></div>
+  </div>
+
+  <!-- Navbar -->
+  <header class="w-full border-b border-white/5 bg-slate-950/40 backdrop-blur-md sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-purple-600 to-cyan-400 flex items-center justify-center shadow-lg shadow-indigo-500/30">
+          <i data-lucide="zap" class="w-5 h-5 text-white"></i>
+        </div>
+        <div>
+          <span class="font-black text-lg tracking-wider bg-gradient-to-r from-white via-slate-200 to-indigo-300 bg-clip-text text-transparent" id="nav-service-name">
+            QUANTUM GENERATOR
+          </span>
+          <div class="flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+            <span class="text-[11px] text-slate-400 uppercase tracking-widest font-medium">Sistema Online</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-3">
+        <a href="/revendedor.html" class="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs sm:text-sm font-bold shadow-lg shadow-indigo-600/30 transition-all">
+          <i data-lucide="user-plus" class="w-4 h-4"></i>
+          <span>Área do Revendedor</span>
+        </a>
+        <a href="/admin.html" class="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-900/80 hover:bg-slate-800 text-slate-300 text-xs sm:text-sm font-medium border border-white/10 hover:border-indigo-500/50 transition-all">
+          <i data-lucide="shield-check" class="w-4 h-4 text-indigo-400"></i>
+          <span class="hidden sm:inline">Admin</span>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Hero & Generator -->
+  <main class="flex-grow flex items-center justify-center px-4 py-12">
+    <div class="max-w-3xl w-full mx-auto text-center space-y-8">
+
+      <!-- Badge -->
+      <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-indigo-950/60 border border-indigo-500/30 text-indigo-300 text-xs font-semibold tracking-wide shadow-inner shadow-indigo-500/20">
+        <i data-lucide="sparkles" class="w-3.5 h-3.5 text-cyan-400 animate-spin" style="animation-duration: 8s;"></i>
+        <span>GERADOR AUTOMÁTICO DE ACESSO & REDIRECIONAMENTO</span>
+      </div>
+
+      <!-- Headline -->
+      <div class="space-y-3">
+        <h1 class="text-4xl sm:text-6xl font-extrabold tracking-tight text-white leading-tight">
+          Gere seu Link Seguro em <br class="hidden sm:inline">
+          <span class="bg-gradient-to-r from-indigo-400 via-purple-300 to-cyan-400 bg-clip-text text-transparent">
+            Poucos Milissegundos
+          </span>
+        </h1>
+        <p class="text-slate-400 text-base sm:text-lg max-w-xl mx-auto">
+          Clique no botão abaixo para gerar uma nova chave de acesso vinculada ao link de destino configurado.
+        </p>
+      </div>
+
+      <!-- Generator Card -->
+      <div class="glass-panel p-8 sm:p-10 text-center relative overflow-hidden">
+        <div class="absolute top-0 left-1/4 right-1/4 h-[1px] bg-gradient-to-r from-transparent via-indigo-500 to-transparent"></div>
+
+        <div class="space-y-6">
+          <div class="flex justify-center">
+            <button id="btn-generate" class="btn-generate text-lg sm:text-xl py-4 sm:py-5 px-8 sm:px-12 group">
+              <i data-lucide="link" class="w-6 h-6 transition-transform group-hover:rotate-45 duration-300"></i>
+              <span id="btn-text">GERAR MEU LINK AGORA</span>
+              <div id="btn-spinner" class="hidden animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent"></div>
+            </button>
+          </div>
+
+          <p class="text-xs text-slate-500 flex items-center justify-center gap-2">
+            <i data-lucide="lock" class="w-3.5 h-3.5 text-emerald-400"></i>
+            Link criptografado com token de alta segurança e tempo de validade dinâmico.
+          </p>
+        </div>
+
+        <!-- Result Section (Initially Hidden) -->
+        <div id="result-box" class="hidden mt-8 pt-8 border-t border-white/10 text-left space-y-5 animate-fade-in">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <span class="pulse-badge">
+              <span class="pulse-dot"></span>
+              Link Ativo & Pronto
+            </span>
+            <div class="flex items-center gap-2 text-xs text-slate-400">
+              <i data-lucide="clock" class="w-3.5 h-3.5 text-indigo-400"></i>
+              <span id="expiry-text">Expira em 24h</span>
+            </div>
+          </div>
+
+          <!-- Link Display Box -->
+          <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 bg-slate-950/80 p-2.5 rounded-xl border border-white/10 focus-within:border-indigo-500/50">
+            <div class="flex items-center gap-2 flex-grow px-3 py-2 overflow-hidden">
+              <i data-lucide="globe" class="w-4 h-4 text-cyan-400 shrink-0"></i>
+              <input 
+                id="generated-link-input" 
+                type="text" 
+                readonly 
+                class="bg-transparent text-sm text-cyan-200 font-mono w-full focus:outline-none truncate selection:bg-cyan-500 selection:text-black"
+                value="https://..."
+              >
+            </div>
+            <div class="flex items-center gap-2 shrink-0">
+              <button 
+                id="btn-copy" 
+                class="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold shadow-md shadow-indigo-600/30 transition-all"
+              >
+                <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                <span id="copy-btn-text">Copiar</span>
+              </button>
+
+              <a 
+                id="btn-open-link" 
+                href="#" 
+                target="_blank" 
+                class="flex items-center justify-center px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold transition-all border border-white/10"
+                title="Abrir Link em nova aba"
+              >
+                <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
+              </a>
+
+              <button 
+                id="btn-toggle-qr" 
+                class="flex items-center justify-center px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold transition-all border border-white/10"
+                title="Ver QR Code"
+              >
+                <i data-lucide="qr-code" class="w-3.5 h-3.5"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- Token info details -->
+          <div class="flex flex-wrap items-center justify-between text-xs text-slate-400 pt-1">
+            <div>
+              <span>Token único: </span>
+              <code id="token-preview" class="text-indigo-300 font-mono font-bold bg-indigo-950/60 px-2 py-0.5 rounded border border-indigo-800/40"></code>
+            </div>
+            <div>
+              <span id="created-time" class="text-slate-500"></span>
+            </div>
+          </div>
+
+          <!-- QR Code Container (Expandable) -->
+          <div id="qr-container" class="hidden p-4 bg-slate-900/90 rounded-xl border border-white/10 flex flex-col items-center justify-center gap-3">
+            <div id="qrcode" class="p-2 bg-white rounded-lg shadow-lg"></div>
+            <span class="text-xs text-slate-400">Escaneie com a câmera do celular</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick Metrics Grid -->
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
+        <div class="glass-panel p-4">
+          <div class="text-2xl font-black text-indigo-400" id="counter-total">--</div>
+          <div class="text-xs text-slate-400 mt-1 uppercase tracking-wider">Total de Gerações</div>
+        </div>
+        <div class="glass-panel p-4">
+          <div class="text-2xl font-black text-cyan-400">&lt; 50ms</div>
+          <div class="text-xs text-slate-400 mt-1 uppercase tracking-wider">Latência de Resposta</div>
+        </div>
+        <div class="glass-panel p-4">
+          <div class="text-2xl font-black text-emerald-400">100% Ativo</div>
+          <div class="text-xs text-slate-400 mt-1 uppercase tracking-wider">Disponibilidade API</div>
+        </div>
+      </div>
+
+      <!-- Reseller Box Promo -->
+      <div class="p-6 rounded-2xl bg-gradient-to-r from-indigo-950/50 via-slate-900/80 to-purple-950/50 border border-indigo-500/20 text-left flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div class="space-y-1">
+          <div class="flex items-center gap-2 text-indigo-400 font-bold text-sm">
+            <i data-lucide="bot" class="w-4 h-4"></i>
+            <span>Deseja Revender no seu Bot e Lucrar?</span>
+          </div>
+          <p class="text-xs text-slate-400">
+            Crie sua conta de revendedor em segundos, pegue sua API Key e acompanhe em tempo real seus clientes, lucro e vendas no seu dashboard próprio!
+          </p>
+        </div>
+        <a href="/revendedor.html" class="shrink-0 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-indigo-600/30 transition-all flex items-center gap-2">
+          <span>Criar Conta de Revendedor</span>
+          <i data-lucide="arrow-right" class="w-4 h-4"></i>
+        </a>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="border-t border-white/5 py-6 text-center text-xs text-slate-500">
+    <div class="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+      <span>&copy; 2026 Quantum Generator. Todos os direitos reservados.</span>
+      <div class="flex items-center gap-4 text-slate-400">
+        <a href="/revendedor.html" class="hover:text-cyan-300 transition-colors">Portal do Revendedor</a>
+        <span>&bull;</span>
+        <a href="/admin.html" class="hover:text-white transition-colors">Painel Admin Master</a>
+        <span>&bull;</span>
+        <span class="text-emerald-400 flex items-center gap-1">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> API v1 Online
+        </span>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container"></div>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>

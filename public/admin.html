@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Painel Administrativo Geral | Quantum Generator</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100 flex selection:bg-indigo-500 selection:text-white">
+
+  <!-- Background Orbs -->
+  <div class="bg-glow">
+    <div class="glow-orb-1"></div>
+    <div class="glow-orb-2"></div>
+  </div>
+
+  <!-- LOGIN MODAL / OVERLAY -->
+  <div id="login-modal" class="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4">
+    <div class="glass-panel p-8 max-w-md w-full border border-indigo-500/20 shadow-2xl relative">
+      <div class="text-center space-y-3 mb-6">
+        <div class="w-12 h-12 rounded-2xl bg-indigo-600 flex items-center justify-center mx-auto shadow-lg shadow-indigo-600/30">
+          <i data-lucide="shield-alert" class="w-6 h-6 text-white"></i>
+        </div>
+        <h2 class="text-2xl font-black text-white">Acesso Administrativo</h2>
+        <p class="text-xs text-slate-400">Controle global de revendedores, bloqueios, faturamento e saúde do sistema.</p>
+      </div>
+
+      <form id="form-login" class="space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Usuário</label>
+          <input type="text" id="login-username" value="admin" required class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm focus:outline-none focus:border-indigo-500 text-white">
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Senha</label>
+          <input type="password" id="login-password" value="admin123" required class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm focus:outline-none focus:border-indigo-500 text-white">
+          <span class="text-[11px] text-indigo-400/80 mt-1 block">Padrão: usuário <b>admin</b> / senha <b>admin123</b></span>
+        </div>
+
+        <button type="submit" id="btn-login-submit" class="w-full py-3 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold rounded-xl shadow-lg shadow-indigo-600/30 transition-all text-sm flex items-center justify-center gap-2">
+          <span>Entrar no Painel Master</span>
+          <i data-lucide="arrow-right" class="w-4 h-4"></i>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- MAIN ADMIN APP CONTAINER -->
+  <div id="admin-app" class="flex min-h-screen w-full">
+
+    <!-- SIDEBAR -->
+    <aside class="w-64 bg-slate-900/60 border-r border-white/5 backdrop-blur-xl flex flex-col justify-between hidden md:flex shrink-0">
+      <div>
+        <!-- Logo -->
+        <div class="h-16 px-6 flex items-center gap-3 border-b border-white/5">
+          <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white">
+            <i data-lucide="shield-check" class="w-4 h-4"></i>
+          </div>
+          <div>
+            <span class="font-extrabold text-sm tracking-wider text-white">ADMIN MASTER</span>
+            <span class="block text-[10px] text-emerald-400 font-medium">Controle Total</span>
+          </div>
+        </div>
+
+        <!-- Nav Items -->
+        <nav class="p-4 space-y-1.5" id="nav-tabs">
+          <button data-tab="dashboard" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-white bg-indigo-600/30 border border-indigo-500/40">
+            <i data-lucide="layout-dashboard" class="w-4 h-4 text-indigo-400"></i>
+            <span>Dashboard Geral</span>
+          </button>
+          <button data-tab="resellers" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
+            <i data-lucide="users" class="w-4 h-4 text-cyan-400"></i>
+            <span>Gestão de Revendedores</span>
+          </button>
+          <button data-tab="all-sales" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
+            <i data-lucide="shopping-cart" class="w-4 h-4 text-emerald-400"></i>
+            <span>Vendas & Clientes</span>
+          </button>
+          <button data-tab="error-logs" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
+            <i data-lucide="alert-triangle" class="w-4 h-4 text-rose-400"></i>
+            <span>Monitoramento & Erros</span>
+          </button>
+          <button data-tab="settings" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
+            <i data-lucide="sliders" class="w-4 h-4"></i>
+            <span>Configurar Link Alvo</span>
+          </button>
+          <button data-tab="api-docs" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
+            <i data-lucide="code" class="w-4 h-4 text-purple-400"></i>
+            <span>Docs API para Bots</span>
+          </button>
+        </nav>
+      </div>
+
+      <!-- Bottom Profile / Logout -->
+      <div class="p-4 border-t border-white/5 space-y-2">
+        <a href="/revendedor.html" target="_blank" class="flex items-center justify-center gap-2 w-full py-2 bg-indigo-950/50 hover:bg-indigo-900/60 text-indigo-300 text-xs font-semibold rounded-lg border border-indigo-500/20 transition-colors">
+          <i data-lucide="user-check" class="w-3.5 h-3.5"></i>
+          <span>Portal do Revendedor</span>
+        </a>
+        <a href="/" target="_blank" class="flex items-center justify-center gap-2 w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg border border-white/10 transition-colors">
+          <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
+          <span>Gerador Público</span>
+        </a>
+        <button id="btn-logout" class="flex items-center justify-center gap-2 w-full py-2 bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 text-xs font-semibold rounded-lg border border-rose-500/20 transition-colors">
+          <i data-lucide="log-out" class="w-3.5 h-3.5"></i>
+          <span>Encerrar Sessão</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- CONTENT WRAPPER -->
+    <div class="flex-1 flex flex-col min-w-0">
+
+      <!-- TOP BAR -->
+      <header class="h-16 border-b border-white/5 bg-slate-950/50 backdrop-blur-md px-6 flex items-center justify-between sticky top-0 z-40">
+        <div class="flex items-center gap-3">
+          <h1 id="page-title" class="text-base sm:text-lg font-bold text-white flex items-center gap-2">
+            <i data-lucide="layout-dashboard" class="w-5 h-5 text-indigo-400"></i>
+            Dashboard Geral & Estatísticas
+          </h1>
+        </div>
+
+        <div class="flex items-center gap-3">
+          <button id="btn-refresh-stats" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 border border-white/10 flex items-center gap-1.5">
+            <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-indigo-400"></i>
+            <span>Atualizar</span>
+          </button>
+          <div class="hidden sm:flex items-center gap-2 text-xs text-slate-400 pl-3 border-l border-white/10">
+            <div class="w-2 h-2 rounded-full bg-emerald-400"></div>
+            <span>Admin Master</span>
+          </div>
+        </div>
+      </header>
+
+      <!-- TAB CONTENTS -->
+      <main class="flex-1 p-6 space-y-6 overflow-y-auto max-w-7xl w-full mx-auto">
+
+        <!-- ============================================== -->
+        <!-- TAB 1: DASHBOARD GERAL & GRÁFICOS -->
+        <!-- ============================================== -->
+        <div id="tab-dashboard" class="tab-content space-y-6">
+
+          <!-- KPI Cards -->
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <!-- Total de Links Vendidos na Plataforma -->
+            <div class="glass-panel p-5 relative overflow-hidden">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Links Vendidos (Bots)</span>
+                <div class="w-8 h-8 rounded-lg bg-emerald-600/20 text-emerald-400 flex items-center justify-center">
+                  <i data-lucide="shopping-bag" class="w-4 h-4"></i>
+                </div>
+              </div>
+              <div class="text-3xl font-black text-emerald-400 mt-2" id="kpi-platform-sales">0</div>
+              <div class="text-[11px] text-slate-400 mt-2" id="kpi-gross-revenue">Faturamento: R$ 0,00</div>
+            </div>
+
+            <!-- Revendedores Cadastrados & Bloqueados -->
+            <div class="glass-panel p-5 relative overflow-hidden">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Revendedores</span>
+                <div class="w-8 h-8 rounded-lg bg-cyan-600/20 text-cyan-400 flex items-center justify-center">
+                  <i data-lucide="users" class="w-4 h-4"></i>
+                </div>
+              </div>
+              <div class="text-3xl font-black text-white mt-2" id="kpi-resellers-count">0</div>
+              <div class="text-[11px] text-slate-400 mt-2" id="kpi-active-resellers">0 ativos / 0 bloqueados</div>
+            </div>
+
+            <!-- Total Gerações Totais -->
+            <div class="glass-panel p-5 relative overflow-hidden">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Gerações</span>
+                <div class="w-8 h-8 rounded-lg bg-indigo-600/20 text-indigo-400 flex items-center justify-center">
+                  <i data-lucide="link" class="w-4 h-4"></i>
+                </div>
+              </div>
+              <div class="text-3xl font-black text-white mt-2" id="kpi-total-generations">0</div>
+              <div class="text-[11px] text-emerald-400 mt-2" id="kpi-today-generations">0 gerados hoje</div>
+            </div>
+
+            <!-- Erros nas últimas 24h -->
+            <div class="glass-panel p-5 relative overflow-hidden">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Erros Monitorados (24h)</span>
+                <div class="w-8 h-8 rounded-lg bg-rose-600/20 text-rose-400 flex items-center justify-center">
+                  <i data-lucide="alert-octagon" class="w-4 h-4"></i>
+                </div>
+              </div>
+              <div class="text-3xl font-black text-rose-400 mt-2" id="kpi-errors-count">0</div>
+              <div class="text-[11px] text-slate-400 mt-2">Falhas de bot / chaves inválidas</div>
+            </div>
+          </div>
+
+          <!-- Gráficos Principais -->
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div class="glass-panel p-6 lg:col-span-2">
+              <div class="flex items-center justify-between mb-4">
+                <div>
+                  <h3 class="text-base font-bold text-white">Volume de Gerações de Links</h3>
+                  <p class="text-xs text-slate-400">Total de acessos e links gerados nos últimos 7 dias</p>
+                </div>
+                <div class="px-2.5 py-1 rounded bg-indigo-950/60 border border-indigo-500/30 text-[11px] font-semibold text-indigo-300">
+                  Gerações Diárias
+                </div>
+              </div>
+              <div class="h-64 relative">
+                <canvas id="chart-generations"></canvas>
+              </div>
+            </div>
+
+            <div class="glass-panel p-6">
+              <div class="flex items-center justify-between mb-4">
+                <div>
+                  <h3 class="text-base font-bold text-white">Vendas por Revendedor</h3>
+                  <p class="text-xs text-slate-400">Distribuição de vendas entre bots</p>
+                </div>
+              </div>
+              <div class="h-64 relative flex items-center justify-center">
+                <canvas id="chart-resellers"></canvas>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- ============================================== -->
+        <!-- TAB 2: GESTÃO COMPLETA DE REVENDEDORES -->
+        <!-- ============================================== -->
+        <div id="tab-resellers" class="tab-content hidden space-y-6">
+          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div>
+              <h2 class="text-xl font-black text-white">Revendedores & Bots Cadastrados</h2>
+              <p class="text-xs text-slate-400">Controle de saldo, bloqueio instantâneo e visualização de quanto cada revendedor vendeu.</p>
+            </div>
+          </div>
+
+          <!-- Tabela com Novos Campos e Ações de Bloqueio -->
+          <div class="glass-panel overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs">
+                <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
+                  <tr>
+                    <th class="px-5 py-3">Revendedor / E-mail</th>
+                    <th class="px-5 py-3">API Key (Bot)</th>
+                    <th class="px-5 py-3">Saldo Créditos</th>
+                    <th class="px-5 py-3">Links Vendidos</th>
+                    <th class="px-5 py-3">Faturamento Total</th>
+                    <th class="px-5 py-3">Status do Acesso</th>
+                    <th class="px-5 py-3 text-right">Ações Admin</th>
+                  </tr>
+                </thead>
+                <tbody id="resellers-table-body" class="divide-y divide-white/5">
+                  <!-- Carregado via JS -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============================================== -->
+        <!-- TAB 3: TODAS AS VENDAS & CLIENTES (GLOBAL) -->
+        <!-- ============================================== -->
+        <div id="tab-all-sales" class="tab-content hidden space-y-6">
+          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div>
+              <h2 class="text-xl font-black text-white">Histórico Geral de Vendas para Clientes</h2>
+              <p class="text-xs text-slate-400">Visualização de todos os clientes finais que compraram links em qualquer bot de revenda.</p>
+            </div>
+            <button id="btn-refresh-all-sales" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5">
+              <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-indigo-400"></i>
+              <span>Atualizar Vendas</span>
+            </button>
+          </div>
+
+          <div class="glass-panel overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs">
+                <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
+                  <tr>
+                    <th class="px-5 py-3">Revendedor / Bot</th>
+                    <th class="px-5 py-3">Cliente Final</th>
+                    <th class="px-5 py-3">Link Entregue</th>
+                    <th class="px-5 py-3">Valor Pago</th>
+                    <th class="px-5 py-3">Lucro Revenda</th>
+                    <th class="px-5 py-3">Entrega</th>
+                    <th class="px-5 py-3">Data e Hora</th>
+                  </tr>
+                </thead>
+                <tbody id="all-sales-table-body" class="divide-y divide-white/5">
+                  <!-- JS Data -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============================================== -->
+        <!-- TAB 4: MONITORAMENTO & ERROS -->
+        <!-- ============================================== -->
+        <div id="tab-error-logs" class="tab-content hidden space-y-6">
+          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div>
+              <h2 class="text-xl font-black text-white">Monitoramento de Erros & Alertas</h2>
+              <p class="text-xs text-slate-400">Logs detalhados de tentativas de bots sem crédito, revendedores bloqueados e falhas.</p>
+            </div>
+            <div class="flex items-center gap-3">
+              <select id="filter-error-source" class="bg-slate-900 text-xs px-3 py-2 rounded-xl border border-white/10 text-slate-300 focus:outline-none">
+                <option value="">Todas as origens</option>
+                <option value="bot_api">API do Bot (v1)</option>
+                <option value="web_ui">Gerador Web</option>
+                <option value="admin">Painel Admin</option>
+              </select>
+              <button id="btn-clear-logs" class="px-3.5 py-2 bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 rounded-xl text-xs font-bold border border-rose-500/20 flex items-center gap-1.5 transition-all">
+                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                <span>Limpar Logs</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="glass-panel overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs">
+                <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
+                  <tr>
+                    <th class="px-5 py-3">Data / Hora</th>
+                    <th class="px-5 py-3">Código HTTP</th>
+                    <th class="px-5 py-3">Tipo de Erro</th>
+                    <th class="px-5 py-3">Origem</th>
+                    <th class="px-5 py-3">Mensagem / Causa</th>
+                    <th class="px-5 py-3">IP</th>
+                  </tr>
+                </thead>
+                <tbody id="logs-table-body" class="divide-y divide-white/5">
+                  <!-- Carregado via JS -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============================================== -->
+        <!-- TAB 5: CONFIGURAÇÃO DO LINK ALVO -->
+        <!-- ============================================== -->
+        <div id="tab-settings" class="tab-content hidden space-y-6">
+          <div>
+            <h2 class="text-xl font-black text-white">Configuração do Link que Você vai Colocar</h2>
+            <p class="text-xs text-slate-400">Configure aqui o link base de destino do gerador.</p>
+          </div>
+
+          <div class="glass-panel p-6 sm:p-8 max-w-3xl space-y-6">
+            <form id="form-settings" class="space-y-6">
+              <div class="space-y-2">
+                <label class="block text-xs font-bold text-slate-200 uppercase tracking-wider">
+                  Link Alvo Principal (URL Base)
+                </label>
+                <input 
+                  type="text" 
+                  id="setting-target-link" 
+                  required 
+                  placeholder="https://meusite.com/acesso?token="
+                  class="w-full px-4 py-3 bg-slate-900 border border-white/10 rounded-xl text-sm text-cyan-200 font-mono focus:outline-none focus:border-indigo-500"
+                >
+              </div>
+
+              <!-- Modo do Link com Camuflagem -->
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <label class="cursor-pointer">
+                  <input type="radio" name="link_mode" value="cloaked_redirect" class="peer sr-only">
+                  <div class="p-4 rounded-xl bg-slate-900 border border-white/10 peer-checked:border-emerald-500 peer-checked:bg-emerald-950/30 transition-all text-left">
+                    <div class="flex items-center gap-2 mb-1">
+                      <span class="text-xs font-bold text-white">Redirecionador Camuflado (Recomendado)</span>
+                      <span class="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 text-[9px] font-bold">100% Camuflado</span>
+                    </div>
+                    <span class="text-[10px] text-slate-400 block">Gera links exclusivos no seu próprio domínio (ex: <code>/r/TOKEN</code>). Cada cliente recebe uma URL diferente e única, sendo redirecionado para o Spotify!</span>
+                  </div>
+                </label>
+
+                <label class="cursor-pointer">
+                  <input type="radio" name="link_mode" value="dynamic_query" class="peer sr-only">
+                  <div class="p-4 rounded-xl bg-slate-900 border border-white/10 peer-checked:border-indigo-500 peer-checked:bg-indigo-950/30 transition-all text-left">
+                    <span class="text-xs font-bold text-white block mb-1">Spotify com Parâmetros Únicos</span>
+                    <span class="text-[10px] text-slate-400 block">Entrega o link do Spotify diretamente, mas com IDs e sessões randômicas geradas para parecer que cada link é individual.</span>
+                  </div>
+                </label>
+
+                <label class="cursor-pointer">
+                  <input type="radio" name="link_mode" value="token_suffix" class="peer sr-only">
+                  <div class="p-4 rounded-xl bg-slate-900 border border-white/10 peer-checked:border-indigo-500 peer-checked:bg-indigo-950/30 transition-all text-left">
+                    <span class="text-xs font-bold text-white block mb-1">Sufixo de Token Simples</span>
+                    <span class="text-[10px] text-slate-400 block">Concatena apenas o token ao final da URL configurada.</span>
+                  </div>
+                </label>
+
+                <label class="cursor-pointer">
+                  <input type="radio" name="link_mode" value="direct" class="peer sr-only">
+                  <div class="p-4 rounded-xl bg-slate-900 border border-white/10 peer-checked:border-indigo-500 peer-checked:bg-indigo-950/30 transition-all text-left">
+                    <span class="text-xs font-bold text-white block mb-1">Link Fixo Idêntico</span>
+                    <span class="text-[10px] text-slate-400 block">Entrega exatamente o mesmo link fixo sem nenhuma alteração.</span>
+                  </div>
+                </label>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-xs font-bold text-slate-200 uppercase tracking-wider mb-1">Nome do Sistema</label>
+                  <input type="text" id="setting-service-name" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-indigo-500">
+                </div>
+                <div>
+                  <label class="block text-xs font-bold text-slate-200 uppercase tracking-wider mb-1">Validade do Link (Horas)</label>
+                  <input type="number" id="setting-expiry" min="1" max="8760" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-indigo-500">
+                </div>
+              </div>
+
+              <div class="flex items-center justify-between p-4 bg-slate-900/60 rounded-xl border border-white/5">
+                <div>
+                  <span class="text-xs font-bold text-white block">Permitir Geração Pública no Site</span>
+                  <span class="text-[11px] text-slate-400">Se desmarcado, apenas bots e revendedores com chave poderão gerar links.</span>
+                </div>
+                <input type="checkbox" id="setting-public-enabled" class="w-5 h-5 accent-indigo-600 rounded">
+              </div>
+
+              <button type="submit" class="px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-indigo-600/30 transition-all flex items-center gap-2">
+                <i data-lucide="check" class="w-4 h-4"></i>
+                <span>Salvar Configurações</span>
+              </button>
+            </form>
+          </div>
+        </div>
+
+        <!-- ============================================== -->
+        <!-- TAB 6: DOCS API BOTS -->
+        <!-- ============================================== -->
+        <div id="tab-api-docs" class="tab-content hidden space-y-6">
+          <div>
+            <h2 class="text-xl font-black text-white">Documentação da API para Bots dos Revendedores</h2>
+            <p class="text-xs text-slate-400">Instruções para qualquer pessoa integrar o bot dela (Telegram, Discord) com a API do seu gerador.</p>
+          </div>
+
+          <div class="glass-panel p-6 space-y-4">
+            <h3 class="text-sm font-bold text-indigo-400 uppercase tracking-wider">Endpoint de Geração e Venda</h3>
+            <div class="p-3 bg-slate-950 rounded-xl border border-white/10 font-mono text-xs text-emerald-400 flex items-center gap-2">
+              <span class="px-2 py-0.5 rounded bg-emerald-950 border border-emerald-500/40 text-emerald-300 font-bold">POST</span>
+              <span>http://localhost:3000/api/v1/generate</span>
+            </div>
+            <p class="text-xs text-slate-300">
+              Corpo JSON recomendado:
+            </p>
+            <pre class="p-4 bg-slate-950 rounded-xl border border-white/10 font-mono text-xs text-slate-300"><code>{
+  "customer_name": "Nome do Cliente",
+  "customer_id": "123456789",
+  "customer_contact": "@usuario_telegram",
+  "sale_price": 15.00
+}</code></pre>
+          </div>
+        </div>
+
+      </main>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toast-container"></div>
+
+  <script src="/assets/admin.js"></script>
+</body>
+</html>
