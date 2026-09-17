@@ -42,18 +42,102 @@ const getClientIp = (req) => {
   return req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
 };
 
-// Helper: mascara dados do cliente (ex: 903***28)
-const maskCustomer = (value) => {
-  const s = String(value || '').trim();
-  if (!s) return '—';
-  if (s.length <= 4) return '***';
-  return s.slice(0, 3) + '***' + s.slice(-2);
+// Helper: escapa HTML para uso com parse_mode HTML do Telegram
+const escHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
+
+// Helper: identifica o usuário que comprou (nome + @username quando houver)
+const customerLabel = (name, id, contact) => {
+  const n = escHtml(name).trim();
+  const c = String(contact || '').trim();
+  if (n) return c.startsWith('@') ? `${n} (${escHtml(c)})` : n;
+  if (c.startsWith('@')) return escHtml(c);
+  const i = escHtml(id).trim();
+  if (i) return i;
+  return '—';
 };
 
 const formatMoneyBr = (value) => {
   const n = parseFloat(value || 0);
   return 'R$ ' + n.toFixed(2).replace('.', ',');
 };
+
+// Custo do produto definido pelo ADMIN (settings.admin_cost_per_link) — com cache
+let _adminCostCache = null;
+async function getAdminCost() {
+  if (_adminCostCache != null) return _adminCostCache;
+  try {
+    const s = await dbHelpers.getSettings();
+    _adminCostCache = parseFloat(s.admin_cost_per_link || 2.99);
+  } catch (e) {
+    _adminCostCache = 2.99;
+  }
+  return _adminCostCache;
+}
+
+async function telegramGet(token, method) {
+  const r = await fetch(`https://api.telegram.org/bot${token}/${method}`);
+  return r.json();
+}
+
+async function telegramPost(token, method, body) {
+  const r = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  return r.json();
+}
+
+// Envia mensagem pelo bot de alertas e loga o resultado
+async function sendTelegramAlert(text, chatId, orderNumber) {
+  const resp = await fetch(`https://api.telegram.org/bot${NOTIFIER_BOT_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' })
+  });
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`Telegram sendMessage falhou (HTTP ${resp.status}): ${body.slice(0, 300)}`);
+  }
+  console.log(`🔔 Alerta enviado: pedido ${orderNumber || 'INIT'}`);
+}
+
+// Copia foto + bio do bot de vendas (TELEGRAM_BOT_TOKEN) para o bot de alertas
+async function syncTelegramProfile() {
+  const salesToken = process.env.TELEGRAM_BOT_TOKEN || '';
+  if (!NOTIFIER_BOT_TOKEN || !salesToken) return;
+  try {
+    const me = await telegramGet(salesToken, 'getMe');
+    const username = me.ok && me.result && me.result.username ? me.result.username : '';
+    const handle = username ? '@' + username : '';
+
+    // Bio do bot de vendas (curta e completa) → bot de alertas, incluindo o @ do bot de vendas
+    const sd = await telegramGet(salesToken, 'getMyShortDescription');
+    const shortOrig = sd.ok && sd.result && sd.result.short_description ? sd.result.short_description.trim() : '';
+    const shortBio = [shortOrig, handle].filter(Boolean).join(' · ') || handle;
+    await telegramPost(NOTIFIER_BOT_TOKEN, 'setMyShortDescription', { short_description: shortBio.slice(0, 120) });
+
+    const about = await telegramGet(salesToken, 'getMyDescription');
+    const aboutOrig = about.ok && about.result && about.result.description ? about.result.description.trim() : '';
+    if (aboutOrig) await telegramPost(NOTIFIER_BOT_TOKEN, 'setMyDescription', { description: aboutOrig.slice(0, 512) });
+
+    // Foto do bot de vendas → bot de alertas
+    const up = await telegramPost(salesToken, 'getUserProfilePhotos', { limit: 1 });
+    if (up.ok && up.result && up.result.photos && up.result.photos.length > 0) {
+      const largest = up.result.photos[0][up.result.photos[0].length - 1];
+      const f = await telegramPost(salesToken, 'getFile', { file_id: largest.file_id });
+      if (f.ok && f.result.file_path) {
+        const buf = await fetch(`https://api.telegram.org/file/bot${salesToken}/${f.result.file_path}`).then((r) => r.arrayBuffer());
+        const form = new FormData();
+        form.append('photo', new Blob([buf], { type: 'image/jpeg' }), 'bot_photo.jpg');
+        await fetch(`https://api.telegram.org/bot${NOTIFIER_BOT_TOKEN}/setChatPhoto`, { method: 'POST', body: form });
+      }
+    }
+    console.log('🖼️ Foto e bio do bot de alertas sincronizadas com o bot de vendas.');
+  } catch (err) {
+    console.error('syncTelegramProfile falhou:', err.message);
+  }
+}
 
 // Envia alerta de nova venda para o bot de notificações do dono
 async function notifyNewSale(opts = {}) {
@@ -76,43 +160,55 @@ async function notifyNewSale(opts = {}) {
   if (!NOTIFIER_BOT_TOKEN || !NOTIFY_CHAT_ID) return;
   if (typeof fetch !== 'function') return; // Node < 18 sem fetch global
 
-  let lines;
   if (startup) {
-    lines = [
+    const lines = [
       '✅ <b>Sistema de Alertas de Vendas ativo!</b>',
       '',
       '🟢 Notificações de novas compras habilitadas.',
       `🕒 ${new Date().toLocaleString('pt-BR')}`
     ];
-  } else {
-    const who = maskCustomer(customerId || customerName || customerContact);
-    lines = [
-      '🎉 Nova Compra!',
-      '',
-      `▪️ Serviço: ${service}`,
-      `👤 Por: (${who})`,
-      `🛍️ Plano: ${plan}`,
-      `🔖 Nº do Pedido: ${orderNumber}`,
-      `   Qtd.: ${qty}`,
-      `📈 Total da Compra: ${salePrice != null && salePrice > 0 ? formatMoneyBr(salePrice) : 'Grátis'}`
-    ];
-    if (resellerName) lines.push(`🧑‍💼 Revendedor: ${resellerName}`);
-    if (costPrice != null) lines.push(`💸 Custo: ${formatMoneyBr(costPrice)}`);
-    if (profit != null) lines.push(`📊 Lucro: ${formatMoneyBr(profit)}`);
-    if (balanceRemaining != null) lines.push(`💰 Saldo Restante: ${formatMoneyBr(balanceRemaining)}`);
-    lines.push(`🕒 ${new Date().toLocaleString('pt-BR')}`);
+    await sendTelegramAlert(lines.join('\n'), NOTIFY_CHAT_ID, 'INIT');
+    return;
   }
 
-  const resp = await fetch(`https://api.telegram.org/bot${NOTIFIER_BOT_TOKEN}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: NOTIFY_CHAT_ID, text: lines.join('\n'), parse_mode: 'HTML' })
-  });
-  if (!resp.ok) {
-    const body = await resp.text();
-    throw new Error(`Telegram sendMessage falhou (HTTP ${resp.status}): ${body.slice(0, 300)}`);
+  // Custo exibido: SEMPRE o valor do produto definido pelo admin (nunca o do revendedor)
+  const adminCost = await getAdminCost();
+
+  // Mensagem pública: sem revendedor, sem lucro — o usuário que comprou é marcado pelo nome
+  const base = [
+    '🎉 Nova Compra!',
+    '',
+    `▪️ Serviço: ${escHtml(service)}`,
+    `👤 Cliente: ${customerLabel(customerName, customerId, customerContact)}`,
+    `🛍️ Plano: ${escHtml(plan)}`,
+    `🔖 Nº do Pedido: ${escHtml(orderNumber)}`,
+    `   Qtd.: ${qty}`,
+    `📈 Total da Compra: ${salePrice != null && salePrice > 0 ? formatMoneyBr(salePrice) : 'Grátis'}`,
+    `💸 Custo: ${formatMoneyBr(adminCost)}`
+  ];
+  const stamp = `🕒 ${new Date().toLocaleString('pt-BR')}`;
+  const publicLines = [...base, stamp];
+
+  // Versão do admin: inclui o revendedor (lucro NUNCA aparece)
+  const adminLines = [
+    ...base,
+    `🧑‍💼 Revendedor: ${escHtml(resellerName || '—')}`,
+    balanceRemaining != null ? `💰 Saldo Restante: ${formatMoneyBr(balanceRemaining)}` : null,
+    stamp
+  ].filter(Boolean);
+
+  const adminChatId = (process.env.NOTIFY_ADMIN_CHAT_ID || '').trim();
+  const hasSeparateAdminChat = !!adminChatId && adminChatId !== NOTIFY_CHAT_ID;
+
+  if (hasSeparateAdminChat) {
+    // Chat público/grupo: só a versão SEM revendedor
+    await sendTelegramAlert(publicLines.join('\n'), NOTIFY_CHAT_ID, orderNumber);
+    // Chat privado do admin: versão completa COM o revendedor
+    await sendTelegramAlert(adminLines.join('\n'), adminChatId, orderNumber);
+  } else {
+    // Sem chat separado, o dono é o único destinatário: envia a versão completa
+    await sendTelegramAlert(adminLines.join('\n'), NOTIFY_CHAT_ID, orderNumber);
   }
-  console.log(`🔔 Alerta enviado: pedido ${orderNumber || 'INIT'}`);
 }
 
 // ==========================================
@@ -1353,6 +1449,9 @@ dbHelpers.initDb()
     }
     app.listen(PORT, () => {
       console.log(`===================================================`);
+
+      // Copia foto + bio do bot de vendas para o bot de alertas (uma vez por boot)
+      syncTelegramProfile();
 
       // Ping de ativação do sistema de alertas (assim que o servidor subir)
       if (NOTIFIER_BOT_TOKEN && NOTIFY_CHAT_ID) {
