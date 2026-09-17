@@ -10,3 +10,5 @@ cdp_*.py
 cdp_*.png
 .tunnel_url
 PENTEST_REPORT.md
+# Pasta de ferramentas locais (binários e scripts com acesso ao .env)
+tools/
