@@ -28,11 +28,12 @@ if (!DATABASE_URL) {
 const TABLES = ['settings', 'admins', 'resellers', 'sales', 'recharges', 'generations', 'error_logs'];
 
 async function main() {
-  // --- Abre o SQLite local em modo LEITURA (via db.js, sem DATABASE_URL) ---
-  const savedDbUrl = process.env.DATABASE_URL;
-  delete process.env.DATABASE_URL;
-  const dbHelpers = require('../db'); // backend = sqlite (lê database.sqlite)
-  process.env.DATABASE_URL = savedDbUrl;
+  // --- Abre o SQLite local em modo LEITURA (driver nativo, sem passar pelo dotenv) ---
+  const { DatabaseSync } = require('node:sqlite');
+  const path = require('node:path');
+  const sqlite = new DatabaseSync(path.join(__dirname, '..', 'database.sqlite'), { readOnly: true });
+  // DDL do Postgres (constante exportada pelo db.js)
+  const dbHelpers = require('../db');
 
   // --- Conecta no Postgres alvo ---
   const { Pool } = require('pg');
@@ -53,7 +54,7 @@ async function main() {
 
   const report = [];
   for (const table of TABLES) {
-    const rows = await dbHelpers.db.prepare(`SELECT * FROM ${table}`).all();
+    const rows = sqlite.prepare(`SELECT * FROM ${table}`).all();
     const total = rows.length;
 
     if (DRY_RUN) {
@@ -84,9 +85,12 @@ async function main() {
         else skipped += 1;
       }
       // Ajusta a sequence para continuar do maior id existente
-      await client.query(
-        `SELECT setval(pg_get_serial_sequence('${table}', 'id'), COALESCE((SELECT MAX(id) FROM ${table}), 0) + 1, false)`
-      );
+      // (apenas tabelas com coluna id serial; ex.: settings usa key como PK)
+      if (columns.includes('id')) {
+        await client.query(
+          `SELECT setval(pg_get_serial_sequence('${table}', 'id'), COALESCE((SELECT MAX(id) FROM ${table}), 0) + 1, false)`
+        );
+      }
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK');

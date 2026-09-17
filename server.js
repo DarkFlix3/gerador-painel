@@ -633,7 +633,7 @@ app.post('/api/reseller/recharge', resellerUserAuth, async (req, res) => {
   const now = new Date().toISOString();
 
   // Adiciona o valor em Reais diretamente ao saldo do revendedor
-  await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(credits + ?, 2) WHERE id = ?').run(amountPaid, req.reseller.id);
+  await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits + ? AS NUMERIC), 2) WHERE id = ?').run(amountPaid, req.reseller.id);
   await dbHelpers.db.prepare(`
     INSERT INTO recharges (reseller_id, credits, amount_paid, status, payment_method, created_at)
     VALUES (?, ?, ?, 'approved', 'PIX', ?)
@@ -673,7 +673,7 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
 
   try {
     // Desconta exatamente R$ 2,99 do saldo do revendedor
-    await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(credits - ?, 2) WHERE id = ?').run(costPrice, reseller.id);
+    await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits - ? AS NUMERIC), 2) WHERE id = ?').run(costPrice, reseller.id);
 
     // Gera o link
     const generation = await dbHelpers.generateLink(`painel_manual:${reseller.name}`, reseller.id, ip);
@@ -756,7 +756,7 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
 
   try {
     // 3. Decrementa exatamente R$ 2,99 do Saldo do Revendedor
-    await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(credits - ?, 2) WHERE id = ?').run(costPrice, reseller.id);
+    await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits - ? AS NUMERIC), 2) WHERE id = ?').run(costPrice, reseller.id);
 
     // 4. Gera o Link
     const generation = await dbHelpers.generateLink(`bot:${reseller.name}`, reseller.id, ip);
