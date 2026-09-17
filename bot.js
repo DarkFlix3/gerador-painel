@@ -62,9 +62,25 @@ function backToMenuKeyboard() {
   };
 }
 
-// Envia o Menu Principal
-function sendMainMenu(chatId) {
-  bot.sendMessage(chatId, `🏠 <b>Menu Principal</b>\n\nSelecione uma das opções abaixo:`, { parse_mode: 'HTML', ...getMainKeyboard() });
+// Envia o Menu Principal — se messageId for informado, EDITA a mensagem atual
+// no lugar (vira o menu) em vez de enviar outra, para não poluir o chat.
+function sendMainMenu(chatId, messageId) {
+  const mainText = `🏠 <b>Menu Principal</b>\n\nSelecione uma das opções abaixo:`;
+  if (messageId) {
+    bot.editMessageText(mainText, {
+      chat_id: chatId,
+      message_id: messageId,
+      parse_mode: 'HTML',
+      reply_markup: getMainKeyboard().reply_markup
+    }).catch(() => {
+      // Fallback: se não conseguir editar (mensagem antiga demais etc.),
+      // apaga a antiga e envia o menu limpo
+      bot.deleteMessage(chatId, messageId).catch(() => {});
+      bot.sendMessage(chatId, mainText, { parse_mode: 'HTML', ...getMainKeyboard() });
+    });
+  } else {
+    bot.sendMessage(chatId, mainText, { parse_mode: 'HTML', ...getMainKeyboard() });
+  }
 }
 
 // Mostra o ID de Perfil da pessoa (id único no bot e no site do gerador)
@@ -212,7 +228,8 @@ bot.on('callback_query', async (query) => {
       { parse_mode: 'HTML', ...backToMenuKeyboard() }
     );
   } else if (action === 'back_to_menu') {
-    sendMainMenu(chatId);
+    // Edita a mensagem atual virando o menu principal (sem duplicar no chat)
+    sendMainMenu(chatId, query.message.message_id);
   }
 });
 
