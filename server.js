@@ -46,12 +46,13 @@ const getClientIp = (req) => {
 // Helper: escapa HTML para uso com parse_mode HTML do Telegram
 const escHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
 
-// Helper: identifica o usuário que comprou (nome + @username quando houver)
+// Helper: identifica o usuário que comprou — prioriza o @username (ex.: @edu_coffe);
+// fallback: nome do cliente; fallback final: ID (tel. do Telegram ou IP).
 const customerLabel = (name, id, contact) => {
   const n = escHtml(name).trim();
   const c = String(contact || '').trim();
-  if (n) return c.startsWith('@') ? `${n} (${escHtml(c)})` : n;
   if (c.startsWith('@')) return escHtml(c);
+  if (n) return n;
   const i = escHtml(id).trim();
   if (i) return i;
   return '—';
