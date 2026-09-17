@@ -80,7 +80,53 @@ npm start
 
 ---
 
-## 🤖 Integração com Bots de Revenda (Telegram, Discord, etc.)
+## 🤖 Bot do Telegram Oficial de Vendas Automáticas
+
+O projeto já inclui um bot pronto tanto em **Node.js** (`bot.js`) quanto em **Python** (`bot_telegram.py`). Ele atende seus clientes 24h por dia, gera os links automaticamente chamando a API, debita os R$ 2,99 do saldo do revendedor e entrega o link camuflado no chat com botão de 1 clique.
+
+### ⚙️ Como Configurar o Bot:
+
+1. **Crie seu bot no Telegram:**
+   - Abra o Telegram e procure por `@BotFather`.
+   - Digite `/newbot` e siga as instruções para escolher nome e username.
+   - Copie o **Token de Acesso HTTP** fornecido pelo BotFather.
+
+2. **Crie seu arquivo de configuração `.env`:**
+   - Copie o arquivo `.env.example` para `.env`:
+     ```bash
+     cp .env.example .env
+     ```
+   - Preencha os campos com suas credenciais:
+     ```env
+     TELEGRAM_BOT_TOKEN=123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ
+     API_BASE_URL=http://localhost:3000
+     RESELLER_API_KEY=rev_key_SUA_CHAVE_AQUI
+     DEFAULT_SALE_PRICE=15.00
+     SUPPORT_USER=@seu_telegram
+     ```
+   *(Sua `RESELLER_API_KEY` pode ser obtida acessando o painel de revendedor em [http://localhost:3000/revendedor.html](http://localhost:3000/revendedor.html))*.
+
+3. **Inicie o Bot (Node.js):**
+   ```bash
+   npm run bot
+   ```
+   *Ou se preferir rodar em Python:*
+   ```bash
+   pip install pyTelegramBotAPI requests
+   python bot_telegram.py
+   ```
+
+4. **Comandos disponíveis no Bot:**
+   - `/start` - Apresentação, valores e teclado com botões interativos.
+   - `🛒 Comprar Acesso` - Gera o link instantâneo para o cliente e registra no painel.
+   - `/saldo` ou `💳 Meu Saldo` - Consulta saldo restante, custo por link e total de vendas do revendedor.
+   - `ℹ️ Como Funciona` - Explicação didática sobre a ativação do Spotify.
+
+---
+
+## 🌐 Integração via API REST (Para Desenvolvedores / Outros Bots)
+
+Caso queira integrar com seu próprio sistema, bot de Discord ou gateway de pagamento:
 
 ### Endpoint da API:
 `POST http://localhost:3000/api/v1/generate`
@@ -116,35 +162,3 @@ X-API-Key: rev_key_SUA_CHAVE_AQUI
 }
 ```
 
-#### Exemplo em Python (Telebot):
-```python
-import telebot
-import requests
-
-API_KEY = "rev_key_SUA_CHAVE_AQUI"
-API_URL = "http://localhost:3000/api/v1/generate"
-
-bot = telebot.TeleBot("SEU_BOT_TOKEN")
-
-@bot.message_handler(commands=['comprar'])
-def handle_comprar(message):
-    payload = {
-        "customer_name": message.from_user.first_name,
-        "customer_id": str(message.from_user.id),
-        "customer_contact": f"@{message.from_user.username}",
-        "sale_price": 15.00
-    }
-    headers = {"X-API-Key": API_KEY}
-    
-    response = requests.post(API_URL, json=payload, headers=headers)
-    
-    if response.status_code == 200:
-        data = response.json()
-        bot.reply_to(message, f"✅ Seu link exclusivo foi gerado:\n🔗 {data['link']}")
-    elif response.status_code == 402:
-        bot.reply_to(message, "⚠️ Sistema em manutenção temporária de estoque.")
-    else:
-        bot.reply_to(message, "❌ Erro ao gerar o link. Tente novamente.")
-
-bot.polling()
-```

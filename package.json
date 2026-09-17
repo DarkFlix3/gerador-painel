@@ -4,12 +4,15 @@
   "description": "Gerador de Links com Painel de Administração, Dashboard com Gráficos, Logs de Erros e API para Revendedores/Bots",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "bot": "node bot.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
     "express": "^4.21.2",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "node-telegram-bot-api": "^2.1.0"
   }
 }
