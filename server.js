@@ -113,7 +113,7 @@ const resellerBotAuth = async (req, res, next) => {
     });
   }
 
-  const reseller = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE api_key = ?').get(apiKey);
+  let reseller = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE api_key = ?').get(apiKey);
 
   if (!reseller) {
     dbHelpers.logError({
@@ -126,6 +126,30 @@ const resellerBotAuth = async (req, res, next) => {
       source: 'bot_api'
     });
     return res.status(403).json({ success: false, error: 'Chave de API inválida.' });
+  }
+
+  // ==========================================
+  // VÍNCULO POR ID DE PERFIL (Telegram)
+  // ------------------------------------------
+  // Se o bot enviar o header X-Telegram-Id, o saldo consultado/debitado é o
+  // do perfil vinculado àquele ID (site + bot juntos). Se o ID não estiver
+  // vinculado a nenhuma conta, responde com needs_link para o bot orientar
+  // a pessoa a cadastrar o ID no painel (aba Meu Perfil).
+  // ==========================================
+  const tgId = (req.headers['x-telegram-id'] || '').toString().trim();
+  if (tgId) {
+    const byTg = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE telegram_id = ?').get(tgId);
+    if (!byTg) {
+      return res.status(404).json({
+        success: false,
+        needs_link: true,
+        error: 'Seu perfil de Telegram ainda não está vinculado a uma conta no site do gerador. No bot, envie /me para copiar seu ID de perfil e cadastre-o no painel do revendedor (aba Meu Perfil).'
+      });
+    }
+    if (byTg.blocked === 1 || byTg.active !== 1) {
+      return res.status(403).json({ success: false, error: 'A conta vinculada a este perfil está bloqueada ou inativa.' });
+    }
+    reseller = byTg;
   }
 
   if (reseller.blocked === 1) {
@@ -482,10 +506,29 @@ app.get('/api/reseller/me', resellerUserAuth, (req, res) => {
       balance: Number(r.credits || 0).toFixed(2),
       sale_price: r.sale_price || 15.00,
       cost_per_link: r.cost_per_link || 2.99,
+      telegram_id: r.telegram_id || null,
       blocked: r.blocked === 1,
       created_at: r.created_at
     }
   });
+});
+
+// Vincular/atualizar o ID de perfil do Telegram à conta de revendedor
+// (o mesmo ID usado no bot: /me mostra o ID; saldo do site e do bot ficam juntos)
+app.post('/api/reseller/telegram-link', resellerUserAuth, async (req, res) => {
+  const tg = (req.body && req.body.telegram_id ? String(req.body.telegram_id).trim() : '').replace(/[^0-9]/g, '');
+
+  if (tg.length < 4 || tg.length > 15) {
+    return res.status(400).json({ success: false, error: 'ID de Telegram inválido. Envie /me no bot para copiar seu ID de perfil (somente números).' });
+  }
+
+  const exists = await dbHelpers.db.prepare('SELECT id FROM resellers WHERE telegram_id = ?').get(tg);
+  if (exists && Number(exists.id) !== Number(req.reseller.id)) {
+    return res.status(409).json({ success: false, error: 'Este ID de Telegram já está vinculado a outra conta de revendedor.' });
+  }
+
+  await dbHelpers.db.prepare('UPDATE resellers SET telegram_id = ? WHERE id = ?').run(tg, req.reseller.id);
+  res.json({ success: true, message: 'Perfil do Telegram vinculado com sucesso! Seu saldo do site agora também aparece no bot via /saldo.', telegram_id: tg });
 });
 
 // Dashboard e Gráfico do Revendedor
@@ -829,6 +872,8 @@ app.get('/api/v1/balance', resellerBotAuth, async (req, res) => {
   res.json({
     success: true,
     reseller: reseller.name,
+    reseller_id: reseller.id,
+    telegram_id: reseller.telegram_id || null,
     credits: reseller.credits,
     active: reseller.active === 1 && reseller.blocked === 0,
     sale_price: reseller.sale_price,

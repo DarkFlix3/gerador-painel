@@ -220,6 +220,21 @@ document.addEventListener('DOMContentLoaded', () => {
       const apiKeyInput = document.getElementById('my-api-key-input');
       if (apiKeyInput) apiKeyInput.value = currentReseller.api_key;
 
+      // Preenche o ID de perfil do Telegram (vínculo bot + site)
+      const tgInput = document.getElementById('tg-profile-id-input');
+      const tgStatus = document.getElementById('tg-link-status');
+      if (tgInput) tgInput.value = currentReseller.telegram_id || '';
+      if (tgStatus) {
+        if (currentReseller.telegram_id) {
+          tgStatus.className = 'text-xs p-2.5 rounded-lg border border-emerald-500/30 bg-emerald-950/40 text-emerald-300';
+          tgStatus.innerHTML = '✅ <b>Vinculado!</b> ID <code>' + escapeHtml(currentReseller.telegram_id) + '</code> — o /saldo do bot mostra o saldo desta conta.';
+        } else {
+          tgStatus.className = 'text-xs p-2.5 rounded-lg border border-amber-500/30 bg-amber-950/40 text-amber-300';
+          tgStatus.innerHTML = '⚠️ Ainda não vinculado. Envie <b>/me</b> no bot para copiar seu ID e cole acima.';
+        }
+        tgStatus.classList.remove('hidden');
+      }
+
       const codePreview = document.getElementById('bot-code-preview');
       if (codePreview) {
         codePreview.innerText = codePreview.innerText.replace(/API_KEY = ".*"/, `API_KEY = "${currentReseller.api_key}"`);
@@ -635,6 +650,42 @@ document.addEventListener('DOMContentLoaded', () => {
       const input = document.getElementById('my-api-key-input');
       if (input && input.value) {
         copyToClipboard(input.value);
+      }
+    });
+  }
+
+  // ==========================================
+  // VÍNCULO DO ID DE PERFIL (bot + site)
+  // ==========================================
+  const btnLinkTelegram = document.getElementById('btn-link-telegram');
+  if (btnLinkTelegram) {
+    btnLinkTelegram.addEventListener('click', async () => {
+      const tgInput = document.getElementById('tg-profile-id-input');
+      const tgStatus = document.getElementById('tg-link-status');
+      const tgValue = (tgInput.value || '').replace(/[^0-9]/g, '').trim();
+
+      if (!tgValue) {
+        showToast('Cole seu ID de perfil (envie /me no bot para copiar).', 'error');
+        return;
+      }
+
+      try {
+        const res = await resellerFetch('/api/reseller/telegram-link', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ telegram_id: tgValue })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error);
+
+        tgInput.value = data.telegram_id;
+        tgStatus.className = 'text-xs p-2.5 rounded-lg border border-emerald-500/30 bg-emerald-950/40 text-emerald-300';
+        tgStatus.innerHTML = '✅ <b>Vinculado com sucesso!</b> ID <code>' + escapeHtml(data.telegram_id) + '</code>.';
+        tgStatus.classList.remove('hidden');
+        showToast(data.message, 'success');
+        loadResellerProfile();
+      } catch (err) {
+        showToast(err.message, 'error');
       }
     });
   }

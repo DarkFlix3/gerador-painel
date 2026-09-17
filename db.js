@@ -300,7 +300,9 @@ const EXTRA_COLUMNS = {
     'phone TEXT',
     'blocked INTEGER DEFAULT 0',
     'sale_price DOUBLE PRECISION DEFAULT 15.00',
-    'cost_per_link DOUBLE PRECISION DEFAULT 2.99'
+    'cost_per_link DOUBLE PRECISION DEFAULT 2.99',
+    // ID de perfil do Telegram: une a conta do site com o bot (saldo único)
+    'telegram_id TEXT'
   ]
 };
 

@@ -41,6 +41,37 @@ bot.on('polling_error', (err) => {
   console.error('[polling_error]', err && err.message ? err.message : err);
 });
 
+// Escapa caracteres especiais de nomes/usuários antes de inserir em HTML do Telegram
+function escapeHtml(str) {
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+// Mostra o ID de Perfil da pessoa (id único no bot e no site do gerador)
+function sendProfileId(chatId, user) {
+  const firstName = escapeHtml(user.first_name || 'Cliente');
+  const username = user.username ? '@' + escapeHtml(user.username) : '—';
+  const profileId = String(user.id);
+
+  const text =
+    `🆔 <b>SEU ID DE PERFIL</b>\n\n` +
+    `👤 <b>Nome:</b> ${firstName}\n` +
+    `📛 <b>Username:</b> ${username}\n` +
+    `🆔 <b>Seu ID de Perfil:</b> <code>${profileId}</code>\n\n` +
+    `Este ID é o seu identificador único no bot e no site do gerador.\n` +
+    `💡 <b>Para vincular seu saldo:</b>\n` +
+    `1️⃣ Abra o painel: ${PUBLIC_BASE_URL}/revendedor.html\n` +
+    `2️⃣ Entre na aba <b>Meu Perfil</b>\n` +
+    `3️⃣ Cole seu ID de Perfil e salve.\n\n` +
+    `Depois de vinculado, o comando /saldo mostra o saldo da SUA conta.`;
+
+  bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+}
+
 // Envio seguro: se o botão (URL) for rejeitado pelo Telegram, entrega o texto sem botões
 function safeSend(chatId, text, options) {
   const opts = options || {};
@@ -98,6 +129,9 @@ function getMainKeyboard() {
         ],
         [
           { text: '💳 Meu Saldo & Vendas (Revendedor)', callback_data: 'check_balance' }
+        ],
+        [
+          { text: '🆔 Meu ID de Perfil', callback_data: 'my_id' }
         ]
       ]
     }
@@ -125,9 +159,15 @@ bot.onText(/\/comprar/, async (msg) => {
   await handlePurchase(msg.chat.id, msg.from);
 });
 
-// Comando /saldo (para o revendedor)
+// Comando /saldo (saldo da conta vinculada ao ID de perfil)
 bot.onText(/\/saldo/, async (msg) => {
-  await handleCheckBalance(msg.chat.id);
+  await handleCheckBalance(msg.chat.id, msg.from);
+});
+
+// Comando /me (e alias /perfil) — mostra o ID de perfil da pessoa
+bot.onText(/\/(me|perfil|id)/, (msg) => {
+  console.log('[recv] /me de', msg.chat.id, msg.from && msg.from.first_name);
+  sendProfileId(msg.chat.id, msg.from);
 });
 
 // Comando /ajuda
@@ -145,7 +185,9 @@ bot.on('callback_query', async (query) => {
   if (action === 'buy_now') {
     await handlePurchase(chatId, query.from);
   } else if (action === 'check_balance') {
-    await handleCheckBalance(chatId);
+    await handleCheckBalance(chatId, query.from);
+  } else if (action === 'my_id') {
+    sendProfileId(chatId, query.from);
   } else if (action === 'how_it_works') {
     sendHelpMessage(chatId);
   } else if (action === 'support') {
@@ -255,26 +297,40 @@ async function handlePurchase(chatId, user) {
   }
 }
 
-// Função de Consultar Saldo e Métricas do Revendedor
-async function handleCheckBalance(chatId) {
+// Função de Consultar Saldo e Métricas (da conta vinculada ao ID de perfil)
+async function handleCheckBalance(chatId, user) {
   if (!RESELLER_API_KEY) {
     return bot.sendMessage(chatId, '⚠️ Chave de revendedor não configurada.', { parse_mode: 'HTML' });
   }
 
   try {
-    const res = await fetch(`${API_BASE_URL}/api/v1/balance`, {
-      headers: { 'X-API-Key': RESELLER_API_KEY }
-    });
+    // Envia o X-Telegram-Id para o servidor consultar o saldo da conta
+    // vinculada àquele ID de perfil (site + bot ficam juntos pelo mesmo ID).
+    const headers = { 'X-API-Key': RESELLER_API_KEY };
+    if (user && user.id) headers['X-Telegram-Id'] = String(user.id);
+
+    const res = await fetch(`${API_BASE_URL}/api/v1/balance`, { headers });
     const data = await res.json();
 
+    if (res.status === 404 && data.needs_link) {
+      return bot.sendMessage(chatId,
+        `🔗 <b>Perfil ainda não vinculado!</b>\n\n` +
+        `${data.error || ''}\n\n` +
+        `👉 Abra o painel do revendedor, cole seu ID na aba <b>Meu Perfil</b> e tente /saldo novamente.`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
     if (data.success) {
-      const balance = parseFloat(data.balance || 0);
+      const balance = parseFloat(data.credits != null ? data.credits : (data.balance || 0));
       const costPerLink = parseFloat(data.cost_per_link || 2.99);
       const possibleLinks = Math.floor(balance / costPerLink);
+      const linkedId = data.telegram_id ? `<code>${data.telegram_id}</code>` : 'não vinculado';
 
       const balanceText = 
         `📊 <b>PAINEL DO REVENDEDOR (METRICS)</b>\n\n` +
-        `👤 <b>Revendedor:</b> ${data.reseller}\n` +
+        `👤 <b>Revendedor:</b> ${escapeHtml(data.reseller)}\n` +
+        `🆔 <b>ID de Perfil:</b> ${linkedId}\n` +
         `💰 <b>Saldo Atual em Reais:</b> R$ ${balance.toFixed(2).replace('.', ',')}\n` +
         `🏷️ <b>Custo por Link:</b> R$ ${costPerLink.toFixed(2).replace('.', ',')}\n` +
         `📦 <b>Capacidade de Venda:</b> ${possibleLinks} links restantes\n\n` +
