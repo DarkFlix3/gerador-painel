@@ -1126,6 +1126,43 @@ app.get('/api/v1/balance', resellerBotAuth, async (req, res) => {
 });
 
 // ==========================================
+// API KEY PRÓPRIA DO REVENDEDOR (para bots próprios)
+// ------------------------------------------
+// Cada revendedor tem a PRÓPRIA api_key. Estes endpoints entregam a chave
+// da conta vinculada ao Telegram ID (menu "Minha API" no bot principal),
+// para o revendedor criar o próprio bot e entregar o produto automaticamente
+// via POST /api/v1/generate com o header X-API-Key: <chave dele>.
+// ==========================================
+
+// Consulta a própria chave de API + endereço da API
+app.get('/api/v1/my-api', resellerBotAuth, async (req, res) => {
+  const reseller = req.reseller;
+  const apiBase = (process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '');
+  res.json({
+    success: true,
+    reseller: reseller.name,
+    reseller_id: reseller.id,
+    api_key: reseller.api_key,
+    api_base_url: apiBase,
+    generate_endpoint: `${apiBase}/api/v1/generate`,
+    sale_price: reseller.sale_price,
+    cost_per_link: reseller.cost_per_link
+  });
+});
+
+// Renova a própria chave de API (a chave antiga é invalidada imediatamente)
+app.post('/api/v1/my-api/rotate', resellerBotAuth, async (req, res) => {
+  const reseller = req.reseller;
+  const newKey = 'rev_key_' + crypto.randomBytes(16).toString('hex');
+  await dbHelpers.db.prepare('UPDATE resellers SET api_key = ? WHERE id = ?').run(newKey, reseller.id);
+  res.json({
+    success: true,
+    message: 'Chave de API renovada com sucesso! A chave antiga foi invalidada e os bots que a usavam precisam ser atualizados.',
+    api_key: newKey
+  });
+});
+
+// ==========================================
 // ROTAS DO PAINEL ADMIN (GESTÃO GLOBAL)
 // ==========================================
 

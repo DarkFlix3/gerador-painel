@@ -163,6 +163,9 @@ function getMainKeyboard() {
           { text: '💳 Meu Saldo & Vendas (Revendedor)', callback_data: 'check_balance' }
         ],
         [
+          { text: '🔑 Minha API (Revendedor)', callback_data: 'my_api' }
+        ],
+        [
           { text: '🆔 Meu ID de Perfil', callback_data: 'my_id' }
         ]
       ]
@@ -207,6 +210,11 @@ bot.onText(/\/ajuda/, (msg) => {
   sendHelpMessage(msg.chat.id);
 });
 
+// Comando /api — mostra a chave de API do revendedor para bots próprios
+bot.onText(/\/(api|minhaapi|apikey)/, async (msg) => {
+  await handleMyApi(msg.chat.id, msg.from);
+});
+
 // Resposta a Botões Inline
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
@@ -220,6 +228,10 @@ bot.on('callback_query', async (query) => {
     await handleCheckBalance(chatId, query.from);
   } else if (action === 'my_id') {
     sendProfileId(chatId, query.from);
+  } else if (action === 'my_api') {
+    await handleMyApi(chatId, query.from);
+  } else if (action === 'my_api_rotate') {
+    await handleMyApiRotate(chatId, query.from);
   } else if (action === 'how_it_works') {
     sendHelpMessage(chatId);
   } else if (action === 'support') {
@@ -390,6 +402,110 @@ async function handleCheckBalance(chatId, user) {
     }
   } catch (e) {
     bot.sendMessage(chatId, '❌ Não foi possível conectar ao servidor para obter o saldo.');
+  }
+}
+
+// Função: mostra a API Key própria do revendedor (para criar bots próprios)
+async function handleMyApi(chatId, user) {
+  if (!RESELLER_API_KEY) {
+    return bot.sendMessage(chatId, '⚠️ Chave de revendedor não configurada.', { parse_mode: 'HTML' });
+  }
+
+  try {
+    const headers = { 'X-API-Key': RESELLER_API_KEY };
+    if (user && user.id) headers['X-Telegram-Id'] = String(user.id);
+
+    const res = await fetch(`${API_BASE_URL}/api/v1/my-api`, { headers });
+    const data = await res.json();
+
+    if (res.status === 404 && data.needs_link) {
+      return bot.sendMessage(chatId,
+        `🔗 <b>Perfil ainda não vinculado!</b>\n\n` +
+        `${data.error || ''}\n\n` +
+        `👉 Abra o painel do revendedor, cole seu ID na aba <b>Meu Perfil</b> e tente /api novamente.`,
+        { parse_mode: 'HTML', ...backToMenuKeyboard() }
+      );
+    }
+
+    if (data.success && data.api_key) {
+      const apiText =
+        `🔑 <b>MINHA API DE REVENDEDOR</b>\n\n` +
+        `👤 <b>Conta:</b> ${escapeHtml(data.reseller)}\n\n` +
+        `🔐 <b>Sua API Key (use só você!):</b>\n<code>${data.api_key}</code>\n\n` +
+        `📍 <b>URL da API (endpoint de entrega):</b>\n<code>${data.generate_endpoint || API_BASE_URL + '/api/v1/generate'}</code>\n\n` +
+        `🤖 <b>Como usar no SEU bot:</b>\n` +
+        `1. Crie seu bot no @BotFather e pegue o token dele.\n` +
+        `2. No seu bot, quando o pagamento for confirmado, chame a URL acima com o header: X-API-Key: ${data.api_key}\n` +
+        `3. Envie no corpo (JSON): customer_name (nome do cliente), customer_id (id dele), customer_contact (@username dele) e sale_price (valor cobrado).\n` +
+        `4. O link do produto é entregue automaticamente na resposta (campo "link").\n\n` +
+        `💡 <b>Importante:</b> o saldo é debitado da SUA conta. Mantenha esta chave em segredo e não compartilhe.`;
+
+      const apiKeyboard = {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🌐 Abrir Painel do Revendedor', url: `${PUBLIC_BASE_URL}/revendedor.html` }],
+            [{ text: '🔄 Renovar Chave (invalida a atual)', callback_data: 'my_api_rotate' }],
+            [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
+          ]
+        }
+      };
+
+      safeSend(chatId, apiText, { parse_mode: 'HTML', ...apiKeyboard });
+    } else {
+      bot.sendMessage(chatId, '❌ Erro ao consultar sua API: ' + (data.error || 'Chave inválida.'));
+    }
+  } catch (e) {
+    bot.sendMessage(chatId, '❌ Não foi possível conectar ao servidor para obter sua API.');
+  }
+}
+
+// Função: renova a API Key do revendedor (a antiga é invalidada)
+async function handleMyApiRotate(chatId, user) {
+  if (!RESELLER_API_KEY) {
+    return bot.sendMessage(chatId, '⚠️ Chave de revendedor não configurada.', { parse_mode: 'HTML' });
+  }
+
+  try {
+    const headers = { 'X-API-Key': RESELLER_API_KEY };
+    if (user && user.id) headers['X-Telegram-Id'] = String(user.id);
+
+    const res = await fetch(`${API_BASE_URL}/api/v1/my-api/rotate`, {
+      method: 'POST',
+      headers
+    });
+    const data = await res.json();
+
+    if (res.status === 404 && data.needs_link) {
+      return bot.sendMessage(chatId,
+        `🔗 <b>Perfil ainda não vinculado!</b>\n\n` +
+        `${data.error || ''}\n\n` +
+        `👉 Abra o painel do revendedor, cole seu ID na aba <b>Meu Perfil</b> e tente novamente.`,
+        { parse_mode: 'HTML', ...backToMenuKeyboard() }
+      );
+    }
+
+    if (data.success && data.api_key) {
+      const rotatedText =
+        `🔄 <b>CHAVE DE API RENOVADA!</b>\n\n` +
+        `✅ A chave antiga foi <b>invalidada</b>.\n\n` +
+        `🔐 <b>Sua NOVA API Key:</b>\n<code>${data.api_key}</code>\n\n` +
+        `⚠️ Atualize a chave nos bots que usavam a antiga, senão eles param de entregar.`;
+
+      const rotatedKeyboard = {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔑 Ver Minha API Completa', callback_data: 'my_api' }],
+            [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
+          ]
+        }
+      };
+
+      safeSend(chatId, rotatedText, { parse_mode: 'HTML', ...rotatedKeyboard });
+    } else {
+      bot.sendMessage(chatId, '❌ Erro ao renovar chave: ' + (data.error || 'Tente novamente.'));
+    }
+  } catch (e) {
+    bot.sendMessage(chatId, '❌ Não foi possível conectar ao servidor para renovar a chave.');
   }
 }
 
