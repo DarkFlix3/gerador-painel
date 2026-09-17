@@ -348,7 +348,7 @@ app.post('/api/reseller/register', (req, res) => {
     return res.status(400).json({ success: false, error: 'Já existe um revendedor cadastrado com este e-mail.' });
   }
 
-  const apiKey = 'rk_live_' + crypto.randomBytes(16).toString('hex');
+  const apiKey = 'rev_key_' + crypto.randomBytes(16).toString('hex');
   const passwordHash = bcrypt.hashSync(password, 10);
   const initialCredits = 0.00; // Começa com R$ 0,00 até efetuar recarga
   const now = new Date().toISOString();
@@ -583,7 +583,7 @@ app.post('/api/reseller/settings', resellerUserAuth, (req, res) => {
 
 // Regenerar Chave de API pelo Revendedor
 app.post('/api/reseller/regenerate-key', resellerUserAuth, (req, res) => {
-  const newKey = 'rk_live_' + crypto.randomBytes(16).toString('hex');
+  const newKey = 'rev_key_' + crypto.randomBytes(16).toString('hex');
   dbHelpers.db.prepare('UPDATE resellers SET api_key = ? WHERE id = ?').run(newKey, req.reseller.id);
 
   res.json({

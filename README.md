@@ -16,7 +16,7 @@ Sistema completo de geração de links camuflados, portal individual para revend
 
 ### 2. 💼 Portal do Revendedor (`/revendedor.html`)
 - **Auto-Cadastro & Login:** Cada revendedor cria sua conta autônoma com Nome, E-mail, Senha e WhatsApp/Telegram.
-- **API Key Pessoal:** Geração instantânea de chaves exclusivas no formato `rk_live_...` com opção de regenerar.
+- **API Key Pessoal:** Geração instantânea de chaves exclusivas no formato `rev_key_...` com opção de regenerar.
 - **Saldo em Dinheiro Real (R$):**
   - Cada link gerado debita exatamente **R$ 2,99** do saldo do revendedor.
   - O revendedor recarrega **qualquer valor a partir de R$ 15,00** (ex: R$ 15,00, R$ 25,00, R$ 50,00, R$ 100,00).
@@ -88,9 +88,9 @@ npm start
 #### Headers Necessários:
 ```http
 Content-Type: application/json
-X-API-Key: rk_live_SUA_CHAVE_AQUI
+X-API-Key: rev_key_SUA_CHAVE_AQUI
 ```
-*(ou `Authorization: Bearer rk_live_SUA_CHAVE_AQUI`)*
+*(ou `Authorization: Bearer rev_key_SUA_CHAVE_AQUI`)*
 
 #### Payload de Exemplo (JSON):
 ```json
@@ -121,7 +121,7 @@ X-API-Key: rk_live_SUA_CHAVE_AQUI
 import telebot
 import requests
 
-API_KEY = "rk_live_SUA_CHAVE_AQUI"
+API_KEY = "rev_key_SUA_CHAVE_AQUI"
 API_URL = "http://localhost:3000/api/v1/generate"
 
 bot = telebot.TeleBot("SEU_BOT_TOKEN")

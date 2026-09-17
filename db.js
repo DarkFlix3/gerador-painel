@@ -169,7 +169,7 @@ if (!felipeAdmin) {
 // Seed default demo reseller if none exists
 const countResellers = db.prepare('SELECT COUNT(*) as count FROM resellers').get();
 if (countResellers.count === 0) {
-  const demoApiKey = 'rk_live_' + crypto.randomBytes(16).toString('hex');
+  const demoApiKey = 'rev_key_' + crypto.randomBytes(16).toString('hex');
   const demoPasswordHash = bcrypt.hashSync('123456', 10);
   db.prepare(`
     INSERT INTO resellers (name, email, password_hash, phone, api_key, credits, active, blocked, sale_price, cost_per_link, notes, created_at)
