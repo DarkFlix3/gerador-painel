@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('node:path');
+const fs = require('node:fs');
 const crypto = require('node:crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -102,7 +103,28 @@ async function sendTelegramAlert(text, chatId, orderNumber) {
   console.log(`🔔 Alerta enviado: pedido ${orderNumber || 'INIT'}`);
 }
 
-// Copia foto + bio do bot de vendas (TELEGRAM_BOT_TOKEN) para o bot de alertas
+// Lê a logo da marca embutida no repositório (assets/bot-logo.jpg)
+function readLocalLogo() {
+  try {
+    const p = path.join(__dirname, 'assets', 'bot-logo.jpg');
+    if (fs.existsSync(p)) {
+      const buf = fs.readFileSync(p);
+      if (buf && buf.length > 1000) return buf;
+    }
+  } catch (e) { /* sem logo local */ }
+  return null;
+}
+
+// Aplica uma foto de perfil (InputProfilePhoto static) em um bot do Telegram
+async function setBotProfilePhoto(token, photoBuf) {
+  const form = new FormData();
+  form.append('photo', JSON.stringify({ type: 'static', photo: 'attach://bot_photo' }));
+  form.append('bot_photo', new Blob([photoBuf], { type: 'image/jpeg' }), 'bot_photo.jpg');
+  const r = await fetch(`https://api.telegram.org/bot${token}/setMyProfilePhoto`, { method: 'POST', body: form });
+  return r.json();
+}
+
+// Aplica a logo + copia bio do bot de vendas (TELEGRAM_BOT_TOKEN) nos dois bots
 async function syncTelegramProfile() {
   const salesToken = process.env.TELEGRAM_BOT_TOKEN || '';
   if (!NOTIFIER_BOT_TOKEN || !salesToken) return;
@@ -121,15 +143,15 @@ async function syncTelegramProfile() {
     const aboutOrig = about.ok && about.result && about.result.description ? about.result.description.trim() : '';
     if (aboutOrig) await telegramPost(NOTIFIER_BOT_TOKEN, 'setMyDescription', { description: aboutOrig.slice(0, 512) });
 
-    // Foto do bot de vendas → bot de alertas
-    let photoBuf = null;
-    // 1) Endpoint público de userpic (funciona para bots, sem chamadas à API)
-    if (username) {
+    // Foto da MARCA → aplicada no bot de vendas E no bot de alertas
+    let photoBuf = readLocalLogo();
+    // 1) Fallback: endpoint público de userpic do bot de vendas (funciona para bots)
+    if (!photoBuf && username) {
       try {
         const upRes = await fetch(`https://t.me/i/userpic/320/${username}.jpg`);
         if (upRes.ok) {
           const buf = await upRes.arrayBuffer();
-          if (buf && buf.byteLength >= 500) photoBuf = buf;
+          if (buf && buf.byteLength >= 2000) photoBuf = buf;
         }
       } catch (e) { /* tenta fallback */ }
     }
@@ -147,15 +169,20 @@ async function syncTelegramProfile() {
       } catch (e) { /* sem foto */ }
     }
     if (photoBuf) {
-      const form = new FormData();
-      form.append('photo', JSON.stringify({ type: 'static', photo: 'attach://bot_photo' }));
-      form.append('bot_photo', new Blob([photoBuf], { type: 'image/jpeg' }), 'bot_photo.jpg');
-      const setRes = await fetch(`https://api.telegram.org/bot${NOTIFIER_BOT_TOKEN}/setMyProfilePhoto`, { method: 'POST', body: form });
-      const setJson = await setRes.json();
-      if (setJson.ok) console.log('🖼️ Foto do bot de alertas atualizada com a foto do bot de vendas.');
-      else console.warn('⚠️ setMyProfilePhoto:', setJson.description);
+      const targets = [];
+      if (salesToken) targets.push({ token: salesToken, label: 'bot de vendas' });
+      if (NOTIFIER_BOT_TOKEN && NOTIFIER_BOT_TOKEN !== salesToken) targets.push({ token: NOTIFIER_BOT_TOKEN, label: 'bot de alertas' });
+      for (const t of targets) {
+        try {
+          const setJson = await setBotProfilePhoto(t.token, photoBuf);
+          if (setJson.ok) console.log(`🖼️ Foto do ${t.label} atualizada com a logo da marca.`);
+          else console.warn(`⚠️ setMyProfilePhoto (${t.label}):`, setJson.description);
+        } catch (e) {
+          console.warn(`⚠️ setMyProfilePhoto (${t.label}) falhou:`, e.message);
+        }
+      }
     }
-    console.log('🖼️ Foto e bio do bot de alertas sincronizadas com o bot de vendas.');
+    console.log('🖼️ Foto e bio dos bots sincronizadas.');
   } catch (err) {
     console.error('syncTelegramProfile falhou:', err.message);
   }
