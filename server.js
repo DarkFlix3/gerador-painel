@@ -122,16 +122,37 @@ async function syncTelegramProfile() {
     if (aboutOrig) await telegramPost(NOTIFIER_BOT_TOKEN, 'setMyDescription', { description: aboutOrig.slice(0, 512) });
 
     // Foto do bot de vendas → bot de alertas
-    const up = await telegramPost(salesToken, 'getUserProfilePhotos', { limit: 1 });
-    if (up.ok && up.result && up.result.photos && up.result.photos.length > 0) {
-      const largest = up.result.photos[0][up.result.photos[0].length - 1];
-      const f = await telegramPost(salesToken, 'getFile', { file_id: largest.file_id });
-      if (f.ok && f.result.file_path) {
-        const buf = await fetch(`https://api.telegram.org/file/bot${salesToken}/${f.result.file_path}`).then((r) => r.arrayBuffer());
-        const form = new FormData();
-        form.append('photo', new Blob([buf], { type: 'image/jpeg' }), 'bot_photo.jpg');
-        await fetch(`https://api.telegram.org/bot${NOTIFIER_BOT_TOKEN}/setChatPhoto`, { method: 'POST', body: form });
-      }
+    let photoBuf = null;
+    // 1) Endpoint público de userpic (funciona para bots, sem chamadas à API)
+    if (username) {
+      try {
+        const upRes = await fetch(`https://t.me/i/userpic/320/${username}.jpg`);
+        if (upRes.ok) {
+          const buf = await upRes.arrayBuffer();
+          if (buf && buf.byteLength >= 500) photoBuf = buf;
+        }
+      } catch (e) { /* tenta fallback */ }
+    }
+    // 2) Fallback: getUserProfilePhotos (só funciona para usuários, não bots)
+    if (!photoBuf) {
+      try {
+        const up = await telegramPost(salesToken, 'getUserProfilePhotos', { limit: 1 });
+        if (up.ok && up.result && up.result.photos && up.result.photos.length > 0) {
+          const largest = up.result.photos[0][up.result.photos[0].length - 1];
+          const f = await telegramPost(salesToken, 'getFile', { file_id: largest.file_id });
+          if (f.ok && f.result.file_path) {
+            photoBuf = await fetch(`https://api.telegram.org/file/bot${salesToken}/${f.result.file_path}`).then((r) => r.arrayBuffer());
+          }
+        }
+      } catch (e) { /* sem foto */ }
+    }
+    if (photoBuf) {
+      const form = new FormData();
+      form.append('photo', new Blob([photoBuf], { type: 'image/jpeg' }), 'bot_photo.jpg');
+      const setRes = await fetch(`https://api.telegram.org/bot${NOTIFIER_BOT_TOKEN}/setMyProfilePhoto`, { method: 'POST', body: form });
+      const setJson = await setRes.json();
+      if (setJson.ok) console.log('🖼️ Foto do bot de alertas atualizada com a foto do bot de vendas.');
+      else console.warn('⚠️ setMyProfilePhoto:', setJson.description);
     }
     console.log('🖼️ Foto e bio do bot de alertas sincronizadas com o bot de vendas.');
   } catch (err) {
