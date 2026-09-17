@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="pt-BR" class="dark">
 <head>
   <meta charset="UTF-8">
@@ -44,9 +44,9 @@
         <span>Redirecionando em instantes...</span>
       </div>
 
-      <div>
-        <a id="link-direct" href="#" class="text-[11px] text-indigo-400 hover:text-indigo-300 underline">
-          Clique aqui caso não seja redirecionado automaticamente
+      <div class="pt-2">
+        <a id="link-direct" href="#" class="inline-block w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-lg shadow-emerald-600/30 transition-all">
+          Acessar Spotify Premium Agora &rarr;
         </a>
       </div>
     </div>
@@ -60,13 +60,13 @@
     const baseSpotifyUrl = "https://www.spotify.com/br-pt/referral/0039882b4241878f638478b2751fe63a66251bd3edb728d8914a1d/?si=FpkWFBhNR_yjQLUGKgUvww&utm_source=whatsapp&locale=pt&rv=2";
     const randomSession = Math.random().toString(36).substring(2, 10);
     const randomNonce = Math.floor(100000 + Math.random() * 900000);
-    const destination = ${baseSpotifyUrl}&_ref_uid=&_sess=&_v=;
+    const destination = baseSpotifyUrl + "&_ref_uid=" + encodeURIComponent(token) + "&_sess=" + randomSession + "&_v=" + randomNonce;
 
     document.getElementById('link-direct').href = destination;
 
     setTimeout(() => {
       window.location.href = destination;
-    }, 900);
+    }, 600);
   </script>
 </body>
 </html>
