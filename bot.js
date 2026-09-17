@@ -51,6 +51,22 @@ function escapeHtml(str) {
     .replace(/'/g, '&#039;');
 }
 
+// Teclado padrão das telas de informação: botão Voltar ao Menu
+function backToMenuKeyboard() {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
+      ]
+    }
+  };
+}
+
+// Envia o Menu Principal
+function sendMainMenu(chatId) {
+  bot.sendMessage(chatId, `🏠 <b>Menu Principal</b>\n\nSelecione uma das opções abaixo:`, { parse_mode: 'HTML', ...getMainKeyboard() });
+}
+
 // Mostra o ID de Perfil da pessoa (id único no bot e no site do gerador)
 function sendProfileId(chatId, user) {
   const firstName = escapeHtml(user.first_name || 'Cliente');
@@ -69,7 +85,7 @@ function sendProfileId(chatId, user) {
     `3️⃣ Cole seu ID de Perfil e salve.\n\n` +
     `Depois de vinculado, o comando /saldo mostra o saldo da SUA conta.`;
 
-  bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+  bot.sendMessage(chatId, text, { parse_mode: 'HTML', ...backToMenuKeyboard() });
 }
 
 // Envio seguro: se o botão (URL) for rejeitado pelo Telegram, entrega o texto sem botões
@@ -193,8 +209,10 @@ bot.on('callback_query', async (query) => {
   } else if (action === 'support') {
     bot.sendMessage(chatId, 
       `📞 <b>Atendimento & Suporte:</b>\n\nPrecisa de ajuda ou teve alguma dúvida?\nFale com nosso suporte oficial: ${SUPPORT_USER}`, 
-      { parse_mode: 'HTML' }
+      { parse_mode: 'HTML', ...backToMenuKeyboard() }
     );
+  } else if (action === 'back_to_menu') {
+    sendMainMenu(chatId);
   }
 });
 
@@ -243,7 +261,7 @@ async function handlePurchase(chatId, user) {
         `👤 <b>Cliente:</b> ${customerName}\n` +
         `🔑 <b>Sua Chave Única:</b> <code>${data.token}</code>\n` +
         `⏳ <b>Validade do Link:</b> 24 horas\n\n` +
-        `🔗 <b>Seu Link Individual Camuflado:</b>\n` +
+        `🔗 <b>Seu Link Individual:</b>\n` +
         `👉 ${data.link}\n\n` +
         `💡 <b>Como Ativar:</b>\n` +
         `1. Clique no botão azul abaixo para abrir seu link exclusivo.\n` +
@@ -257,7 +275,8 @@ async function handlePurchase(chatId, user) {
               { text: '🚀 ABRIR MEU ACESSO AGORA', url: data.link }
             ],
             [
-              { text: '🔄 Comprar Outro Link', callback_data: 'buy_now' }
+              { text: '🔄 Comprar Outro Link', callback_data: 'buy_now' },
+              { text: '🏠 Menu Principal', callback_data: 'back_to_menu' }
             ]
           ]
         }
@@ -272,19 +291,19 @@ async function handlePurchase(chatId, user) {
         `O saldo do revendedor na central está abaixo de R$ 2,99.\n` +
         `Por favor, recarregue seu saldo no painel do revendedor para que o bot continue entregando links.\n\n` +
         `💼 <b>Acesse para recarregar:</b> ${PUBLIC_BASE_URL}/revendedor.html`,
-        { parse_mode: 'HTML' }
+        { parse_mode: 'HTML', ...backToMenuKeyboard() }
       );
     } else if (response.status === 403) {
       // Conta Bloqueada
       bot.sendMessage(chatId, 
         '🚫 <b>Acesso Suspenso:</b> A conta deste revendedor foi temporariamente suspensa pelo administrador da plataforma.',
-        { parse_mode: 'HTML' }
+        { parse_mode: 'HTML', ...backToMenuKeyboard() }
       );
     } else {
       // Outro Erro
       bot.sendMessage(chatId, 
         `❌ <b>Falha ao gerar link:</b> ${data.error || 'Erro interno no servidor. Tente novamente em instantes.'}`,
-        { parse_mode: 'HTML' }
+        { parse_mode: 'HTML', ...backToMenuKeyboard() }
       );
     }
 
@@ -317,7 +336,7 @@ async function handleCheckBalance(chatId, user) {
         `🔗 <b>Perfil ainda não vinculado!</b>\n\n` +
         `${data.error || ''}\n\n` +
         `👉 Abra o painel do revendedor, cole seu ID na aba <b>Meu Perfil</b> e tente /saldo novamente.`,
-        { parse_mode: 'HTML' }
+        { parse_mode: 'HTML', ...backToMenuKeyboard() }
       );
     }
 
@@ -342,7 +361,8 @@ async function handleCheckBalance(chatId, user) {
       const options = {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '🌐 Abrir Painel Completo no Navegador', url: `${PUBLIC_BASE_URL}/revendedor.html` }]
+            [{ text: '🌐 Abrir Painel Completo no Navegador', url: `${PUBLIC_BASE_URL}/revendedor.html` }],
+            [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
           ]
         }
       };
@@ -367,5 +387,5 @@ function sendHelpMessage(chatId) {
     `3. Ao abrir o link, você cai na nossa tela de validação segura e é redirecionado instantaneamente para sua conta do Spotify Premium <b>3 meses</b>.\n\n` +
     `Dúvidas? Fale com nosso suporte: ${SUPPORT_USER}`;
 
-  bot.sendMessage(chatId, helpText, { parse_mode: 'HTML' });
+  bot.sendMessage(chatId, helpText, { parse_mode: 'HTML', ...backToMenuKeyboard() });
 }
