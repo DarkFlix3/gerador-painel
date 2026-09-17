@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const path = require('node:path');
@@ -14,6 +16,18 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ==========================================
+// WRAPPER DE HANDLERS ASYNC
+// (Express 4 não captura rejeições de Promise — este patch encaminha
+//  qualquer erro de handler assíncrono para o middleware de erro final)
+// ==========================================
+['get', 'post', 'put', 'delete', 'patch'].forEach((method) => {
+  const original = app[method].bind(app);
+  app[method] = (routePath, ...handlers) => original(routePath, ...handlers.map((h) =>
+    h.length >= 4 ? h : (req, res, next) => Promise.resolve(h(req, res, next)).catch(next)
+  ));
+});
 
 // Helper to get client IP
 const getClientIp = (req) => {
@@ -45,7 +59,7 @@ const adminAuth = (req, res, next) => {
 };
 
 // 2. Reseller User Auth (JWT do Painel do Revendedor)
-const resellerUserAuth = (req, res, next) => {
+const resellerUserAuth = async (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ success: false, error: 'Acesso restrito a revendedores. Faça login.' });
@@ -58,7 +72,7 @@ const resellerUserAuth = (req, res, next) => {
       return res.status(403).json({ success: false, error: 'Token inválido para área de revendedor.' });
     }
 
-    const reseller = dbHelpers.db.prepare('SELECT * FROM resellers WHERE id = ?').get(decoded.id);
+    const reseller = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE id = ?').get(decoded.id);
     if (!reseller) {
       return res.status(404).json({ success: false, error: 'Conta de revendedor não encontrada.' });
     }
@@ -75,7 +89,7 @@ const resellerUserAuth = (req, res, next) => {
 };
 
 // 3. Reseller Bot API Auth (Chave de API / Header)
-const resellerBotAuth = (req, res, next) => {
+const resellerBotAuth = async (req, res, next) => {
   const ip = getClientIp(req);
   let apiKey = req.headers['x-api-key'];
   
@@ -99,7 +113,7 @@ const resellerBotAuth = (req, res, next) => {
     });
   }
 
-  const reseller = dbHelpers.db.prepare('SELECT * FROM resellers WHERE api_key = ?').get(apiKey);
+  const reseller = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE api_key = ?').get(apiKey);
 
   if (!reseller) {
     dbHelpers.logError({
@@ -154,9 +168,9 @@ const resellerBotAuth = (req, res, next) => {
 // ==========================================
 // ROTA DO REDIRECIONADOR CAMUFLADO INTELIGENTE
 // ==========================================
-app.get('/r/:token', (req, res) => {
+app.get('/r/:token', async (req, res) => {
   const token = req.params.token.toUpperCase();
-  const generation = dbHelpers.db.prepare('SELECT * FROM generations WHERE token = ?').get(token);
+  const generation = await dbHelpers.db.prepare('SELECT * FROM generations WHERE token = ?').get(token);
 
   if (!generation) {
     return res.status(404).send(`
@@ -203,7 +217,7 @@ app.get('/r/:token', (req, res) => {
     `);
   }
 
-  const settings = dbHelpers.getSettings();
+  const settings = await dbHelpers.getSettings();
   const redirectType = settings.redirect_type || 'animated_splash';
   const destination = generation.target_url;
 
@@ -279,9 +293,10 @@ app.get('/r/:token', (req, res) => {
   `);
 });
 
-app.get('/api/public/info', (req, res) => {
-  const settings = dbHelpers.getSettings();
-  const totalGenerations = dbHelpers.db.prepare('SELECT COUNT(*) as count FROM generations').get().count;
+app.get('/api/public/info', async (req, res) => {
+  const settings = await dbHelpers.getSettings();
+  const genCountRow = await dbHelpers.db.prepare('SELECT COUNT(*) as count FROM generations').get();
+  const totalGenerations = Number(genCountRow ? genCountRow.count : 0);
   
   res.json({
     success: true,
@@ -291,9 +306,9 @@ app.get('/api/public/info', (req, res) => {
   });
 });
 
-app.post('/api/public/generate', (req, res) => {
+app.post('/api/public/generate', async (req, res) => {
   const ip = getClientIp(req);
-  const settings = dbHelpers.getSettings();
+  const settings = await dbHelpers.getSettings();
 
   if (settings.public_generation_enabled !== '1') {
     dbHelpers.logError({
@@ -309,7 +324,7 @@ app.post('/api/public/generate', (req, res) => {
   }
 
   try {
-    const result = dbHelpers.generateLink('public_web', null, ip);
+    const result = await dbHelpers.generateLink('public_web', null, ip);
     res.json({ success: true, data: result });
   } catch (err) {
     dbHelpers.logError({
@@ -331,7 +346,7 @@ app.post('/api/public/generate', (req, res) => {
 // ==========================================
 
 // Cadastro de Revendedor
-app.post('/api/reseller/register', (req, res) => {
+app.post('/api/reseller/register', async (req, res) => {
   const { name, email, password, phone } = req.body;
   const ip = getClientIp(req);
 
@@ -343,7 +358,7 @@ app.post('/api/reseller/register', (req, res) => {
     return res.status(400).json({ success: false, error: 'A senha deve conter no mínimo 6 caracteres.' });
   }
 
-  const existing = dbHelpers.db.prepare('SELECT id FROM resellers WHERE email = ?').get(email.trim().toLowerCase());
+  const existing = await dbHelpers.db.prepare('SELECT id FROM resellers WHERE email = ?').get(email.trim().toLowerCase());
   if (existing) {
     return res.status(400).json({ success: false, error: 'Já existe um revendedor cadastrado com este e-mail.' });
   }
@@ -354,9 +369,9 @@ app.post('/api/reseller/register', (req, res) => {
   const now = new Date().toISOString();
 
   try {
-    const result = dbHelpers.db.prepare(`
+    const result = await dbHelpers.db.prepare(`
       INSERT INTO resellers (name, email, password_hash, phone, api_key, credits, active, blocked, sale_price, cost_per_link, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, 1, 0, 15.00, 2.99, ?)
+      VALUES (?, ?, ?, ?, ?, ?, 1, 0, 15.00, 2.99, ?) RETURNING id
     `).run(
       name.trim(),
       email.trim().toLowerCase(),
@@ -404,7 +419,7 @@ app.post('/api/reseller/register', (req, res) => {
 });
 
 // Login do Revendedor
-app.post('/api/reseller/login', (req, res) => {
+app.post('/api/reseller/login', async (req, res) => {
   const { email, password } = req.body;
   const ip = getClientIp(req);
 
@@ -412,7 +427,7 @@ app.post('/api/reseller/login', (req, res) => {
     return res.status(400).json({ success: false, error: 'Informe e-mail e senha.' });
   }
 
-  const reseller = dbHelpers.db.prepare('SELECT * FROM resellers WHERE email = ?').get(email.trim().toLowerCase());
+  const reseller = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE email = ?').get(email.trim().toLowerCase());
   if (!reseller || !reseller.password_hash || !bcrypt.compareSync(password, reseller.password_hash)) {
     dbHelpers.logError({
       endpoint: '/api/reseller/login',
@@ -474,11 +489,11 @@ app.get('/api/reseller/me', resellerUserAuth, (req, res) => {
 });
 
 // Dashboard e Gráfico do Revendedor
-app.get('/api/reseller/dashboard', resellerUserAuth, (req, res) => {
+app.get('/api/reseller/dashboard', resellerUserAuth, async (req, res) => {
   const resellerId = req.reseller.id;
 
   // KPIs de Vendas
-  const salesSummary = dbHelpers.db.prepare(`
+  const salesSummary = await dbHelpers.db.prepare(`
     SELECT 
       COUNT(*) as total_sales,
       COALESCE(SUM(sale_price), 0) as total_revenue,
@@ -490,7 +505,7 @@ app.get('/api/reseller/dashboard', resellerUserAuth, (req, res) => {
   // Vendas Hoje
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
-  const salesToday = dbHelpers.db.prepare(`
+  const salesToday = await dbHelpers.db.prepare(`
     SELECT 
       COUNT(*) as count,
       COALESCE(SUM(profit), 0) as profit_today
@@ -500,7 +515,7 @@ app.get('/api/reseller/dashboard', resellerUserAuth, (req, res) => {
 
   // Gráfico: Vendas e Lucro nos últimos 7 dias
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
-  const dailySales = dbHelpers.db.prepare(`
+  const dailySales = await dbHelpers.db.prepare(`
     SELECT 
       substr(created_at, 1, 10) as date_day,
       COUNT(*) as count,
@@ -513,7 +528,7 @@ app.get('/api/reseller/dashboard', resellerUserAuth, (req, res) => {
   `).all(resellerId, sevenDaysAgo);
 
   // Últimas 5 vendas
-  const recentSales = dbHelpers.db.prepare(`
+  const recentSales = await dbHelpers.db.prepare(`
     SELECT id, customer_name, customer_id, sale_price, profit, target_url, token, delivery_status, created_at
     FROM sales
     WHERE reseller_id = ?
@@ -526,25 +541,25 @@ app.get('/api/reseller/dashboard', resellerUserAuth, (req, res) => {
     kpis: {
       credits: Number(req.reseller.credits || 0).toFixed(2),
       balance: Number(req.reseller.credits || 0).toFixed(2),
-      totalSales: salesSummary.total_sales,
+      totalSales: Number(salesSummary.total_sales || 0),
       totalRevenue: Number(salesSummary.total_revenue).toFixed(2),
       totalProfit: Number(salesSummary.total_profit).toFixed(2),
-      todaySales: salesToday.count,
+      todaySales: Number(salesToday.count || 0),
       todayProfit: Number(salesToday.profit_today).toFixed(2),
       salePrice: Number(req.reseller.sale_price || 15.00).toFixed(2),
       costPrice: Number(req.reseller.cost_per_link || 2.99).toFixed(2)
     },
-    chart: dailySales,
+    chart: dailySales.map((r) => ({ ...r, count: Number(r.count), daily_profit: Number(r.daily_profit), daily_revenue: Number(r.daily_revenue) })),
     recentSales
   });
 });
 
 // Lista Completa de Clientes e Histórico de Vendas do Revendedor
-app.get('/api/reseller/sales', resellerUserAuth, (req, res) => {
+app.get('/api/reseller/sales', resellerUserAuth, async (req, res) => {
   const resellerId = req.reseller.id;
   const limit = Math.min(parseInt(req.query.limit || '100', 10), 200);
 
-  const sales = dbHelpers.db.prepare(`
+  const sales = await dbHelpers.db.prepare(`
     SELECT id, customer_name, customer_id, customer_contact, sale_price, cost_price, profit, target_url, token, delivery_status, created_at
     FROM sales
     WHERE reseller_id = ?
@@ -556,7 +571,7 @@ app.get('/api/reseller/sales', resellerUserAuth, (req, res) => {
 });
 
 // Atualizar Configuração de Preço de Venda do Revendedor
-app.post('/api/reseller/settings', resellerUserAuth, (req, res) => {
+app.post('/api/reseller/settings', resellerUserAuth, async (req, res) => {
   const { sale_price, name, phone } = req.body;
   const resellerId = req.reseller.id;
 
@@ -568,7 +583,7 @@ app.post('/api/reseller/settings', resellerUserAuth, (req, res) => {
   const updatedName = name && name.trim() ? name.trim() : req.reseller.name;
   const updatedPhone = phone !== undefined ? phone.trim() : req.reseller.phone;
 
-  dbHelpers.db.prepare(`
+  await dbHelpers.db.prepare(`
     UPDATE resellers 
     SET sale_price = ?, name = ?, phone = ?
     WHERE id = ?
@@ -582,9 +597,9 @@ app.post('/api/reseller/settings', resellerUserAuth, (req, res) => {
 });
 
 // Regenerar Chave de API pelo Revendedor
-app.post('/api/reseller/regenerate-key', resellerUserAuth, (req, res) => {
+app.post('/api/reseller/regenerate-key', resellerUserAuth, async (req, res) => {
   const newKey = 'rev_key_' + crypto.randomBytes(16).toString('hex');
-  dbHelpers.db.prepare('UPDATE resellers SET api_key = ? WHERE id = ?').run(newKey, req.reseller.id);
+  await dbHelpers.db.prepare('UPDATE resellers SET api_key = ? WHERE id = ?').run(newKey, req.reseller.id);
 
   res.json({
     success: true,
@@ -594,9 +609,9 @@ app.post('/api/reseller/regenerate-key', resellerUserAuth, (req, res) => {
 });
 
 // Recarregar Saldo / Créditos pelo Revendedor (Valor Mínimo: R$ 15,00)
-app.post('/api/reseller/recharge', resellerUserAuth, (req, res) => {
+app.post('/api/reseller/recharge', resellerUserAuth, async (req, res) => {
   const { credits, amount } = req.body;
-  const settings = dbHelpers.getSettings();
+  const settings = await dbHelpers.getSettings();
   const minAmount = parseFloat(settings.min_recharge_amount || '15.00');
   const costPerCredit = parseFloat(req.reseller.cost_per_link || 2.99);
 
@@ -618,13 +633,13 @@ app.post('/api/reseller/recharge', resellerUserAuth, (req, res) => {
   const now = new Date().toISOString();
 
   // Adiciona o valor em Reais diretamente ao saldo do revendedor
-  dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(credits + ?, 2) WHERE id = ?').run(amountPaid, req.reseller.id);
-  dbHelpers.db.prepare(`
+  await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(credits + ?, 2) WHERE id = ?').run(amountPaid, req.reseller.id);
+  await dbHelpers.db.prepare(`
     INSERT INTO recharges (reseller_id, credits, amount_paid, status, payment_method, created_at)
     VALUES (?, ?, ?, 'approved', 'PIX', ?)
   `).run(req.reseller.id, Math.floor(amountPaid / costPerCredit), amountPaid, now);
 
-  const updated = dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(req.reseller.id);
+  const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(req.reseller.id);
 
   res.json({
     success: true,
@@ -636,7 +651,7 @@ app.post('/api/reseller/recharge', resellerUserAuth, (req, res) => {
 });
 
 // Geração Manual de Link pelo Revendedor usando Saldo em Dinheiro (Desconta R$ 2,99)
-app.post('/api/reseller/generate-manual', resellerUserAuth, (req, res) => {
+app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => {
   const ip = getClientIp(req);
   const reseller = req.reseller;
   const costPrice = parseFloat(reseller.cost_per_link || 2.99);
@@ -658,16 +673,16 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, (req, res) => {
 
   try {
     // Desconta exatamente R$ 2,99 do saldo do revendedor
-    dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(credits - ?, 2) WHERE id = ?').run(costPrice, reseller.id);
+    await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(credits - ?, 2) WHERE id = ?').run(costPrice, reseller.id);
 
     // Gera o link
-    const generation = dbHelpers.generateLink(`painel_manual:${reseller.name}`, reseller.id, ip);
+    const generation = await dbHelpers.generateLink(`painel_manual:${reseller.name}`, reseller.id, ip);
 
     // Registra a venda no histórico de clientes do revendedor
     const now = new Date().toISOString();
-    const saleResult = dbHelpers.db.prepare(`
+    const saleResult = await dbHelpers.db.prepare(`
       INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_id, customer_contact, sale_price, cost_price, profit, delivery_status, created_at)
-      VALUES (?, ?, ?, ?, 'manual_web', ?, ?, ?, ?, 'Entregue (Manual)', ?)
+      VALUES (?, ?, ?, ?, 'manual_web', ?, ?, ?, ?, 'Entregue (Manual)', ?) RETURNING id
     `).run(
       reseller.id,
       generation.token,
@@ -680,7 +695,7 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, (req, res) => {
       now
     );
 
-    const updated = dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
+    const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
 
     res.json({
       success: true,
@@ -703,7 +718,7 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, (req, res) => {
 // ==========================================
 
 // Endpoint acionado pelos Bots (Telegram, Discord, etc.)
-app.post('/api/v1/generate', resellerBotAuth, (req, res) => {
+app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
   const ip = getClientIp(req);
   const reseller = req.reseller;
   const costPrice = parseFloat(reseller.cost_per_link || 2.99);
@@ -741,16 +756,16 @@ app.post('/api/v1/generate', resellerBotAuth, (req, res) => {
 
   try {
     // 3. Decrementa exatamente R$ 2,99 do Saldo do Revendedor
-    dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(credits - ?, 2) WHERE id = ?').run(costPrice, reseller.id);
+    await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(credits - ?, 2) WHERE id = ?').run(costPrice, reseller.id);
 
     // 4. Gera o Link
-    const generation = dbHelpers.generateLink(`bot:${reseller.name}`, reseller.id, ip);
+    const generation = await dbHelpers.generateLink(`bot:${reseller.name}`, reseller.id, ip);
 
     // 5. Registra a Venda no Histórico de Clientes do Revendedor
     const now = new Date().toISOString();
-    const saleResult = dbHelpers.db.prepare(`
+    const saleResult = await dbHelpers.db.prepare(`
       INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_id, customer_contact, sale_price, cost_price, profit, delivery_status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Entregue', ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Entregue', ?) RETURNING id
     `).run(
       reseller.id,
       generation.token,
@@ -764,7 +779,7 @@ app.post('/api/v1/generate', resellerBotAuth, (req, res) => {
       now
     );
 
-    const updated = dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
+    const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
 
     // Resposta Completa para o Bot
     res.json({
@@ -803,9 +818,9 @@ app.post('/api/v1/generate', resellerBotAuth, (req, res) => {
 });
 
 // Consulta de saldo do Revendedor
-app.get('/api/v1/balance', resellerBotAuth, (req, res) => {
+app.get('/api/v1/balance', resellerBotAuth, async (req, res) => {
   const reseller = req.reseller;
-  const stats = dbHelpers.db.prepare(`
+  const stats = await dbHelpers.db.prepare(`
     SELECT COUNT(*) as total_sales, COALESCE(SUM(sale_price), 0) as total_revenue
     FROM sales 
     WHERE reseller_id = ?
@@ -817,8 +832,8 @@ app.get('/api/v1/balance', resellerBotAuth, (req, res) => {
     credits: reseller.credits,
     active: reseller.active === 1 && reseller.blocked === 0,
     sale_price: reseller.sale_price,
-    total_sales: stats.total_sales,
-    total_revenue: stats.total_revenue
+    total_sales: Number(stats.total_sales || 0),
+    total_revenue: Number(stats.total_revenue || 0)
   });
 });
 
@@ -827,7 +842,7 @@ app.get('/api/v1/balance', resellerBotAuth, (req, res) => {
 // ==========================================
 
 // Login Admin
-app.post('/api/admin/login', (req, res) => {
+app.post('/api/admin/login', async (req, res) => {
   const { username, password } = req.body;
   const ip = getClientIp(req);
 
@@ -835,7 +850,7 @@ app.post('/api/admin/login', (req, res) => {
     return res.status(400).json({ success: false, error: 'Informe usuário e senha.' });
   }
 
-  const admin = dbHelpers.db.prepare('SELECT * FROM admins WHERE username = ?').get(username);
+  const admin = await dbHelpers.db.prepare('SELECT * FROM admins WHERE username = ?').get(username);
   if (!admin || !bcrypt.compareSync(password, admin.password_hash)) {
     dbHelpers.logError({
       endpoint: '/api/admin/login',
@@ -867,19 +882,21 @@ app.get('/api/admin/me', adminAuth, (req, res) => {
 });
 
 // Estatísticas Globais do Admin
-app.get('/api/admin/stats', adminAuth, (req, res) => {
-  const totalGenerations = dbHelpers.db.prepare('SELECT COUNT(*) as count FROM generations').get().count;
+app.get('/api/admin/stats', adminAuth, async (req, res) => {
+  const totalGenRow = await dbHelpers.db.prepare('SELECT COUNT(*) as count FROM generations').get();
+  const totalGenerations = Number(totalGenRow ? totalGenRow.count : 0);
   
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
   const todayIso = todayStart.toISOString();
   
-  const todayGenerations = dbHelpers.db.prepare(
+  const todayGenRow = await dbHelpers.db.prepare(
     'SELECT COUNT(*) as count FROM generations WHERE created_at >= ?'
-  ).get(todayIso).count;
+  ).get(todayIso);
+  const todayGenerations = Number(todayGenRow ? todayGenRow.count : 0);
 
   // Revendedores e Vendas Totais da Plataforma
-  const resellerStats = dbHelpers.db.prepare(`
+  const resellerStats = await dbHelpers.db.prepare(`
     SELECT 
       COUNT(*) as total, 
       SUM(CASE WHEN active = 1 AND blocked = 0 THEN 1 ELSE 0 END) as active,
@@ -888,7 +905,7 @@ app.get('/api/admin/stats', adminAuth, (req, res) => {
     FROM resellers
   `).get();
 
-  const platformSales = dbHelpers.db.prepare(`
+  const platformSales = await dbHelpers.db.prepare(`
     SELECT 
       COUNT(*) as total_sales,
       COALESCE(SUM(sale_price), 0) as total_gross_revenue,
@@ -898,13 +915,14 @@ app.get('/api/admin/stats', adminAuth, (req, res) => {
 
   // Erros nas últimas 24h
   const oneDayAgo = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-  const errorsLast24h = dbHelpers.db.prepare(
+  const errorsRow = await dbHelpers.db.prepare(
     'SELECT COUNT(*) as count FROM error_logs WHERE created_at >= ?'
-  ).get(oneDayAgo).count;
+  ).get(oneDayAgo);
+  const errorsLast24h = Number(errorsRow ? errorsRow.count : 0);
 
   // Gráfico: Gerações nos últimos 7 dias
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
-  const rawGenerationsTimeline = dbHelpers.db.prepare(`
+  const rawGenerationsTimeline = await dbHelpers.db.prepare(`
     SELECT substr(created_at, 1, 10) as date_day, COUNT(*) as count
     FROM generations
     WHERE created_at >= ?
@@ -912,7 +930,7 @@ app.get('/api/admin/stats', adminAuth, (req, res) => {
     ORDER BY date_day ASC
   `).all(sevenDaysAgo);
 
-  const rawErrorsTimeline = dbHelpers.db.prepare(`
+  const rawErrorsTimeline = await dbHelpers.db.prepare(`
     SELECT substr(created_at, 1, 10) as date_day, COUNT(*) as count
     FROM error_logs
     WHERE created_at >= ?
@@ -921,7 +939,7 @@ app.get('/api/admin/stats', adminAuth, (req, res) => {
   `).all(sevenDaysAgo);
 
   // Gráfico: Vendas por Revendedor
-  const resellerBreakdown = dbHelpers.db.prepare(`
+  const resellerBreakdown = await dbHelpers.db.prepare(`
     SELECT 
       r.name as label,
       COUNT(s.id) as count
@@ -937,25 +955,25 @@ app.get('/api/admin/stats', adminAuth, (req, res) => {
     kpis: {
       totalGenerations,
       todayGenerations,
-      totalResellers: resellerStats.total || 0,
-      activeResellers: resellerStats.active || 0,
-      blockedResellers: resellerStats.blocked_count || 0,
-      circulatingCredits: resellerStats.total_credits || 0,
-      platformSalesCount: platformSales.total_sales || 0,
+      totalResellers: Number(resellerStats.total || 0),
+      activeResellers: Number(resellerStats.active || 0),
+      blockedResellers: Number(resellerStats.blocked_count || 0),
+      circulatingCredits: Number(resellerStats.total_credits || 0),
+      platformSalesCount: Number(platformSales.total_sales || 0),
       platformGrossRevenue: Number(platformSales.total_gross_revenue || 0).toFixed(2),
       errorsLast24h
     },
     charts: {
-      generationsTimeline: rawGenerationsTimeline,
-      errorsTimeline: rawErrorsTimeline,
-      resellerBreakdown
+      generationsTimeline: rawGenerationsTimeline.map((r) => ({ ...r, count: Number(r.count) })),
+      errorsTimeline: rawErrorsTimeline.map((r) => ({ ...r, count: Number(r.count) })),
+      resellerBreakdown: resellerBreakdown.map((r) => ({ ...r, count: Number(r.count) }))
     }
   });
 });
 
 // Listagem de Todos os Revendedores no Painel Admin (Com Vendas e Faturamento)
-app.get('/api/admin/resellers', adminAuth, (req, res) => {
-  const resellers = dbHelpers.db.prepare(`
+app.get('/api/admin/resellers', adminAuth, async (req, res) => {
+  const resellers = await dbHelpers.db.prepare(`
     SELECT 
       r.id, r.name, r.email, r.phone, r.api_key, r.credits, r.active, r.blocked, 
       r.sale_price, r.cost_per_link, r.notes, r.created_at,
@@ -968,20 +986,30 @@ app.get('/api/admin/resellers', adminAuth, (req, res) => {
     ORDER BY r.id DESC
   `).all();
 
-  res.json({ success: true, data: resellers });
+  res.json({
+    success: true,
+    data: resellers.map((r) => ({
+      ...r,
+      id: Number(r.id),
+      credits: Number(r.credits || 0),
+      total_links_sold: Number(r.total_links_sold || 0),
+      total_revenue_sold: Number(r.total_revenue_sold || 0),
+      total_profit_earned: Number(r.total_profit_earned || 0)
+    }))
+  });
 });
 
 // Bloquear ou Desbloquear Revendedor Instantaneamente
-app.post('/api/admin/resellers/:id/toggle-block', adminAuth, (req, res) => {
+app.post('/api/admin/resellers/:id/toggle-block', adminAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const reseller = dbHelpers.db.prepare('SELECT id, name, blocked FROM resellers WHERE id = ?').get(id);
+  const reseller = await dbHelpers.db.prepare('SELECT id, name, blocked FROM resellers WHERE id = ?').get(id);
 
   if (!reseller) {
     return res.status(404).json({ success: false, error: 'Revendedor não encontrado.' });
   }
 
   const newBlockedState = reseller.blocked === 1 ? 0 : 1;
-  dbHelpers.db.prepare('UPDATE resellers SET blocked = ? WHERE id = ?').run(newBlockedState, id);
+  await dbHelpers.db.prepare('UPDATE resellers SET blocked = ? WHERE id = ?').run(newBlockedState, id);
 
   res.json({
     success: true,
@@ -993,11 +1021,11 @@ app.post('/api/admin/resellers/:id/toggle-block', adminAuth, (req, res) => {
 });
 
 // Adicionar / Ajustar Saldo do Revendedor pelo Admin (em Reais)
-app.post('/api/admin/resellers/:id/credits', adminAuth, (req, res) => {
+app.post('/api/admin/resellers/:id/credits', adminAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const { credits, mode } = req.body; // mode: 'add' or 'set'
 
-  const reseller = dbHelpers.db.prepare('SELECT id, name, credits FROM resellers WHERE id = ?').get(id);
+  const reseller = await dbHelpers.db.prepare('SELECT id, name, credits FROM resellers WHERE id = ?').get(id);
   if (!reseller) {
     return res.status(404).json({ success: false, error: 'Revendedor não encontrado.' });
   }
@@ -1014,7 +1042,7 @@ app.post('/api/admin/resellers/:id/credits', adminAuth, (req, res) => {
 
   finalCredits = Math.max(0, parseFloat(finalCredits.toFixed(2)));
 
-  dbHelpers.db.prepare('UPDATE resellers SET credits = ? WHERE id = ?').run(finalCredits, id);
+  await dbHelpers.db.prepare('UPDATE resellers SET credits = ? WHERE id = ?').run(finalCredits, id);
 
   res.json({
     success: true,
@@ -1025,20 +1053,20 @@ app.post('/api/admin/resellers/:id/credits', adminAuth, (req, res) => {
 });
 
 // Excluir Revendedor
-app.delete('/api/admin/resellers/:id', adminAuth, (req, res) => {
+app.delete('/api/admin/resellers/:id', adminAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  dbHelpers.db.prepare('DELETE FROM sales WHERE reseller_id = ?').run(id);
-  dbHelpers.db.prepare('DELETE FROM recharges WHERE reseller_id = ?').run(id);
-  dbHelpers.db.prepare('DELETE FROM resellers WHERE id = ?').run(id);
+  await dbHelpers.db.prepare('DELETE FROM sales WHERE reseller_id = ?').run(id);
+  await dbHelpers.db.prepare('DELETE FROM recharges WHERE reseller_id = ?').run(id);
+  await dbHelpers.db.prepare('DELETE FROM resellers WHERE id = ?').run(id);
 
   res.json({ success: true, message: 'Revendedor e seus registros foram removidos com sucesso.' });
 });
 
 // Relatório Global de Vendas de Todos os Revendedores
-app.get('/api/admin/all-sales', adminAuth, (req, res) => {
+app.get('/api/admin/all-sales', adminAuth, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || '100', 10), 200);
 
-  const sales = dbHelpers.db.prepare(`
+  const sales = await dbHelpers.db.prepare(`
     SELECT 
       s.id, s.token, s.target_url, s.customer_name, s.customer_id, s.customer_contact, 
       s.sale_price, s.cost_price, s.profit, s.delivery_status, s.created_at,
@@ -1053,7 +1081,7 @@ app.get('/api/admin/all-sales', adminAuth, (req, res) => {
 });
 
 // Logs de Erros
-app.get('/api/admin/logs', adminAuth, (req, res) => {
+app.get('/api/admin/logs', adminAuth, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || '100', 10), 200);
   const source = req.query.source;
 
@@ -1068,21 +1096,21 @@ app.get('/api/admin/logs', adminAuth, (req, res) => {
   query += ' ORDER BY id DESC LIMIT ?';
   params.push(limit);
 
-  const logs = dbHelpers.db.prepare(query).all(...params);
+  const logs = await dbHelpers.db.prepare(query).all(...params);
   res.json({ success: true, data: logs });
 });
 
-app.delete('/api/admin/logs', adminAuth, (req, res) => {
-  dbHelpers.db.prepare('DELETE FROM error_logs').run();
+app.delete('/api/admin/logs', adminAuth, async (req, res) => {
+  await dbHelpers.db.prepare('DELETE FROM error_logs').run();
   res.json({ success: true, message: 'Todos os logs de erro foram limpos com sucesso.' });
 });
 
 // Configurações Globais
-app.get('/api/admin/settings', adminAuth, (req, res) => {
-  res.json({ success: true, data: dbHelpers.getSettings() });
+app.get('/api/admin/settings', adminAuth, async (req, res) => {
+  res.json({ success: true, data: await dbHelpers.getSettings() });
 });
 
-app.post('/api/admin/settings', adminAuth, (req, res) => {
+app.post('/api/admin/settings', adminAuth, async (req, res) => {
   const { 
     target_link, 
     link_mode, 
@@ -1095,26 +1123,75 @@ app.post('/api/admin/settings', adminAuth, (req, res) => {
     public_generation_enabled 
   } = req.body;
 
-  if (target_link !== undefined) dbHelpers.updateSetting('target_link', target_link.trim());
-  if (link_mode !== undefined) dbHelpers.updateSetting('link_mode', link_mode);
-  if (link_template !== undefined) dbHelpers.updateSetting('link_template', link_template.trim());
-  if (app_base_url !== undefined) dbHelpers.updateSetting('app_base_url', app_base_url.trim());
-  if (redirect_type !== undefined) dbHelpers.updateSetting('redirect_type', redirect_type);
-  if (service_name !== undefined) dbHelpers.updateSetting('service_name', service_name.trim());
-  if (token_length !== undefined) dbHelpers.updateSetting('token_length', token_length.toString());
-  if (default_expiry_hours !== undefined) dbHelpers.updateSetting('default_expiry_hours', default_expiry_hours.toString());
-  if (public_generation_enabled !== undefined) dbHelpers.updateSetting('public_generation_enabled', public_generation_enabled ? '1' : '0');
+  if (target_link !== undefined) await dbHelpers.updateSetting('target_link', target_link.trim());
+  if (link_mode !== undefined) await dbHelpers.updateSetting('link_mode', link_mode);
+  if (link_template !== undefined) await dbHelpers.updateSetting('link_template', link_template.trim());
+  if (app_base_url !== undefined) await dbHelpers.updateSetting('app_base_url', app_base_url.trim());
+  if (redirect_type !== undefined) await dbHelpers.updateSetting('redirect_type', redirect_type);
+  if (service_name !== undefined) await dbHelpers.updateSetting('service_name', service_name.trim());
+  if (token_length !== undefined) await dbHelpers.updateSetting('token_length', token_length.toString());
+  if (default_expiry_hours !== undefined) await dbHelpers.updateSetting('default_expiry_hours', default_expiry_hours.toString());
+  if (public_generation_enabled !== undefined) await dbHelpers.updateSetting('public_generation_enabled', public_generation_enabled ? '1' : '0');
 
-  res.json({ success: true, message: 'Configurações atualizadas com sucesso!', data: dbHelpers.getSettings() });
+  res.json({ success: true, message: 'Configurações atualizadas com sucesso!', data: await dbHelpers.getSettings() });
 });
 
-// Inicialização do Servidor
-app.listen(PORT, () => {
-  console.log(`===================================================`);
-  console.log(`🚀 Quantum Link Generator rodando na porta ${PORT}`);
-  console.log(`🔗 Gerador Público:       http://localhost:${PORT}`);
-  console.log(`💼 Portal do Revendedor:  http://localhost:${PORT}/revendedor.html`);
-  console.log(`🛡️  Painel Admin:           http://localhost:${PORT}/admin.html`);
-  console.log(`🤖 API para Bots:          http://localhost:${PORT}/api/v1/generate`);
-  console.log(`===================================================`);
+// ==========================================
+// HEALTH CHECK (usado pelo monitoramento 24/7 e pelo keep-alive do bot)
+// ==========================================
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', backend: dbHelpers.getBackend(), uptime: process.uptime(), time: new Date().toISOString() });
 });
+
+// ==========================================
+// MIDDLEWARE DE ERRO GLOBAL (sempre o último)
+// ==========================================
+app.use((err, req, res, next) => {
+  console.error('[server error]', err && err.message ? err.message : err);
+  dbHelpers.logError({
+    endpoint: req.originalUrl,
+    method: req.method,
+    statusCode: 500,
+    errorType: 'ServerError',
+    message: err && err.message ? err.message : String(err),
+    ip: getClientIp(req),
+    source: 'server',
+    details: err && err.stack ? err.stack : null
+  });
+  if (res.headersSent) {
+    return next(err);
+  }
+  res.status(500).json({ success: false, error: 'Erro interno do servidor. Tente novamente em instantes.' });
+});
+
+// ==========================================
+// INICIALIZAÇÃO DO SERVIDOR
+// (aguarda o banco de dados ficar pronto antes de escutar)
+// ==========================================
+dbHelpers.initDb()
+  .then(async () => {
+    // Nuvem 24/7 (Render): garante que os links gerados usem a URL pública do serviço
+    const autoBaseUrl = (process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '');
+    if (autoBaseUrl) {
+      const settings = await dbHelpers.getSettings();
+      const currentBase = (settings.app_base_url || '').replace(/\/+$/, '');
+      if (currentBase !== autoBaseUrl) {
+        await dbHelpers.updateSetting('app_base_url', autoBaseUrl);
+        console.log(`🔗 app_base_url ajustado automaticamente para: ${autoBaseUrl}`);
+      }
+    }
+    app.listen(PORT, () => {
+      console.log(`===================================================`);
+      console.log(`🚀 Quantum Link Generator rodando na porta ${PORT}`);
+      console.log(`🔗 Gerador Público:       http://localhost:${PORT}`);
+      console.log(`💼 Portal do Revendedor:  http://localhost:${PORT}/revendedor.html`);
+      console.log(`🛡️  Painel Admin:           http://localhost:${PORT}/admin.html`);
+      console.log(`🤖 API para Bots:          http://localhost:${PORT}/api/v1/generate`);
+      console.log(`🗄️  Banco de dados:         ${dbHelpers.getBackend()}`);
+      console.log(`===================================================`);
+    });
+  })
+  .catch((err) => {
+    console.error('Falha ao inicializar o banco de dados:', err);
+    process.exit(1);
+  });

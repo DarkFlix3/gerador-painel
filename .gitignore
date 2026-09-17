@@ -1,6 +1,12 @@
-﻿node_modules/
+node_modules/
 database.sqlite*
 *.log
 .env
 .DS_Store
 Thumbs.db
+
+# Artefatos locais de teste/diagnóstico (não versionar)
+cdp_*.py
+cdp_*.png
+.tunnel_url
+PENTEST_REPORT.md

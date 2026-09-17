@@ -1,0 +1,45 @@
+# ==========================================
+# Render Blueprint — deploy 24/7 do Gerador de Links + Bot Telegram
+# ------------------------------------------
+# Como usar:
+#   1. Suba este repositório no GitHub
+#   2. No Render: New -> Blueprint -> selecione o repo
+#   3. Preencha os valores marcados como "sync: false" no painel:
+#      - TELEGRAM_BOT_TOKEN
+#      - RESELLER_API_KEY
+#      - DATABASE_URL  (string de conexão do Neon)
+#      - JWT_SECRET    (se preferir, deixe o Render gerar)
+#   4. Deploy!
+# ==========================================
+
+services:
+  - type: web
+    name: gerador-painel
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node start.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: RESELLER_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      # API_BASE_URL: se ficar vazio, o bot usa o RENDER_EXTERNAL_URL automaticamente
+      - key: API_BASE_URL
+        value: ""
+      - key: PUBLIC_BASE_URL
+        value: ""
+      - key: DEFAULT_SALE_PRICE
+        value: "15.00"
+      - key: SUPPORT_USER
+        value: "@seu_suporte"
+      - key: KEEP_ALIVE_INTERVAL_MINUTES
+        value: "5"

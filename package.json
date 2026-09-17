@@ -5,7 +5,12 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "bot": "node bot.js"
+    "bot": "node bot.js",
+    "start:all": "node start.js",
+    "migrate": "node scripts/migrate-to-pg.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -13,6 +18,7 @@
     "dotenv": "^17.4.2",
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
-    "node-telegram-bot-api": "^2.1.0"
+    "node-telegram-bot-api": "^0.66.0",
+    "pg": "^8.23.0"
   }
 }

@@ -3,10 +3,16 @@ const TelegramBot = require('node-telegram-bot-api');
 
 // Configurações do Bot
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3000';
+// No Render, se API_BASE_URL não for definida, usa a URL pública automática do serviço
+const API_BASE_URL = process.env.API_BASE_URL || process.env.RENDER_EXTERNAL_URL || 'http://localhost:3000';
+// URL pública exibida ao cliente nos botões inline (Telegram exige HTTPS)
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || API_BASE_URL).replace(/\/+$/, '');
 const RESELLER_API_KEY = process.env.RESELLER_API_KEY;
 const DEFAULT_SALE_PRICE = parseFloat(process.env.DEFAULT_SALE_PRICE || '15.00');
 const SUPPORT_USER = process.env.SUPPORT_USER || '@seu_suporte';
+// Intervalo (em minutos) do keep-alive que pinga a própria API para evitar que
+// o serviço gratuito do Render "durma" por inatividade. 0 desliga o ping.
+const KEEP_ALIVE_MINUTES = parseInt(process.env.KEEP_ALIVE_INTERVAL_MINUTES || '5', 10);
 
 if (!BOT_TOKEN) {
   console.error('\n❌ ERRO: O TELEGRAM_BOT_TOKEN não foi configurado!');
@@ -24,6 +30,54 @@ if (!RESELLER_API_KEY) {
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
+// O bot NUNCA pode morrer por causa de um envio que falhou (ex: URL de botão inválida)
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason && reason.message ? reason.message : reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err && err.message ? err.message : err);
+});
+bot.on('polling_error', (err) => {
+  console.error('[polling_error]', err && err.message ? err.message : err);
+});
+
+// Envio seguro: se o botão (URL) for rejeitado pelo Telegram, entrega o texto sem botões
+function safeSend(chatId, text, options) {
+  const opts = options || {};
+  return bot.sendMessage(chatId, text, opts).catch((err) => {
+    console.error('[send fail]', err && err.message ? err.message : err);
+    if (opts.reply_markup) {
+      const fallback = Object.assign({}, opts);
+      delete fallback.reply_markup;
+      return bot.sendMessage(chatId, text, fallback).catch((e2) => {
+        console.error('[send fail (sem botão)]', e2 && e2.message ? e2.message : e2);
+      });
+    }
+  });
+}
+
+// Keep-alive: enquanto o bot roda, ele pinga o /health da própria API a cada
+// KEEP_ALIVE_MINUTES. No Render, requisições recebidas contam como atividade e
+// impedem o spin-down do serviço gratuito (24/7 sem UptimeRobot).
+function startKeepAlive() {
+  if (!KEEP_ALIVE_MINUTES || KEEP_ALIVE_MINUTES <= 0) {
+    console.log('⏸️  Keep-alive desabilitado (KEEP_ALIVE_INTERVAL_MINUTES=0).');
+    return;
+  }
+  const ping = async () => {
+    try {
+      const r = await fetch(`${API_BASE_URL}/health`, { signal: AbortSignal.timeout(10000) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      console.log(`[keep-alive] ${new Date().toISOString()} -> /health OK (${API_BASE_URL})`);
+    } catch (err) {
+      console.error('[keep-alive] falha ao pingar API:', err && err.message ? err.message : err);
+    }
+  };
+  ping(); // ping imediato ao subir
+  setInterval(ping, KEEP_ALIVE_MINUTES * 60 * 1000);
+  console.log(`🔁 Keep-alive ativo: ping em /health a cada ${KEEP_ALIVE_MINUTES} min.`);
+}
+
 console.log('===================================================');
 console.log('🤖 Bot do Telegram de Vendas Conectado com Sucesso!');
 console.log(`🌐 Conectado à API em: ${API_BASE_URL}`);
@@ -36,7 +90,7 @@ function getMainKeyboard() {
     reply_markup: {
       inline_keyboard: [
         [
-          { text: '🛒 Comprar Acesso Agora (R$ ' + DEFAULT_SALE_PRICE.toFixed(2).replace('.', ',') + ')', callback_data: 'buy_now' }
+          { text: '🛒 Comprar Spotify 3 Meses (R$ ' + DEFAULT_SALE_PRICE.toFixed(2).replace('.', ',') + ')', callback_data: 'buy_now' }
         ],
         [
           { text: 'ℹ️ Como Funciona', callback_data: 'how_it_works' },
@@ -53,10 +107,11 @@ function getMainKeyboard() {
 // Comando /start
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
+  console.log('[recv] /start de', chatId, msg.from && msg.from.first_name);
   const firstName = msg.from.first_name || 'Cliente';
 
   const welcomeText = 
-    `👋 Olá, <b>${firstName}</b>! Seja muito bem-vindo(a) ao nosso <b>Gerador Automático de Acesso Spotify Premium</b>!\n\n` +
+    `👋 Olá, <b>${firstName}</b>! Seja muito bem-vindo(a) ao nosso <b>Gerador Automático de Acesso Spotify Premium 3 MESES</b>!\n\n` +
     `⚡ <b>Entrega 100% Automática e Instantânea</b>\n` +
     `🎧 Receba seu link exclusivo na hora direto aqui no chat.\n` +
     `💰 Preço Especial: <b>R$ ${DEFAULT_SALE_PRICE.toFixed(2).replace('.', ',')}</b>\n\n` +
@@ -139,9 +194,10 @@ async function handlePurchase(chatId, user) {
 
     if (response.status === 200 && data.success) {
       // SUCESSO! Link gerado e saldo debitado em R$ 2,99
+      console.log('[venda] link gerado:', data.token, 'saldo restante:', data.balance_remaining);
       const deliveryText = 
         `🎉 <b>PAGAMENTO CONFIRMADO & ACESSO LIBERADO!</b>\n\n` +
-        `🎧 <b>Produto:</b> Acesso Individual Spotify Premium\n` +
+        `🎧 <b>Produto:</b> Spotify Premium 3 Meses (Acesso Individual)\n` +
         `👤 <b>Cliente:</b> ${customerName}\n` +
         `🔑 <b>Sua Chave Única:</b> <code>${data.token}</code>\n` +
         `⏳ <b>Validade do Link:</b> 24 horas\n\n` +
@@ -149,7 +205,7 @@ async function handlePurchase(chatId, user) {
         `👉 ${data.link}\n\n` +
         `💡 <b>Como Ativar:</b>\n` +
         `1. Clique no botão azul abaixo para abrir seu link exclusivo.\n` +
-        `2. Conecte sua conta do Spotify e aproveite suas músicas sem anúncios!\n\n` +
+        `2. Conecte sua conta do Spotify e aproveite seus <b>3 meses</b> de Premium sem anúncios!\n\n` +
         `<i>Obrigado por comprar conosco!</i>`;
 
       const linkKeyboard = {
@@ -165,7 +221,7 @@ async function handlePurchase(chatId, user) {
         }
       };
 
-      bot.sendMessage(chatId, deliveryText, { parse_mode: 'HTML', ...linkKeyboard });
+      safeSend(chatId, deliveryText, { parse_mode: 'HTML', ...linkKeyboard });
 
     } else if (response.status === 402) {
       // Saldo Insuficiente (< R$ 2,99)
@@ -173,7 +229,7 @@ async function handlePurchase(chatId, user) {
         `⚠️ <b>Estoque Temporariamente Esgotado!</b>\n\n` +
         `O saldo do revendedor na central está abaixo de R$ 2,99.\n` +
         `Por favor, recarregue seu saldo no painel do revendedor para que o bot continue entregando links.\n\n` +
-        `💼 <b>Acesse para recarregar:</b> ${API_BASE_URL}/revendedor.html`,
+        `💼 <b>Acesse para recarregar:</b> ${PUBLIC_BASE_URL}/revendedor.html`,
         { parse_mode: 'HTML' }
       );
     } else if (response.status === 403) {
@@ -230,12 +286,12 @@ async function handleCheckBalance(chatId) {
       const options = {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '🌐 Abrir Painel Completo no Navegador', url: `${API_BASE_URL}/revendedor.html` }]
+            [{ text: '🌐 Abrir Painel Completo no Navegador', url: `${PUBLIC_BASE_URL}/revendedor.html` }]
           ]
         }
       };
 
-      bot.sendMessage(chatId, balanceText, { parse_mode: 'HTML', ...options });
+      safeSend(chatId, balanceText, { parse_mode: 'HTML', ...options });
     } else {
       bot.sendMessage(chatId, '❌ Erro ao consultar saldo: ' + (data.error || 'Chave inválida.'));
     }
@@ -244,13 +300,15 @@ async function handleCheckBalance(chatId) {
   }
 }
 
+startKeepAlive();
+
 // Mensagem de Ajuda
 function sendHelpMessage(chatId) {
   const helpText = 
     `ℹ️ <b>COMO FUNCIONA O GERADOR:</b>\n\n` +
     `1. Cada link é gerado <b>individualmente e de forma única</b> para você.\n` +
     `2. O link possui tecnologia de camuflagem inteligente para garantir sua ativação sem conflitos.\n` +
-    `3. Ao abrir o link, você cai na nossa tela de validação segura e é redirecionado instantaneamente para sua conta do Spotify Premium.\n\n` +
+    `3. Ao abrir o link, você cai na nossa tela de validação segura e é redirecionado instantaneamente para sua conta do Spotify Premium <b>3 meses</b>.\n\n` +
     `Dúvidas? Fale com nosso suporte: ${SUPPORT_USER}`;
 
   bot.sendMessage(chatId, helpText, { parse_mode: 'HTML' });
