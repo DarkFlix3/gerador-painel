@@ -12,6 +12,14 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_jwt_key_gerador_painel_2026';
 
+// ==========================================
+// BOT DE ALERTAS DE VENDAS (TELEGRAM)
+// Usa um SEGUNDO bot (criado no @BotFather) para notificar cada nova compra.
+// Se NOTIFIER_BOT_TOKEN estiver vazio, usa o token do bot principal.
+// ==========================================
+const NOTIFIER_BOT_TOKEN = process.env.NOTIFIER_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '';
+const NOTIFY_CHAT_ID = process.env.NOTIFY_CHAT_ID || '';
+
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -33,6 +41,79 @@ app.use(express.static(path.join(__dirname, 'public')));
 const getClientIp = (req) => {
   return req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
 };
+
+// Helper: mascara dados do cliente (ex: 903***28)
+const maskCustomer = (value) => {
+  const s = String(value || '').trim();
+  if (!s) return '—';
+  if (s.length <= 4) return '***';
+  return s.slice(0, 3) + '***' + s.slice(-2);
+};
+
+const formatMoneyBr = (value) => {
+  const n = parseFloat(value || 0);
+  return 'R$ ' + n.toFixed(2).replace('.', ',');
+};
+
+// Envia alerta de nova venda para o bot de notificações do dono
+async function notifyNewSale(opts = {}) {
+  const {
+    service = 'Spotify Premium',
+    customerName,
+    customerId,
+    customerContact,
+    plan = '3 Meses (Acesso Individual)',
+    orderNumber,
+    qty = 1,
+    salePrice,
+    costPrice,
+    profit,
+    resellerName,
+    balanceRemaining,
+    startup = false
+  } = opts;
+
+  if (!NOTIFIER_BOT_TOKEN || !NOTIFY_CHAT_ID) return;
+  if (typeof fetch !== 'function') return; // Node < 18 sem fetch global
+
+  let lines;
+  if (startup) {
+    lines = [
+      '✅ <b>Sistema de Alertas de Vendas ativo!</b>',
+      '',
+      '🟢 Notificações de novas compras habilitadas.',
+      `🕒 ${new Date().toLocaleString('pt-BR')}`
+    ];
+  } else {
+    const who = maskCustomer(customerId || customerName || customerContact);
+    lines = [
+      '🎉 Nova Compra!',
+      '',
+      `▪️ Serviço: ${service}`,
+      `👤 Por: (${who})`,
+      `🛍️ Plano: ${plan}`,
+      `🔖 Nº do Pedido: ${orderNumber}`,
+      `   Qtd.: ${qty}`,
+      `📈 Total da Compra: ${salePrice != null && salePrice > 0 ? formatMoneyBr(salePrice) : 'Grátis'}`
+    ];
+    if (resellerName) lines.push(`🧑‍💼 Revendedor: ${resellerName}`);
+    if (costPrice != null) lines.push(`💸 Custo: ${formatMoneyBr(costPrice)}`);
+    if (profit != null) lines.push(`📊 Lucro: ${formatMoneyBr(profit)}`);
+    if (balanceRemaining != null) lines.push(`💰 Saldo Restante: ${formatMoneyBr(balanceRemaining)}`);
+    lines.push(`🕒 ${new Date().toLocaleString('pt-BR')}`);
+  }
+
+  const resp = await fetch(`https://api.telegram.org/bot${NOTIFIER_BOT_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: NOTIFY_CHAT_ID, text: lines.join('\n'), parse_mode: 'HTML' })
+  });
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`Telegram sendMessage falhou (HTTP ${resp.status}): ${body.slice(0, 300)}`);
+  }
+  console.log(`🔔 Alerta enviado: pedido ${orderNumber || 'INIT'}`);
+}
 
 // ==========================================
 // MIDDLEWARES DE AUTENTICAÇÃO
@@ -349,6 +430,19 @@ app.post('/api/public/generate', async (req, res) => {
 
   try {
     const result = await dbHelpers.generateLink('public_web', null, ip);
+
+    // Alerta de geração via site público
+    notifyNewSale({
+      service: 'Spotify Premium',
+      customerName: 'Visitante (Site Gerador)',
+      customerId: ip,
+      plan: '3 Meses (Acesso Individual)',
+      orderNumber: result.token,
+      qty: 1,
+      salePrice: 0,
+      resellerName: null
+    }).catch((err) => console.error('notifyNewSale (public) falhou:', err.message));
+
     res.json({ success: true, data: result });
   } catch (err) {
     dbHelpers.logError({
@@ -740,6 +834,22 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
 
     const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
 
+    // Alerta de venda manual (painel do revendedor)
+    notifyNewSale({
+      service: 'Spotify Premium',
+      customerName: finalCustomerName,
+      customerId: reseller.name,
+      customerContact: finalContact,
+      plan: '3 Meses (Acesso Individual)',
+      orderNumber: generation.token,
+      qty: 1,
+      salePrice: finalSalePrice,
+      costPrice,
+      profit,
+      resellerName: reseller.name,
+      balanceRemaining: updated.credits
+    }).catch((err) => console.error('notifyNewSale (manual) falhou:', err.message));
+
     res.json({
       success: true,
       message: 'Link gerado com sucesso! R$ 2,99 descontado do seu saldo.',
@@ -823,6 +933,22 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
     );
 
     const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
+
+    // Alerta de venda via bot (principal fonte de compras)
+    notifyNewSale({
+      service: 'Spotify Premium',
+      customerName: finalCustomerName,
+      customerId: finalCustomerId,
+      customerContact: finalContact,
+      plan: String((req.body && (req.body.plan || req.body.product)) || '3 Meses (Acesso Individual)').trim(),
+      orderNumber: generation.token,
+      qty: 1,
+      salePrice: finalSalePrice,
+      costPrice,
+      profit,
+      resellerName: reseller.name,
+      balanceRemaining: updated.credits
+    }).catch((err) => console.error('notifyNewSale (v1) falhou:', err.message));
 
     // Resposta Completa para o Bot
     res.json({
@@ -1227,6 +1353,13 @@ dbHelpers.initDb()
     }
     app.listen(PORT, () => {
       console.log(`===================================================`);
+
+      // Ping de ativação do sistema de alertas (assim que o servidor subir)
+      if (NOTIFIER_BOT_TOKEN && NOTIFY_CHAT_ID) {
+        notifyNewSale({ startup: true }).catch((err) => console.error('Ping de ativação de alertas falhou:', err.message));
+      } else {
+        console.log('🔕 Alertas de venda desativados — defina NOTIFIER_BOT_TOKEN e NOTIFY_CHAT_ID.');
+      }
       console.log(`🚀 Quantum Link Generator rodando na porta ${PORT}`);
       console.log(`🔗 Gerador Público:       http://localhost:${PORT}`);
       console.log(`💼 Portal do Revendedor:  http://localhost:${PORT}/revendedor.html`);
