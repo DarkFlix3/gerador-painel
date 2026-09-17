@@ -148,7 +148,8 @@ async function syncTelegramProfile() {
     }
     if (photoBuf) {
       const form = new FormData();
-      form.append('photo', new Blob([photoBuf], { type: 'image/jpeg' }), 'bot_photo.jpg');
+      form.append('photo', JSON.stringify({ type: 'static', photo: 'attach://bot_photo' }));
+      form.append('bot_photo', new Blob([photoBuf], { type: 'image/jpeg' }), 'bot_photo.jpg');
       const setRes = await fetch(`https://api.telegram.org/bot${NOTIFIER_BOT_TOKEN}/setMyProfilePhoto`, { method: 'POST', body: form });
       const setJson = await setRes.json();
       if (setJson.ok) console.log('🖼️ Foto do bot de alertas atualizada com a foto do bot de vendas.');
