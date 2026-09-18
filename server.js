@@ -202,8 +202,9 @@ async function notifyRecharge({ reseller, amountPaid, method = 'PIX' }) {
   if (!NOTIFIER_BOT_TOKEN || !NOTIFY_CHAT_ID) return;
   if (typeof fetch !== 'function') return;
 
-  const phone = (reseller && reseller.phone) || (reseller && reseller.telegram_id) || '';
-  const userLabel = maskUserId(phone);
+  // Prioriza o ID do Telegram (identifica o revendedor no bot); phone é fallback
+  const userId = (reseller && reseller.telegram_id) || (reseller && reseller.phone) || '';
+  const userLabel = maskUserId(userId);
   const methodLabel = `Depósito via ${escHtml(method)}${String(method).toLowerCase().includes('binance') ? ' 🟡' : ''}`;
 
   const lines = [
