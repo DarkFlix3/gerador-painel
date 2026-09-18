@@ -173,6 +173,9 @@ function getMainKeyboard() {
           { text: '💬 Suporte', callback_data: 'support' }
         ],
         [
+          { text: '📜 Política da Loja', callback_data: 'store_policy' }
+        ],
+        [
           { text: '💳 Meu Saldo & Vendas (Revendedor)', callback_data: 'check_balance' }
         ],
         [
@@ -255,6 +258,19 @@ bot.on('callback_query', async (query) => {
   } else if (action === 'support') {
     bot.sendMessage(chatId, 
       `📞 <b>Atendimento & Suporte:</b>\n\nPrecisa de ajuda ou teve alguma dúvida?\nFale com nosso suporte oficial: ${SUPPORT_USER}`, 
+      { parse_mode: 'HTML', ...backToMenuKeyboard() }
+    );
+  } else if (action === 'store_policy') {
+    bot.sendMessage(chatId, 
+      `📄 <b>POLÍTICAS DA LOJA</b>\n━━━━━━━━━━━━━━━\n` +
+      `⚡️ <b>Entrega</b> — automática, direto no chat após a confirmação.\n` +
+      `🛡 <b>Falhas</b> — se o fornecedor não entregar, o valor volta para o seu saldo automaticamente.\n` +
+      `💳 <b>Saldo</b> — créditos são para uso na loja e não são reembolsáveis em dinheiro.\n` +
+      `🚫 <b>Uso indevido</b> — fraude ou chargeback resulta em bloqueio permanente.\n` +
+      `⚠️ <b>Garantia</b> — Os serviços ofertados não possuem garantia.\n` +
+      `⚠️ <b>Valores</b> — Os valores dos produtos podem sofrer variações conforme a disponibilidade no mercado.\n` +
+      `━━━━━━━━━━━━━━━\n\n` +
+      `Dúvidas? Fale com o suporte para qualquer dúvida.`, 
       { parse_mode: 'HTML', ...backToMenuKeyboard() }
     );
   } else if (action === 'back_to_menu') {
