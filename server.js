@@ -1496,24 +1496,397 @@ app.get('/api/reseller/mp/payments', resellerUserAuth, async (req, res) => {
 });
 
 // Geração Manual de Link pelo Revendedor usando Saldo em Dinheiro (Desconta R$ 2,99)
+
+// ==========================================
+// CATALOGO DE PRODUTOS E CUPONS (portado do painel lovelygemi)
+// - Produtos: catalogo com custo e preco fixo ou margem % sobre o custo
+// - Cupons: percentual ou valor fixo, com limite de usos e validade
+// - Integrado nos fluxos: painel manual do revendedor e API de bots (/api/v1/generate)
+// ==========================================
+
+function roundMoney(v) {
+  return Math.round(v * 100) / 100;
+}
+
+// Resolve produto do catalogo + cupom + preco final para um pedido.
+// Body aceito: { product_id, coupon_code, sale_price }
+async function resolveOrderPricing(req, reseller) {
+  const body = (req && req.body) || {};
+  const result = {
+    error: null,
+    product: null,
+    productId: null,
+    productName: null,
+    coupon: null,
+    couponId: null,
+    couponCode: null,
+    costPrice: parseFloat(reseller.cost_per_link || 2.99),
+    baseSalePrice: null,
+    discount: 0,
+    finalSalePrice: null
+  };
+
+  // 1. Produto do catalogo (opcional)
+  if (body.product_id !== undefined && body.product_id !== null && String(body.product_id).trim() !== '') {
+    const pid = parseInt(body.product_id, 10);
+    if (isNaN(pid)) {
+      return { ...result, error: 'ID de produto invalido.' };
+    }
+    const product = await dbHelpers.db.prepare('SELECT * FROM products WHERE id = ?').get(pid);
+    if (!product || !Number(product.active)) {
+      return { ...result, error: 'Produto nao encontrado ou inativo.' };
+    }
+    result.product = product;
+    result.productId = Number(product.id);
+    result.productName = product.name;
+    result.costPrice = parseFloat(product.cost_price || 0);
+  }
+
+  // 2. Preco-base de venda
+  let baseSalePrice;
+  if (result.product) {
+    const priceType = result.product.price_type || 'fixed';
+    const priceValue = parseFloat(result.product.price_value || 0);
+    if (priceType === 'margin') {
+      baseSalePrice = roundMoney(result.costPrice * (1 + priceValue / 100));
+    } else {
+      baseSalePrice = roundMoney(priceValue);
+    }
+  } else {
+    const bodyPrice = (body.sale_price !== undefined && body.sale_price !== null && String(body.sale_price).trim() !== '')
+      ? parseFloat(body.sale_price)
+      : NaN;
+    baseSalePrice = (!isNaN(bodyPrice) && bodyPrice > 0)
+      ? roundMoney(bodyPrice)
+      : roundMoney(parseFloat(reseller.sale_price || 15.00));
+  }
+  result.baseSalePrice = baseSalePrice;
+
+  // 3. Cupom (opcional)
+  if (body.coupon_code !== undefined && body.coupon_code !== null && String(body.coupon_code).trim() !== '') {
+    const code = String(body.coupon_code).trim().toUpperCase();
+    const coupon = await dbHelpers.db.prepare('SELECT * FROM coupons WHERE code = ?').get(code);
+    if (!coupon || !Number(coupon.active)) {
+      return { ...result, error: 'Cupom "' + code + '" invalido ou inativo.' };
+    }
+    if (coupon.expires_at && new Date(coupon.expires_at).getTime() < Date.now()) {
+      return { ...result, error: 'Cupom "' + code + '" expirado.' };
+    }
+    const usedCount = Number(coupon.used_count || 0);
+    const maxUses = Number(coupon.max_uses || 0);
+    if (maxUses > 0 && usedCount >= maxUses) {
+      return { ...result, error: 'Cupom "' + code + '" atingiu o limite de usos.' };
+    }
+    const value = parseFloat(coupon.value || 0);
+    let discount = 0;
+    if ((coupon.type || 'percent') === 'percent') {
+      discount = roundMoney(baseSalePrice * (value / 100));
+    } else {
+      discount = roundMoney(value);
+    }
+    discount = Math.min(discount, baseSalePrice);
+    result.coupon = coupon;
+    result.couponId = coupon.id ? Number(coupon.id) : null;
+    result.couponCode = coupon.code;
+    result.discount = discount;
+  }
+
+  result.finalSalePrice = roundMoney(Math.max(0, result.baseSalePrice - result.discount));
+  return result;
+}
+
+// Incrementa o contador de usos do cupom (fire-and-forget, nunca quebra o fluxo)
+async function consumeCoupon(couponId) {
+  if (!couponId) return;
+  try {
+    await dbHelpers.db.prepare('UPDATE coupons SET used_count = used_count + 1 WHERE id = ?').run(couponId);
+  } catch (e) {
+    console.error('[consumeCoupon] falhou:', e.message);
+  }
+}
+
+// ---------- PRODUTOS: PAINEL ADMIN ----------
+
+app.get('/api/admin/products', adminAuth, async (req, res) => {
+  const products = await dbHelpers.db.prepare('SELECT * FROM products ORDER BY sort_order ASC, id ASC').all();
+  res.json({
+    success: true,
+    data: products.map((p) => ({
+      ...p,
+      id: Number(p.id),
+      cost_price: Number(p.cost_price || 0),
+      price_value: Number(p.price_value || 0),
+      active: Number(p.active || 0),
+      sort_order: Number(p.sort_order || 0)
+    }))
+  });
+});
+
+app.post('/api/admin/products', adminAuth, async (req, res) => {
+  const { name, description, cost_price, price_type, price_value, active, sort_order } = req.body || {};
+
+  if (!name || !String(name).trim()) {
+    return res.status(400).json({ success: false, error: 'Informe o nome do produto.' });
+  }
+  const cost = parseFloat(cost_price);
+  if (isNaN(cost) || cost < 0) {
+    return res.status(400).json({ success: false, error: 'Custo do produto invalido.' });
+  }
+  const type = price_type === 'margin' ? 'margin' : 'fixed';
+  const price = parseFloat(price_value);
+  if (isNaN(price) || price < 0) {
+    return res.status(400).json({ success: false, error: type === 'margin' ? 'Margem invalida.' : 'Preco de venda invalido.' });
+  }
+
+  const result = await dbHelpers.db.prepare(`
+    INSERT INTO products (name, description, cost_price, price_type, price_value, active, sort_order, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    String(name).trim(),
+    description ? String(description).trim() : null,
+    cost,
+    type,
+    price,
+    (active === 0 || active === '0' || active === false) ? 0 : 1,
+    parseInt(sort_order, 10) || 0,
+    new Date().toISOString()
+  );
+
+  const product = await dbHelpers.db.prepare('SELECT * FROM products WHERE id = ?').get(result.lastInsertRowid);
+  res.json({ success: true, message: 'Produto criado com sucesso!', data: product });
+});
+
+
+app.put('/api/admin/products/:id', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const product = await dbHelpers.db.prepare('SELECT * FROM products WHERE id = ?').get(id);
+  if (!product) {
+    return res.status(404).json({ success: false, error: 'Produto nao encontrado.' });
+  }
+
+  const body = req.body || {};
+  const name = body.name !== undefined ? String(body.name).trim() : product.name;
+  if (!name) {
+    return res.status(400).json({ success: false, error: 'Informe o nome do produto.' });
+  }
+  const description = body.description !== undefined ? (body.description ? String(body.description).trim() : null) : product.description;
+  const cost = body.cost_price !== undefined ? parseFloat(body.cost_price) : parseFloat(product.cost_price || 0);
+  if (isNaN(cost) || cost < 0) {
+    return res.status(400).json({ success: false, error: 'Custo do produto invalido.' });
+  }
+  const type = body.price_type !== undefined ? (body.price_type === 'margin' ? 'margin' : 'fixed') : (product.price_type || 'fixed');
+  const price = body.price_value !== undefined ? parseFloat(body.price_value) : parseFloat(product.price_value || 0);
+  if (isNaN(price) || price < 0) {
+    return res.status(400).json({ success: false, error: type === 'margin' ? 'Margem invalida.' : 'Preco de venda invalido.' });
+  }
+  const active = body.active !== undefined ? ((body.active === 0 || body.active === '0' || body.active === false) ? 0 : 1) : Number(product.active || 0);
+  const sortOrder = body.sort_order !== undefined ? (parseInt(body.sort_order, 10) || 0) : Number(product.sort_order || 0);
+
+  await dbHelpers.db.prepare(`
+    UPDATE products SET name = ?, description = ?, cost_price = ?, price_type = ?, price_value = ?, active = ?, sort_order = ?
+    WHERE id = ?
+  `).run(name, description, cost, type, price, active, sortOrder, id);
+
+  const updated = await dbHelpers.db.prepare('SELECT * FROM products WHERE id = ?').get(id);
+  res.json({ success: true, message: 'Produto atualizado com sucesso!', data: updated });
+});
+
+app.delete('/api/admin/products/:id', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const product = await dbHelpers.db.prepare('SELECT id, name FROM products WHERE id = ?').get(id);
+  if (!product) {
+    return res.status(404).json({ success: false, error: 'Produto nao encontrado.' });
+  }
+  await dbHelpers.db.prepare('DELETE FROM products WHERE id = ?').run(id);
+  res.json({ success: true, message: 'Produto "' + product.name + '" removido com sucesso! (historico de vendas preservado)' });
+});
+
+// ---------- CUPONS: PAINEL ADMIN ----------
+
+app.get('/api/admin/coupons', adminAuth, async (req, res) => {
+  const coupons = await dbHelpers.db.prepare('SELECT * FROM coupons ORDER BY id DESC').all();
+  res.json({
+    success: true,
+    data: coupons.map((c) => ({
+      ...c,
+      id: Number(c.id),
+      value: Number(c.value || 0),
+      max_uses: Number(c.max_uses || 0),
+      used_count: Number(c.used_count || 0),
+      active: Number(c.active || 0)
+    }))
+  });
+});
+
+app.post('/api/admin/coupons', adminAuth, async (req, res) => {
+  const { code, type, value, max_uses, expires_at, active } = req.body || {};
+
+  if (!code || !String(code).trim()) {
+    return res.status(400).json({ success: false, error: 'Informe o codigo do cupom.' });
+  }
+  const finalCode = String(code).trim().toUpperCase();
+  const couponType = type === 'fixed' ? 'fixed' : 'percent';
+  const couponValue = parseFloat(value);
+  if (isNaN(couponValue) || couponValue <= 0) {
+    return res.status(400).json({ success: false, error: 'Valor do cupom invalido.' });
+  }
+  if (couponType === 'percent' && couponValue > 100) {
+    return res.status(400).json({ success: false, error: 'Cupom percentual nao pode ser maior que 100%.' });
+  }
+  const maxUses = max_uses !== undefined && max_uses !== null && String(max_uses).trim() !== '' ? parseInt(max_uses, 10) : 0;
+  if (isNaN(maxUses) || maxUses < 0) {
+    return res.status(400).json({ success: false, error: 'Limite de usos invalido.' });
+  }
+  const existing = await dbHelpers.db.prepare('SELECT id FROM coupons WHERE code = ?').get(finalCode);
+  if (existing) {
+    return res.status(409).json({ success: false, error: 'Ja existe um cupom com o codigo "' + finalCode + '".' });
+  }
+
+  const result = await dbHelpers.db.prepare(`
+    INSERT INTO coupons (code, type, value, max_uses, used_count, expires_at, active, created_at)
+    VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+  `).run(
+    finalCode,
+    couponType,
+    couponValue,
+    maxUses,
+    expires_at ? String(expires_at).trim() : null,
+    (active === 0 || active === '0' || active === false) ? 0 : 1,
+    new Date().toISOString()
+  );
+
+  const coupon = await dbHelpers.db.prepare('SELECT * FROM coupons WHERE id = ?').get(result.lastInsertRowid);
+  res.json({ success: true, message: 'Cupom "' + finalCode + '" criado com sucesso!', data: coupon });
+});
+
+
+app.put('/api/admin/coupons/:id', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const coupon = await dbHelpers.db.prepare('SELECT * FROM coupons WHERE id = ?').get(id);
+  if (!coupon) {
+    return res.status(404).json({ success: false, error: 'Cupom nao encontrado.' });
+  }
+
+  const body = req.body || {};
+  const couponType = body.type !== undefined ? (body.type === 'fixed' ? 'fixed' : 'percent') : (coupon.type || 'percent');
+  const couponValue = body.value !== undefined ? parseFloat(body.value) : parseFloat(coupon.value || 0);
+  if (isNaN(couponValue) || couponValue <= 0) {
+    return res.status(400).json({ success: false, error: 'Valor do cupom invalido.' });
+  }
+  if (couponType === 'percent' && couponValue > 100) {
+    return res.status(400).json({ success: false, error: 'Cupom percentual nao pode ser maior que 100%.' });
+  }
+  const maxUses = body.max_uses !== undefined ? (parseInt(body.max_uses, 10) || 0) : Number(coupon.max_uses || 0);
+  const expiresAt = body.expires_at !== undefined ? (body.expires_at ? String(body.expires_at).trim() : null) : coupon.expires_at;
+  const active = body.active !== undefined ? ((body.active === 0 || body.active === '0' || body.active === false) ? 0 : 1) : Number(coupon.active || 0);
+
+  await dbHelpers.db.prepare(`
+    UPDATE coupons SET type = ?, value = ?, max_uses = ?, expires_at = ?, active = ?
+    WHERE id = ?
+  `).run(couponType, couponValue, maxUses, expiresAt, active, id);
+
+  const updated = await dbHelpers.db.prepare('SELECT * FROM coupons WHERE id = ?').get(id);
+  res.json({ success: true, message: 'Cupom atualizado com sucesso!', data: updated });
+});
+
+app.delete('/api/admin/coupons/:id', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const coupon = await dbHelpers.db.prepare('SELECT id, code FROM coupons WHERE id = ?').get(id);
+  if (!coupon) {
+    return res.status(404).json({ success: false, error: 'Cupom nao encontrado.' });
+  }
+  await dbHelpers.db.prepare('DELETE FROM coupons WHERE id = ?').run(id);
+  res.json({ success: true, message: 'Cupom "' + coupon.code + '" removido com sucesso! (historico de vendas preservado)' });
+});
+
+// ---------- CATALOGO: PORTAL DO REVENDEDOR ----------
+
+app.get('/api/reseller/products', resellerUserAuth, async (req, res) => {
+  const products = await dbHelpers.db.prepare('SELECT * FROM products WHERE active = 1 ORDER BY sort_order ASC, id ASC').all();
+  res.json({
+    success: true,
+    data: products.map((p) => {
+      const cost = Number(p.cost_price || 0);
+      const priceType = p.price_type || 'fixed';
+      const priceValue = Number(p.price_value || 0);
+      const salePrice = priceType === 'margin' ? roundMoney(cost * (1 + priceValue / 100)) : roundMoney(priceValue);
+      return {
+        id: Number(p.id),
+        name: p.name,
+        description: p.description,
+        price_type: priceType,
+        sale_price: salePrice
+      };
+    })
+  });
+});
+
+// Validar cupom sem gerar pedido (usado pelo painel e disponivel para bots)
+app.post('/api/reseller/validate-coupon', resellerUserAuth, async (req, res) => {
+  const body = req.body || {};
+  const fakeReq = { body: { ...body } };
+  const pricing = await resolveOrderPricing(fakeReq, req.reseller);
+  if (pricing.error) {
+    return res.status(400).json({ success: false, error: pricing.error });
+  }
+  res.json({
+    success: true,
+    data: {
+      product: pricing.productName,
+      base_price: pricing.baseSalePrice,
+      discount: pricing.discount,
+      final_price: pricing.finalSalePrice,
+      coupon_code: pricing.couponCode
+    }
+  });
+});
+
+// ---------- CATALOGO: API PARA BOTS ----------
+
+app.get('/api/v1/products', resellerBotAuth, async (req, res) => {
+  const products = await dbHelpers.db.prepare('SELECT * FROM products WHERE active = 1 ORDER BY sort_order ASC, id ASC').all();
+  res.json({
+    success: true,
+    data: products.map((p) => {
+      const cost = Number(p.cost_price || 0);
+      const priceType = p.price_type || 'fixed';
+      const priceValue = Number(p.price_value || 0);
+      const salePrice = priceType === 'margin' ? roundMoney(cost * (1 + priceValue / 100)) : roundMoney(priceValue);
+      return {
+        id: Number(p.id),
+        name: p.name,
+        description: p.description,
+        price_type: priceType,
+        sale_price: salePrice
+      };
+    })
+  });
+});
+
 app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => {
   const ip = getClientIp(req);
   const reseller = req.reseller;
-  const costPrice = parseFloat(reseller.cost_per_link || 2.99);
+
+  // Resolve produto do catálogo + cupom antes de debitar o saldo
+  const pricing = await resolveOrderPricing(req, reseller);
+  if (pricing.error) {
+    return res.status(400).json({ success: false, error: pricing.error });
+  }
+  const costPrice = pricing.costPrice;
   const currentCredits = parseFloat(reseller.credits || 0);
 
-  // Checa se tem saldo suficiente para cobrir R$ 2,99
+  // Checa se tem saldo suficiente para cobrir o custo do produto
   if (currentCredits < costPrice) {
     return res.status(402).json({
       success: false,
-      error: `Saldo insuficiente. Cada link custa R$ ${costPrice.toFixed(2).replace('.', ',')} e seu saldo atual é de R$ ${currentCredits.toFixed(2).replace('.', ',')}. Recarregue seu saldo no painel.`
+      error: `Saldo insuficiente. Este produto custa R$ ${costPrice.toFixed(2).replace('.', ',')} e seu saldo atual é de R$ ${currentCredits.toFixed(2).replace('.', ',')}. Recarregue seu saldo no painel.`
     });
   }
 
-  const { customer_name, customer_contact, sale_price } = req.body;
+  const { customer_name, customer_contact } = req.body;
   const finalCustomerName = customer_name && customer_name.trim() ? customer_name.trim() : 'Cliente Manual (WhatsApp/Direto)';
   const finalContact = customer_contact ? String(customer_contact).trim() : 'Manual';
-  const finalSalePrice = sale_price ? parseFloat(sale_price) : (reseller.sale_price || 15.00);
+  const finalSalePrice = pricing.finalSalePrice;
   const profit = Math.max(0, finalSalePrice - costPrice);
 
   let debited = false;
@@ -1528,25 +1901,31 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
     // Registra a venda no histórico de clientes do revendedor
     const now = new Date().toISOString();
     const saleResult = await dbHelpers.db.prepare(`
-      INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_id, customer_contact, product, sale_price, cost_price, profit, delivery_status, created_at)
-      VALUES (?, ?, ?, ?, 'manual_web', ?, ?, ?, ?, ?, 'Entregue (Manual)', ?) RETURNING id
+      INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_id, customer_contact, product, sale_price, cost_price, profit, delivery_status, product_id, coupon_id, discount, created_at)
+      VALUES (?, ?, ?, ?, 'manual_web', ?, ?, ?, ?, ?, 'Entregue (Manual)', ?, ?, ?, ?) RETURNING id
     `).run(
       reseller.id,
       generation.token,
       generation.targetUrl,
       finalCustomerName,
       finalContact,
+      pricing.productName || 'Spotify Premium',
       finalSalePrice,
       costPrice,
       profit,
+      pricing.productId,
+      pricing.couponId,
+      pricing.discount,
       now
     );
+    // Consome o cupom (incrementa o contador de usos)
+    await consumeCoupon(pricing.couponId);
 
     const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
 
     // Alerta de venda manual (painel do revendedor)
     notifyNewSale({
-      service: 'Spotify Premium',
+      service: pricing.productName || 'Spotify Premium',
       customerName: finalCustomerName,
       customerId: reseller.name,
       customerContact: finalContact,
@@ -1569,6 +1948,10 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
       balance_remaining: Number(updated.credits).toFixed(2),
       cost_deducted: costPrice,
       profit_generated: profit,
+      product: pricing.productName || 'Spotify Premium',
+      base_price: pricing.baseSalePrice,
+      discount: pricing.discount,
+      coupon_code: pricing.couponCode,
       sale_id: saleResult.lastInsertRowid
     });
   } catch (err) {
@@ -1585,7 +1968,7 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
           message: `Falha na entrega manual (${reason}). Estorno automático de R$ ${costPrice.toFixed(2).replace('.', ',')} para o revendedor #${reseller.id} (pedido #${orderNumber}).`,
           ip,
           source: 'reseller_panel',
-          details: { reseller_id: reseller.id, order_number: orderNumber, product: 'Spotify Premium', amount: finalSalePrice, error: reason }
+          details: { reseller_id: reseller.id, order_number: orderNumber, product: pricing.productName || 'Spotify Premium', amount: finalSalePrice, error: reason }
         });
       } catch (refundErr) {
         console.error('[generate-manual] estorno automático falhou:', refundErr.message);
@@ -1598,7 +1981,7 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
       refunded: debited,
       refund_amount: debited ? Number(costPrice).toFixed(2) : '0.00',
       order_number: orderNumber || null,
-      product: 'Spotify Premium',
+      product: pricing.productName || 'Spotify Premium',
       amount: Number(finalSalePrice).toFixed(2),
       reason
     });
@@ -1613,10 +1996,16 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
 app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
   const ip = getClientIp(req);
   const reseller = req.reseller;
-  const costPrice = parseFloat(reseller.cost_per_link || 2.99);
+
+  // 0. Resolve produto do catálogo + cupom antes de debitar o saldo
+  const pricing = await resolveOrderPricing(req, reseller);
+  if (pricing.error) {
+    return res.status(400).json({ success: false, error: pricing.error });
+  }
+  const costPrice = pricing.costPrice;
   const currentCredits = parseFloat(reseller.credits || 0);
 
-  // 1. Checa se o Revendedor possui saldo suficiente (Mínimo R$ 2,99)
+  // 1. Checa se o Revendedor possui saldo suficiente (custo do produto)
   if (currentCredits < costPrice) {
     dbHelpers.logError({
       endpoint: '/api/v1/generate',
@@ -1636,15 +2025,15 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
   }
 
   // 2. Extrai dados do Cliente enviados pelo Bot
-  const { customer_name, customer_id, customer_contact, sale_price } = req.body;
+  const { customer_name, customer_id, customer_contact } = req.body;
   
   const finalCustomerName = customer_name ? customer_name.trim() : 'Cliente Anônimo';
   const finalCustomerId = customer_id ? String(customer_id).trim() : null;
   const finalContact = customer_contact ? String(customer_contact).trim() : null;
-  const finalProduct = (req.body && req.body.product ? String(req.body.product).trim() : '') || 'Spotify Premium';
+  const finalProduct = pricing.productName || (req.body && req.body.product ? String(req.body.product).trim() : '') || 'Spotify Premium';
 
-  // Preço de venda cobrado do cliente (ou usa o padrão do revendedor)
-  const finalSalePrice = sale_price ? parseFloat(sale_price) : (reseller.sale_price || 15.00);
+  // Preço de venda final (produto do catálogo + cupom aplicado, com fallback para o preço do revendedor)
+  const finalSalePrice = pricing.finalSalePrice;
   const profit = Math.max(0, finalSalePrice - costPrice);
 
   let debited = false;
@@ -1659,8 +2048,8 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
     // 5. Registra a Venda no Histórico de Clientes do Revendedor
     const now = new Date().toISOString();
     const saleResult = await dbHelpers.db.prepare(`
-      INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_id, customer_contact, product, sale_price, cost_price, profit, delivery_status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Entregue', ?) RETURNING id
+      INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_id, customer_contact, product, sale_price, cost_price, profit, delivery_status, product_id, coupon_id, discount, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Entregue', ?, ?, ?, ?) RETURNING id
     `).run(
       reseller.id,
       generation.token,
@@ -1672,8 +2061,13 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
       finalSalePrice,
       costPrice,
       profit,
+      pricing.productId,
+      pricing.couponId,
+      pricing.discount,
       now
     );
+    // Consome o cupom (incrementa o contador de usos)
+    await consumeCoupon(pricing.couponId);
 
     const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
 
@@ -1708,6 +2102,10 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
       },
       profit_generated: profit,
       cost_deducted: costPrice,
+      product: finalProduct,
+      base_price: pricing.baseSalePrice,
+      discount: pricing.discount,
+      coupon_code: pricing.couponCode,
       balance_remaining: Number(updated.credits).toFixed(2),
       sale_id: saleResult.lastInsertRowid,
       created_at: now,
@@ -2191,6 +2589,7 @@ app.get('/api/admin/all-sales', adminAuth, async (req, res) => {
   const sales = await dbHelpers.db.prepare(`
     SELECT 
       s.id, s.token, s.target_url, s.customer_name, s.customer_id, s.customer_contact, 
+      s.product, s.product_id, s.coupon_id, s.discount,
       s.sale_price, s.cost_price, s.profit, s.delivery_status, s.created_at,
       r.name as reseller_name, r.email as reseller_email
     FROM sales s

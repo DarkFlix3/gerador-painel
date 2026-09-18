@@ -468,6 +468,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const customer_name = document.getElementById('manual-customer-name')?.value;
       const customer_contact = document.getElementById('manual-customer-contact')?.value;
       const sale_price = document.getElementById('manual-sale-price')?.value;
+      const product_id = document.getElementById('manual-product-id')?.value || '';
+      const coupon_code = document.getElementById('manual-coupon-code')?.value || '';
 
       btnSubmitManualGen.disabled = true;
       btnManualSpinner.classList.remove('hidden');
@@ -476,7 +478,7 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         const res = await resellerFetch('/api/reseller/generate-manual', {
           method: 'POST',
-          body: JSON.stringify({ customer_name, customer_contact, sale_price })
+          body: JSON.stringify({ customer_name, customer_contact, sale_price, product_id, coupon_code })
         });
         const data = await res.json();
         if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao gerar link.');
@@ -849,11 +851,66 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!res.ok) throw new Error();
         hideAuthModal();
         loadAllResellerData();
+        loadResellerProducts();
       })
       .catch(() => {
         showAuthModal();
       });
   } else {
     showAuthModal();
+  }
+
+  // ==============================================
+  // CATALOGO DE PRODUTOS + CUPOM no gerador manual
+  // ==============================================
+  async function loadResellerProducts() {
+    const select = document.getElementById('manual-product-id');
+    if (!select) return;
+    try {
+      const res = await resellerFetch('/api/reseller/products');
+      const data = await res.json();
+      if (!data.success || !data.data.length) return;
+      select.innerHTML = '<option value="">— Produto padrão —</option>' + data.data.map(p =>
+        '<option value="' + p.id + '">' + escapeHtml(p.name) + ' — R$ ' + Number(p.sale_price).toFixed(2).replace('.', ',') + '</option>'
+      ).join('');
+    } catch (e) {
+      console.warn('Erro ao carregar produtos:', e);
+    }
+  }
+
+  const btnValidateCoupon = document.getElementById('btn-validate-coupon');
+  if (btnValidateCoupon) {
+    btnValidateCoupon.addEventListener('click', async () => {
+      const code = document.getElementById('manual-coupon-code')?.value.trim();
+      const product_id = document.getElementById('manual-product-id')?.value || '';
+      const feedback = document.getElementById('coupon-feedback');
+      if (!feedback) return;
+      if (!code) {
+        feedback.innerText = 'Digite o código do cupom acima.';
+        feedback.className = 'text-[11px] mt-1 block text-rose-400';
+        return;
+      }
+      try {
+        const res = await resellerFetch('/api/reseller/validate-coupon', {
+          method: 'POST',
+          body: JSON.stringify({ coupon_code: code, product_id })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          feedback.innerText = data.error || 'Cupom inválido.';
+          feedback.className = 'text-[11px] mt-1 block text-rose-400';
+          return;
+        }
+        const d = data.data;
+        const fmt = (v) => 'R$ ' + Number(v).toFixed(2).replace('.', ',');
+        feedback.innerText = (d.final_price < d.base_price)
+          ? '✔ ' + escapeHtml(d.product) + ': de ' + fmt(d.base_price) + ' por ' + fmt(d.final_price) + ' (desconto de ' + fmt(d.discount) + ').'
+          : 'Cupom informado, mas sem desconto para este produto (' + fmt(d.final_price) + ').';
+        feedback.className = (d.final_price < d.base_price) ? 'text-[11px] mt-1 block text-emerald-400' : 'text-[11px] mt-1 block text-slate-400';
+      } catch (err) {
+        feedback.innerText = err.message || 'Erro ao validar cupom.';
+        feedback.className = 'text-[11px] mt-1 block text-rose-400';
+      }
+    });
   }
 });

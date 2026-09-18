@@ -213,6 +213,30 @@ const SQLITE_DDL = `
     status TEXT DEFAULT 'active'
   );
 
+  CREATE TABLE IF NOT EXISTS products (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    cost_price REAL DEFAULT 0.00,
+    price_type TEXT DEFAULT 'fixed',
+    price_value REAL DEFAULT 0.00,
+    active INTEGER DEFAULT 1,
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS coupons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT UNIQUE NOT NULL,
+    type TEXT DEFAULT 'percent',
+    value REAL NOT NULL,
+    max_uses INTEGER DEFAULT 0,
+    used_count INTEGER DEFAULT 0,
+    expires_at TEXT,
+    active INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS error_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     endpoint TEXT NOT NULL,
@@ -308,6 +332,30 @@ const POSTGRES_DDL = `
     status TEXT DEFAULT 'active'
   );
 
+  CREATE TABLE IF NOT EXISTS products (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    cost_price DOUBLE PRECISION DEFAULT 0.00,
+    price_type TEXT DEFAULT 'fixed',
+    price_value DOUBLE PRECISION DEFAULT 0.00,
+    active INTEGER DEFAULT 1,
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS coupons (
+    id BIGSERIAL PRIMARY KEY,
+    code TEXT UNIQUE NOT NULL,
+    type TEXT DEFAULT 'percent',
+    value DOUBLE PRECISION NOT NULL,
+    max_uses INTEGER DEFAULT 0,
+    used_count INTEGER DEFAULT 0,
+    expires_at TEXT,
+    active INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS error_logs (
     id BIGSERIAL PRIMARY KEY,
     endpoint TEXT NOT NULL,
@@ -336,7 +384,10 @@ const EXTRA_COLUMNS = {
   ],
   sales: [
     // Produto vendido (ex.: Spotify Premium) — usado no menu Minhas Compras do bot
-    "product TEXT DEFAULT 'Spotify Premium'"
+    "product TEXT DEFAULT 'Spotify Premium'",
+    "product_id INTEGER",
+    "coupon_id INTEGER",
+    "discount DOUBLE PRECISION DEFAULT 0"
   ]
 };
 
@@ -408,6 +459,22 @@ async function initDb() {
     await db.prepare('INSERT INTO admins (username, password_hash, created_at) VALUES (?, ?, ?)')
       .run('felipe', felipeHash, new Date().toISOString());
     console.log('Admin criado: usuário "felipe", senha "felipe123"');
+  }
+
+  // Seed produto padrao (Spotify) — mantem compatibilidade com o fluxo antigo
+  const countProducts = await db.prepare('SELECT COUNT(*) as count FROM products').get();
+  if (Number(countProducts.count) === 0) {
+    await db.prepare(`
+      INSERT INTO products (name, description, cost_price, price_type, price_value, active, sort_order, created_at)
+      VALUES (?, ?, ?, 'fixed', ?, 1, 1, ?)
+    `).run(
+      'Spotify Premium 3 Meses',
+      'Acesso individual 3 meses — link exclusivo com entrega automatica.',
+      2.99,
+      15.00,
+      new Date().toISOString()
+    );
+    console.log('Produto padrao criado: Spotify Premium 3 Meses (R$ 15,00)');
   }
 
   // Seed default demo reseller if none exists

@@ -159,6 +159,8 @@ document.addEventListener('DOMContentLoaded', () => {
       dashboard: 'Dashboard Geral & Estatísticas',
       resellers: 'Gestão Completa de Revendedores & Bloqueios',
       'all-sales': 'Vendas Realizadas por Bots para Clientes',
+      products: 'Catálogo de Produtos',
+      coupons: 'Cupons de Desconto',
       'error-logs': 'Monitoramento de Falhas e Erros',
       settings: 'Configurações do Link Alvo',
       'api-docs': 'Documentação da API para Bots de Revenda'
@@ -169,6 +171,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (tabId === 'dashboard') loadStats();
     if (tabId === 'resellers') loadResellers();
     if (tabId === 'all-sales') loadAllSales();
+    if (tabId === 'products') loadProducts();
+    if (tabId === 'coupons') loadCoupons();
     if (tabId === 'error-logs') loadErrorLogs();
     if (tabId === 'settings') loadSettings();
   }
@@ -476,7 +480,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!data.success) return;
 
       if (data.data.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7" class="px-5 py-8 text-center text-slate-500">Nenhuma venda realizada por revendedores ainda.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="9" class="px-5 py-8 text-center text-slate-500">Nenhuma venda realizada por revendedores ainda.</td></tr>`;
         return;
       }
 
@@ -500,8 +504,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 </button>
               </div>
             </td>
-            <td class="px-5 py-3.5 font-mono font-bold text-white">R$ ${Number(s.sale_price).toFixed(2).replace('.', ',')}</td>
-            <td class="px-5 py-3.5 font-mono font-bold text-emerald-400">+ R$ ${Number(s.profit).toFixed(2).replace('.', ',')}</td>
+            <td class="px-5 py-3">
+              <span class="font-bold text-amber-300 block text-xs">${escapeHtml(s.product || '—')}</span>
+            </td>
+            <td class="px-5 py-3 font-mono font-bold text-white">R$ ${Number(s.sale_price).toFixed(2).replace('.', ',')}</td>
+            <td class="px-5 py-3 font-mono text-[11px] ${Number(s.discount || 0) > 0 ? 'text-emerald-400' : 'text-slate-600'}">
+              ${Number(s.discount || 0) > 0 ? '− R$ ' + Number(s.discount).toFixed(2).replace('.', ',') : '—'}
+            </td>
+            <td class="px-5 py-3 font-mono font-bold text-emerald-400">+ R$ ${Number(s.profit).toFixed(2).replace('.', ',')}</td>
             <td class="px-5 py-3.5">
               <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950/60 text-emerald-400 border border-emerald-500/30">
                 <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
@@ -696,6 +706,276 @@ document.addEventListener('DOMContentLoaded', () => {
     loadAllSales();
     loadErrorLogs();
     loadSettings();
+    loadProducts();
+    loadCoupons();
+  }
+
+  // ==============================================
+  // CATALOGO DE PRODUTOS (ADMIN)
+  // ==============================================
+  let __adminProducts = [];
+
+  async function loadProducts() {
+    const tbody = document.getElementById('products-table-body');
+    if (!tbody) return;
+    try {
+      const res = await apiFetch('/api/admin/products');
+      const data = await res.json();
+      if (!data.success) return;
+      __adminProducts = data.data || [];
+      if (__adminProducts.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="px-5 py-8 text-center text-slate-500">Nenhum produto cadastrado ainda.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = __adminProducts.map(p => {
+        const salePrice = p.price_type === 'margin' ? (Number(p.cost_price) * (1 + Number(p.price_value) / 100)) : Number(p.price_value);
+        const margin = Number(p.cost_price) > 0 ? ((salePrice - Number(p.cost_price)) / Number(p.cost_price) * 100) : 0;
+        return `<tr class="hover:bg-white/[0.02] transition-colors">
+            <td class="px-5 py-3.5">
+              <span class="font-bold text-white block text-xs">${escapeHtml(p.name)}</span>
+              ${p.description ? `<span class="text-[10px] text-slate-400 block">${escapeHtml(p.description)}</span>` : ''}
+            </td>
+            <td class="px-5 py-3.5 font-mono font-bold text-slate-300">R$ ${Number(p.cost_price).toFixed(2).replace('.', ',')}</td>
+            <td class="px-5 py-3.5 font-mono font-bold text-emerald-400">R$ ${salePrice.toFixed(2).replace('.', ',')}</td>
+            <td class="px-5 py-3.5 font-mono text-[11px] text-slate-400">${margin.toFixed(0)}%</td>
+            <td class="px-5 py-3.5">
+              <button onclick="toggleProduct(${p.id})" class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${Number(p.active) ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-500/30' : 'bg-rose-950/60 text-rose-400 border border-rose-500/30'}">
+                <span class="w-1.5 h-1.5 rounded-full ${Number(p.active) ? 'bg-emerald-400' : 'bg-rose-400'}"></span>
+                ${Number(p.active) ? 'ATIVO' : 'INATIVO'}
+              </button>
+            </td>
+            <td class="px-5 py-3.5">
+              <div class="flex items-center gap-2">
+                <button onclick="editProduct(${p.id})" class="p-1.5 text-slate-400 hover:text-white" title="Editar"><i data-lucide="pencil" class="w-3.5 h-3.5"></i></button>
+                <button onclick="deleteProduct(${p.id})" class="p-1.5 text-slate-400 hover:text-rose-400" title="Excluir"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+              </div>
+            </td>
+          </tr>`;
+      }).join('');
+      if (window.lucide) window.lucide.createIcons();
+    } catch (e) {
+      console.warn('Erro ao carregar produtos:', e);
+    }
+  }
+
+  function openProductForm(p) {
+    const card = document.getElementById('product-form-card');
+    if (!card) return;
+    card.classList.remove('hidden');
+    document.getElementById('product-form-title').innerText = p ? 'Editar Produto' : 'Novo Produto';
+    document.getElementById('product-id').value = p ? p.id : '';
+    document.getElementById('product-name').value = p ? p.name : '';
+    document.getElementById('product-description').value = p ? (p.description || '') : '';
+    document.getElementById('product-cost').value = p ? p.cost_price : '';
+    document.getElementById('product-price-type').value = p ? (p.price_type || 'fixed') : 'fixed';
+    document.getElementById('product-price-value').value = p ? p.price_value : '';
+    document.getElementById('product-sort-order').value = p ? (p.sort_order || 0) : 0;
+    document.getElementById('product-form-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  window.editProduct = (id) => {
+    const p = __adminProducts.find(x => Number(x.id) === Number(id));
+    if (p) openProductForm(p);
+  };
+  window.toggleProduct = async (id) => {
+    const p = __adminProducts.find(x => Number(x.id) === Number(id));
+    if (!p) return;
+    try {
+      const res = await apiFetch('/api/admin/products/' + id, {
+        method: 'PUT',
+        body: JSON.stringify(Object.assign({}, p, { active: Number(p.active) ? 0 : 1 }))
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao alternar status.');
+      showToast(data.message || 'Status atualizado.', 'success');
+      loadProducts();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+  window.deleteProduct = async (id) => {
+    if (!confirm('Excluir este produto? As vendas antigas são preservadas.')) return;
+    try {
+      const res = await apiFetch('/api/admin/products/' + id, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao excluir.');
+      showToast(data.message || 'Produto excluído.', 'success');
+      loadProducts();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const btnNewProduct = document.getElementById('btn-new-product');
+  if (btnNewProduct) btnNewProduct.addEventListener('click', () => openProductForm(null));
+  const btnCancelProduct = document.getElementById('btn-cancel-product');
+  if (btnCancelProduct) btnCancelProduct.addEventListener('click', () => {
+    const card = document.getElementById('product-form-card');
+    if (card) card.classList.add('hidden');
+  });
+  const btnSaveProduct = document.getElementById('btn-save-product');
+  if (btnSaveProduct) {
+    btnSaveProduct.addEventListener('click', async () => {
+      const id = document.getElementById('product-id').value;
+      const payload = {
+        name: document.getElementById('product-name').value,
+        description: document.getElementById('product-description').value,
+        cost_price: document.getElementById('product-cost').value,
+        price_type: document.getElementById('product-price-type').value,
+        price_value: document.getElementById('product-price-value').value,
+        sort_order: document.getElementById('product-sort-order').value || 0
+      };
+      if (!payload.name || payload.cost_price === '' || payload.price_value === '') {
+        showToast('Preencha nome, custo e preço.', 'error');
+        return;
+      }
+      try {
+        const res = await apiFetch(id ? '/api/admin/products/' + id : '/api/admin/products', {
+          method: id ? 'PUT' : 'POST',
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao salvar.');
+        showToast(data.message || 'Produto salvo.', 'success');
+        const card = document.getElementById('product-form-card');
+        if (card) card.classList.add('hidden');
+        loadProducts();
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+  }
+
+  // ==============================================
+  // CUPONS DE DESCONTO (ADMIN)
+  // ==============================================
+  let __adminCoupons = [];
+
+  async function loadCoupons() {
+    const tbody = document.getElementById('coupons-table-body');
+    if (!tbody) return;
+    try {
+      const res = await apiFetch('/api/admin/coupons');
+      const data = await res.json();
+      if (!data.success) return;
+      __adminCoupons = data.data || [];
+      if (__adminCoupons.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="px-5 py-8 text-center text-slate-500">Nenhum cupom cadastrado ainda.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = __adminCoupons.map(c => {
+        const expired = c.expires_at && new Date(c.expires_at).getTime() < Date.now();
+        return `<tr class="hover:bg-white/[0.02] transition-colors">
+            <td class="px-5 py-3.5">
+              <span class="font-mono font-bold ${expired ? 'text-slate-500 line-through' : 'text-pink-300'}">${escapeHtml(c.code)}</span>
+            </td>
+            <td class="px-5 py-3.5 font-mono text-[11px]">${c.type === 'fixed' ? 'R$ ' + Number(c.value).toFixed(2).replace('.', ',') : Number(c.value).toFixed(0).replace('.', ',') + '%'}</td>
+            <td class="px-5 py-3.5 font-mono text-[11px] text-slate-400">${Number(c.max_uses) > 0 ? c.used_count + ' / ' + c.max_uses : 'Ilimitado'}</td>
+            <td class="px-5 py-3.5 font-mono text-[11px] text-slate-400">${c.expires_at ? new Date(c.expires_at).toLocaleDateString('pt-BR') : '—'}</td>
+            <td class="px-5 py-3.5">
+              <button onclick="toggleCoupon(${c.id})" class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${expired ? 'bg-slate-800 text-slate-500' : (Number(c.active) ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-500/30' : 'bg-rose-950/60 text-rose-400 border border-rose-500/30')}">
+                <span class="w-1.5 h-1.5 rounded-full ${expired ? 'bg-slate-500' : (Number(c.active) ? 'bg-emerald-400' : 'bg-rose-400')}"></span>
+                ${expired ? 'EXPIRADO' : (Number(c.active) ? 'ATIVO' : 'INATIVO')}
+              </button>
+            </td>
+            <td class="px-5 py-3.5">
+              <div class="flex items-center gap-2">
+                <button onclick="editCoupon(${c.id})" class="p-1.5 text-slate-400 hover:text-white" title="Editar"><i data-lucide="pencil" class="w-3.5 h-3.5"></i></button>
+                <button onclick="deleteCoupon(${c.id})" class="p-1.5 text-slate-400 hover:text-rose-400" title="Excluir"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+              </div>
+            </td>
+          </tr>`;
+      }).join('');
+      if (window.lucide) window.lucide.createIcons();
+    } catch (e) {
+      console.warn('Erro ao carregar cupons:', e);
+    }
+  }
+
+  function openCouponForm(c) {
+    const card = document.getElementById('coupon-form-card');
+    if (!card) return;
+    card.classList.remove('hidden');
+    document.getElementById('coupon-form-title').innerText = c ? 'Editar Cupom' : 'Novo Cupom';
+    document.getElementById('coupon-id').value = c ? c.id : '';
+    document.getElementById('coupon-code').value = c ? c.code : '';
+    document.getElementById('coupon-type').value = c ? (c.type || 'percent') : 'percent';
+    document.getElementById('coupon-value').value = c ? c.value : '';
+    document.getElementById('coupon-max-uses').value = c ? (c.max_uses || 0) : 0;
+    document.getElementById('coupon-expires-at').value = c && c.expires_at ? c.expires_at.slice(0, 10) : '';
+    document.getElementById('coupon-active').checked = c ? !!Number(c.active) : true;
+    document.getElementById('coupon-form-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  window.editCoupon = (id) => {
+    const c = __adminCoupons.find(x => Number(x.id) === Number(id));
+    if (c) openCouponForm(c);
+  };
+  window.toggleCoupon = async (id) => {
+    const c = __adminCoupons.find(x => Number(x.id) === Number(id));
+    if (!c) return;
+    try {
+      const res = await apiFetch('/api/admin/coupons/' + id, {
+        method: 'PUT',
+        body: JSON.stringify(Object.assign({}, c, { active: Number(c.active) ? 0 : 1 }))
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao alternar status.');
+      showToast(data.message || 'Status atualizado.', 'success');
+      loadCoupons();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+  window.deleteCoupon = async (id) => {
+    if (!confirm('Excluir este cupom?')) return;
+    try {
+      const res = await apiFetch('/api/admin/coupons/' + id, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao excluir.');
+      showToast(data.message || 'Cupom excluído.', 'success');
+      loadCoupons();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const btnNewCoupon = document.getElementById('btn-new-coupon');
+  if (btnNewCoupon) btnNewCoupon.addEventListener('click', () => openCouponForm(null));
+  const btnCancelCoupon = document.getElementById('btn-cancel-coupon');
+  if (btnCancelCoupon) btnCancelCoupon.addEventListener('click', () => {
+    const card = document.getElementById('coupon-form-card');
+    if (card) card.classList.add('hidden');
+  });
+  const btnSaveCoupon = document.getElementById('btn-save-coupon');
+  if (btnSaveCoupon) {
+    btnSaveCoupon.addEventListener('click', async () => {
+      const id = document.getElementById('coupon-id').value;
+      const payload = {
+        code: document.getElementById('coupon-code').value,
+        type: document.getElementById('coupon-type').value,
+        value: document.getElementById('coupon-value').value,
+        max_uses: document.getElementById('coupon-max-uses').value || 0,
+        expires_at: document.getElementById('coupon-expires-at').value || null,
+        active: document.getElementById('coupon-active').checked ? 1 : 0
+      };
+      if (!payload.code || payload.value === '') {
+        showToast('Preencha código e valor do cupom.', 'error');
+        return;
+      }
+      try {
+        const res = await apiFetch(id ? '/api/admin/coupons/' + id : '/api/admin/coupons', {
+          method: id ? 'PUT' : 'POST',
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao salvar.');
+        showToast(data.message || 'Cupom salvo.', 'success');
+        const card = document.getElementById('coupon-form-card');
+        if (card) card.classList.add('hidden');
+        loadCoupons();
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
   }
 
   checkAuth().then(isAuth => {

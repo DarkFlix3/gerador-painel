@@ -345,6 +345,39 @@
                 <span class="text-[11px] text-slate-500 mt-1 block">Será registrado no seu histórico calculando seu lucro líquido.</span>
               </div>
 
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
+                  Produto do Catálogo
+                </label>
+                <select
+                  id="manual-product-id"
+                  class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-cyan-500"
+                >
+                  <option value="">— Produto padrão —</option>
+                </select>
+                <span class="text-[11px] text-slate-500 mt-1 block">O custo do produto selecionado é debitado do seu saldo.</span>
+              </div>
+
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
+                  Cupom de Desconto (opcional)
+                </label>
+                <div class="flex gap-2">
+                  <input
+                    type="text"
+                    id="manual-coupon-code"
+                    placeholder="Ex: BEMVINDO10"
+                    class="flex-1 px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white uppercase focus:outline-none focus:border-pink-500"
+                  >
+                  <button type="button" id="btn-validate-coupon"
+                    class="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-pink-300 rounded-xl border border-white/10 flex items-center gap-1.5">
+                    <i data-lucide="badge-percent" class="w-3.5 h-3.5"></i>
+                    VALIDAR
+                  </button>
+                </div>
+                <span id="coupon-feedback" class="text-[11px] text-slate-500 mt-1 block">O desconto é aplicado automaticamente na venda.</span>
+              </div>
+
               <div class="pt-2">
                 <button type="submit" id="btn-submit-manual-gen" class="btn-generate w-full py-3.5 text-sm font-bold flex items-center justify-center gap-2">
                   <i data-lucide="zap" class="w-4 h-4"></i>
