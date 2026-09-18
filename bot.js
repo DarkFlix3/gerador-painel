@@ -65,27 +65,75 @@ function backToMenuKeyboard() {
   };
 }
 
-// Envia o Menu Principal — se messageId for informado, EDITA a mensagem atual
-// no lugar (vira o menu) em vez de enviar outra, para não poluir o chat.
-function sendMainMenu(chatId, messageId) {
-  const mainText = `🏠 <b>Menu Principal</b>\n\nSelecione uma das opções abaixo:`;
+// Consulta o saldo da conta vinculada ao ID do Telegram (mesmo endpoint do /saldo)
+async function fetchBalance(user) {
+  if (!RESELLER_API_KEY) {
+    return { status: 0, data: { success: false, error: 'Chave de revendedor não configurada.' } };
+  }
+  const headers = { 'X-API-Key': RESELLER_API_KEY };
+  if (user && user.id) headers['X-Telegram-Id'] = String(user.id);
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/balance`, { headers, signal: AbortSignal.timeout(8000) });
+    const data = await res.json();
+    return { status: res.status, data };
+  } catch (e) {
+    return { status: 0, data: { success: false, error: e && e.message ? e.message : 'Erro de conexão' } };
+  }
+}
+
+// Envia o Menu Principal (boas-vindas + saldo). Se messageId for informado,
+// EDITA a mensagem atual no lugar (vira o menu) em vez de enviar outra.
+async function sendMainMenu(chatId, messageId, user) {
+  const firstName = user && user.first_name ? escapeHtml(user.first_name) : 'Cliente';
+
+  const welcomeText =
+    `👋 Olá, <b>${firstName}</b>! Seja muito bem-vindo(a) ao nosso <b>Gerador Automático de Acesso Spotify Premium 3 MESES</b>!
+
+` +
+    `⚡ <b>Entrega 100% Automática e Instantânea</b>
+` +
+    `🎧 Receba seu link exclusivo na hora direto aqui no chat.
+` +
+    `💰 Preço Especial: <b>R$ ${DEFAULT_SALE_PRICE.toFixed(2).replace('.', ',')}</b>
+
+`;
+
+  // Busca o saldo e monta a linha de saldo (erro de consulta nunca bloqueia o menu)
+  let balanceLine = '💰 <b>Saldo:</b> indisponível no momento';
+  try {
+    const { data } = await fetchBalance(user);
+    if (data) {
+      if (data.needs_link) {
+        balanceLine = '🔗 <b>Perfil não vinculado</b> — use <code>/saldo</code> para vincular seu ID de perfil';
+      } else if (data.success) {
+        const balance = parseFloat(data.credits != null ? data.credits : (data.balance || 0));
+        balanceLine = `💰 <b>Seu Saldo:</b> R$ ${balance.toFixed(2).replace('.', ',')}`;
+      }
+    }
+  } catch (e) { /* mantém a linha padrão */ }
+
+  const mainText = welcomeText + balanceLine + `
+
+Selecione uma das opções abaixo para começar:`;
+  const keyboard = getMainKeyboard();
+
   if (messageId) {
     bot.editMessageText(mainText, {
       chat_id: chatId,
       message_id: messageId,
       parse_mode: 'HTML',
-      reply_markup: getMainKeyboard().reply_markup
-    }).catch(() => {
-      // Fallback: se não conseguir editar (mensagem antiga demais etc.),
-      // apaga a antiga e envia o menu limpo
+      reply_markup: keyboard.reply_markup
+    }).catch((e) => {
+      // Conteúdo já igual: sucesso sem ação
+      if (e && e.message && String(e.message).includes('message is not modified')) return null;
+      // Falha real (mensagem é foto/QR ou antiga demais): apaga e envia o menu limpo
       bot.deleteMessage(chatId, messageId).catch(() => {});
-      bot.sendMessage(chatId, mainText, { parse_mode: 'HTML', ...getMainKeyboard() });
+      return bot.sendMessage(chatId, mainText, { parse_mode: 'HTML', ...keyboard }).catch(() => null);
     });
   } else {
-    bot.sendMessage(chatId, mainText, { parse_mode: 'HTML', ...getMainKeyboard() });
+    bot.sendMessage(chatId, mainText, { parse_mode: 'HTML', ...keyboard }).catch(() => null);
   }
 }
-
 // Mostra o ID de Perfil da pessoa (id único no bot e no site do gerador)
 function sendProfileId(chatId, user, messageId) {
   const firstName = escapeHtml(user.first_name || 'Cliente');
@@ -196,16 +244,7 @@ function getMainKeyboard() {
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   console.log('[recv] /start de', chatId, msg.from && msg.from.first_name);
-  const firstName = msg.from.first_name || 'Cliente';
-
-  const welcomeText = 
-    `👋 Olá, <b>${firstName}</b>! Seja muito bem-vindo(a) ao nosso <b>Gerador Automático de Acesso Spotify Premium 3 MESES</b>!\n\n` +
-    `⚡ <b>Entrega 100% Automática e Instantânea</b>\n` +
-    `🎧 Receba seu link exclusivo na hora direto aqui no chat.\n` +
-    `💰 Preço Especial: <b>R$ ${DEFAULT_SALE_PRICE.toFixed(2).replace('.', ',')}</b>\n\n` +
-    `Selecione uma das opções abaixo para começar:`;
-
-  bot.sendMessage(chatId, welcomeText, { parse_mode: 'HTML', ...getMainKeyboard() });
+  sendMainMenu(chatId, null, msg.from);
 });
 
 // Comando /comprar
@@ -555,7 +594,7 @@ bot.on('callback_query', async (query) => {
     );
   } else if (action === 'back_to_menu') {
     // Edita a mensagem atual virando o menu principal (sem duplicar no chat)
-    sendMainMenu(chatId, query.message.message_id);
+    await sendMainMenu(chatId, query.message.message_id, query.from);
   }
 });
 
