@@ -1,4 +1,7 @@
 require('dotenv').config();
+// Remove deprecation warnings/throws da lib ao enviar Buffer de arquivos
+// (exige filename/contentType explícitos, que já enviamos no sendDocument)
+process.env.NTBA_FIX_350 = '1';
 const TelegramBot = require('node-telegram-bot-api');
 
 // Configurações do Bot
@@ -659,8 +662,10 @@ async function handleMyPurchasesProductTxt(chatId, user, index) {
       `📦 <b>${product.product}</b> - ${product.total} item(ns)\n\n` +
       `📄 Arquivo .txt com os acessos já entregues.`;
 
+    // IMPORTANTE: filename/contentType vão no 4º argumento (fileOptions).
+    // Sem contentType, a lib tenta detectar o tipo do Buffer com file-type,
+    // que NÃO reconhece texto puro e lança 'Unsupported Buffer file-type'.
     await bot.sendDocument(chatId, Buffer.from(content, 'utf-8'), {
-      filename: fileName,
       caption,
       parse_mode: 'HTML',
       reply_markup: {
@@ -669,9 +674,13 @@ async function handleMyPurchasesProductTxt(chatId, user, index) {
           [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
         ]
       }
-    }).catch((err) => {
+    }, {
+      filename: fileName,
+      contentType: 'text/plain'
+    }).catch(async (err) => {
       console.error('[txt] falha ao enviar arquivo:', err && err.message ? err.message : err);
-      bot.sendMessage(chatId, '❌ Não foi possível enviar o arquivo. Tente novamente.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
+      // Fallback: entrega o conteúdo como mensagem de texto comum
+      await bot.sendMessage(chatId, '❌ Envio de arquivo falhou — seguem os acessos em texto:\n\n' + content.slice(0, 3800), { ...backToMenuKeyboard() }).catch(() => {});
     });
   } catch (e) {
     console.error('[minhas compras txt] falha:', e && e.message ? e.message : e);
