@@ -572,7 +572,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // ==========================================
   // RECARGA DE SALDO (VALOR MÍNIMO R$ 15,00)
   // ==========================================
-  // Método de pagamento atualmente selecionado no formulário de recarga (PIX | Binance Pay)
+  // Método de pagamento atualmente selecionado no formulário de recarga (PIX | Binance Pay | Mercado Pago)
   let selectedPaymentMethod = 'PIX';
 
   const setRechargeMethod = (method) => {
@@ -592,9 +592,12 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     const btnRechargeLabel = document.getElementById('btn-recharge-label');
     if (btnRechargeLabel) {
-      btnRechargeLabel.textContent = String(method).toLowerCase().includes('binance')
-        ? 'CONFIRMAR RECARGA VIA BINANCE PAY 🟡'
-        : 'CONFIRMAR RECARGA VIA PIX';
+      const m = String(method).toLowerCase();
+      btnRechargeLabel.textContent = m.includes('mercado')
+        ? 'GERAR LINK DE PAGAMENTO (MERCADO PAGO) 🟦'
+        : m.includes('binance')
+          ? 'CONFIRMAR RECARGA VIA BINANCE PAY 🟡'
+          : 'CONFIRMAR RECARGA VIA PIX';
     }
   };
 
@@ -604,10 +607,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
   window.rechargeCredits = async function(credits, amount, paymentMethod) {
     const method = String(paymentMethod || selectedPaymentMethod || 'PIX').trim() || 'PIX';
-    const methodLabel = String(method).toLowerCase().includes('binance') ? 'Binance Pay 🟡' : 'PIX';
+    const m = String(method).toLowerCase();
+    const methodLabel = m.includes('mercado') ? 'Mercado Pago 🟦' : m.includes('binance') ? 'Binance Pay 🟡' : 'PIX';
     const minRecharge = 15.00;
     if (amount < minRecharge) {
       showToast(`O valor mínimo para recarga de saldo é de R$ ${minRecharge.toFixed(2).replace('.', ',')}.`, 'error');
+      return;
+    }
+
+    // ---- MERCADO PAGO: cria a preferência e abre o checkout (crédito automático no webhook) ----
+    if (m.includes('mercado')) {
+      try {
+        const res = await resellerFetch('/api/reseller/mp/create-preference', {
+          method: 'POST',
+          body: JSON.stringify({ amount })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao gerar o pagamento.');
+
+        const payUrl = data.sandbox_init_point || data.init_point;
+        if (payUrl) window.open(payUrl, '_blank');
+        showToast(`Pagamento de R$ ${amount.toFixed(2).replace('.', ',')} gerado! Finalize no Mercado Pago — o saldo entra automaticamente.`, 'success');
+        startMpPaymentPolling(data.external_reference);
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
       return;
     }
 
@@ -630,6 +654,49 @@ document.addEventListener('DOMContentLoaded', () => {
       showToast(err.message, 'error');
     }
   };
+
+  // Polling: detecta quando o pagamento Mercado Pago foi aprovado e atualiza o painel
+  let mpPollTimer = null;
+  function startMpPaymentPolling(externalReference) {
+    if (mpPollTimer) clearInterval(mpPollTimer);
+    let attempts = 0;
+    const poll = async () => {
+      attempts++;
+      try {
+        const res = await resellerFetch('/api/reseller/mp/payments?limit=5');
+        const data = await res.json();
+        if (!data.success || !data.data || !data.data.length) return;
+        const match = data.data.find((p) => p.external_reference === externalReference);
+        if (match && (match.status === 'approved' || Number(match.processed) === 1)) {
+          clearInterval(mpPollTimer);
+          mpPollTimer = null;
+          showToast('✅ Pagamento aprovado! Saldo creditado com sucesso.', 'success');
+          loadResellerProfile();
+          loadResellerDashboard();
+          switchResellerTab('overview');
+        } else if (attempts >= 60) { // ~5 min de polling
+          clearInterval(mpPollTimer);
+          mpPollTimer = null;
+          showToast('Aguardando pagamento... O saldo será creditado automaticamente quando aprovado.', 'info');
+        }
+      } catch (err) {
+        // erros de rede durante o polling são ignorados
+      }
+    };
+    mpPollTimer = setInterval(poll, 5000);
+    poll();
+  }
+
+  // Volta do checkout do Mercado Pago (back_urls) — confirma o estado do pagamento
+  if (window.location.hash === '#mp_ok') {
+    showToast('Pagamento concluído! O saldo será creditado em instantes.', 'success');
+    loadResellerProfile();
+    loadResellerDashboard();
+  } else if (window.location.hash === '#mp_pending') {
+    showToast('Pagamento pendente. Assim que for aprovado, o saldo entra automaticamente.', 'info');
+  } else if (window.location.hash === '#mp_fail') {
+    showToast('O pagamento foi cancelado ou não pôde ser concluído. Tente novamente.', 'error');
+  }
 
   // Formulário de Recarga Personalizada (Qualquer Valor a partir de R$ 15,00)
   const formCustomRecharge = document.getElementById('form-custom-recharge');

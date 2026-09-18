@@ -187,6 +187,20 @@ const SQLITE_DDL = `
     created_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS mp_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    payment_id TEXT UNIQUE,
+    preference_id TEXT,
+    external_reference TEXT UNIQUE,
+    reseller_id INTEGER NOT NULL,
+    amount REAL NOT NULL,
+    status TEXT DEFAULT 'pending',
+    payment_method TEXT DEFAULT 'Mercado Pago',
+    processed INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS generations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     token TEXT UNIQUE NOT NULL,
@@ -266,6 +280,20 @@ const POSTGRES_DDL = `
     status TEXT DEFAULT 'approved',
     payment_method TEXT DEFAULT 'PIX',
     created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS mp_payments (
+    id BIGSERIAL PRIMARY KEY,
+    payment_id TEXT UNIQUE,
+    preference_id TEXT,
+    external_reference TEXT UNIQUE,
+    reseller_id INTEGER NOT NULL,
+    amount DOUBLE PRECISION NOT NULL,
+    status TEXT DEFAULT 'pending',
+    payment_method TEXT DEFAULT 'Mercado Pago',
+    processed INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT
   );
 
   CREATE TABLE IF NOT EXISTS generations (

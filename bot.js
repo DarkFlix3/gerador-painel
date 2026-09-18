@@ -179,6 +179,9 @@ function getMainKeyboard() {
           { text: '💳 Meu Saldo & Vendas (Revendedor)', callback_data: 'check_balance' }
         ],
         [
+          { text: '💰 Recarregar Saldo (Mercado Pago)', callback_data: 'mp_recharge_menu' }
+        ],
+        [
           { text: '🔑 Minha API (Revendedor)', callback_data: 'my_api' }
         ],
         [
@@ -215,6 +218,21 @@ bot.onText(/\/saldo/, async (msg) => {
   await handleCheckBalance(msg.chat.id, msg.from);
 });
 
+// Comando /recarga [valor] — gera link de pagamento Mercado Pago para recarregar saldo
+bot.onText(/\/recarga(?:\s+(\d+(?:[.,]\d{1,2})?))?/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const rawAmount = match[1];
+  if (rawAmount) {
+    const amount = parseFloat(rawAmount.replace(',', '.'));
+    if (isNaN(amount) || amount <= 0) {
+      return bot.sendMessage(chatId, '⚠️ Valor inválido. Use assim: <code>/recarga 30</code>', { parse_mode: 'HTML', ...backToMenuKeyboard() });
+    }
+    await handleMpRecharge(chatId, msg.from, amount);
+  } else {
+    await sendMpRechargeMenu(chatId);
+  }
+});
+
 // Comando /me (e alias /perfil) — mostra o ID de perfil da pessoa
 bot.onText(/\/(me|perfil|id)/, (msg) => {
   console.log('[recv] /me de', msg.chat.id, msg.from && msg.from.first_name);
@@ -225,6 +243,106 @@ bot.onText(/\/(me|perfil|id)/, (msg) => {
 bot.onText(/\/ajuda/, (msg) => {
   sendHelpMessage(msg.chat.id);
 });
+
+// ----------------------------------------------------------------
+// RECARGA DE SALDO VIA MERCADO PAGO
+// ----------------------------------------------------------------
+
+// Menu de valores rápidos para recarga
+async function sendMpRechargeMenu(chatId, messageId) {
+  const text =
+    `💰 <b>RECARGA DE SALDO</b>\n\n` +
+    `Escolha um valor para recarregar seu saldo de revendedor.\n\n` +
+    `⚡ O crédito entra <b>automaticamente</b> assim que o pagamento for aprovado pelo Mercado Pago (PIX ou cartão, à vista).\n\n` +
+    `💡 Ou use o comando <code>/recarga 50</code> com um valor personalizado (mínimo R$ 15,00).`;
+
+  const keyboard = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '💳 R$ 15,00', callback_data: 'mp_recharge_15' }],
+        [{ text: '💳 R$ 30,00', callback_data: 'mp_recharge_30' }],
+        [{ text: '💳 R$ 50,00', callback_data: 'mp_recharge_50' }],
+        [{ text: '💳 R$ 100,00', callback_data: 'mp_recharge_100' }],
+        [{ text: '🌐 Recarregar no Painel Web', url: `${PUBLIC_BASE_URL}/revendedor.html` }],
+        [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
+      ]
+    }
+  };
+
+  if (messageId) {
+    bot.editMessageText(text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML', ...keyboard })
+      .catch(() => bot.sendMessage(chatId, text, { parse_mode: 'HTML', ...keyboard }));
+  } else {
+    bot.sendMessage(chatId, text, { parse_mode: 'HTML', ...keyboard });
+  }
+}
+
+// Cria a preferência de pagamento e envia o link do Mercado Pago
+async function handleMpRecharge(chatId, user, amount) {
+  if (!RESELLER_API_KEY) {
+    return bot.sendMessage(chatId, '⚠️ <b>Bot em Manutenção:</b> chave de revendedor não configurada.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
+  }
+
+  const amountValue = Math.round(parseFloat(amount) * 100) / 100;
+  if (isNaN(amountValue) || amountValue < 15) {
+    return bot.sendMessage(chatId, '⚠️ O valor mínimo para recarga é <b>R$ 15,00</b>.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
+  }
+
+  const waitingMsg = await bot.sendMessage(chatId, `⏳ Gerando link de pagamento de <b>R$ ${amountValue.toFixed(2).replace('.', ',')}</b>...`).catch(() => null);
+
+  try {
+    const headers = { 'X-API-Key': RESELLER_API_KEY, 'Content-Type': 'application/json' };
+    if (user && user.id) headers['X-Telegram-Id'] = String(user.id);
+
+    const res = await fetch(`${API_BASE_URL}/api/v1/mp/create-preference`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ amount: amountValue })
+    });
+    const data = await res.json();
+
+    if (!data.success || !data.init_point) {
+      const errMsg = (data && data.error) || 'Erro desconhecido';
+      if (waitingMsg) bot.deleteMessage(chatId, waitingMsg.message_id).catch(() => {});
+      return bot.sendMessage(chatId,
+        `❌ <b>ERRO AO GERAR PAGAMENTO</b>\n\n${escapeHtml(errMsg)}\n\n` +
+        `💡 Se o problema persistir, recarregue pelo painel web: ${PUBLIC_BASE_URL}/revendedor.html`,
+        { parse_mode: 'HTML', ...backToMenuKeyboard() }
+      );
+    }
+
+    const isTest = String(data.init_point).includes('sandbox');
+    const payText =
+      `✅ <b>PAGAMENTO GERADO!</b>\n\n` +
+      `💰 <b>Valor:</b> R$ ${amountValue.toFixed(2).replace('.', ',')}\n` +
+      `🧾 <b>Referência:</b> <code>${escapeHtml(data.external_reference)}</code>\n` +
+      (isTest ? `🧪 <i>Ambiente de TESTE do Mercado Pago (sandbox).</i>\n` : '') +
+      `\n` +
+      `👇 Toque no botão abaixo para abrir o pagamento (PIX ou cartão).\n\n` +
+      `⚡ Assim que o pagamento for aprovado, seu saldo é creditado <b>automaticamente</b> aqui no bot.`;
+
+    const payKeyboard = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '💳 Pagar Agora', url: data.init_point }],
+          [{ text: '📊 Ver Meu Saldo', callback_data: 'check_balance' }],
+          [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
+        ]
+      }
+    };
+
+    if (waitingMsg) {
+      bot.editMessageText(payText, { chat_id: chatId, message_id: waitingMsg.message_id, parse_mode: 'HTML', ...payKeyboard })
+        .catch(() => bot.sendMessage(chatId, payText, { parse_mode: 'HTML', ...payKeyboard }));
+    } else {
+      bot.sendMessage(chatId, payText, { parse_mode: 'HTML', ...payKeyboard });
+    }
+  } catch (e) {
+    console.error('[recarga] falha:', e && e.message ? e.message : e);
+    if (waitingMsg) bot.deleteMessage(chatId, waitingMsg.message_id).catch(() => {});
+    bot.sendMessage(chatId, `❌ <b>Erro de Conexão:</b> não foi possível gerar o pagamento (${API_BASE_URL}).`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
+  }
+}
 
 // Comando /api — mostra a chave de API do revendedor para bots próprios
 bot.onText(/\/(api|minhaapi|apikey)/, async (msg) => {
@@ -242,6 +360,14 @@ bot.on('callback_query', async (query) => {
     await handlePurchase(chatId, query.from);
   } else if (action === 'check_balance') {
     await handleCheckBalance(chatId, query.from);
+  } else if (action === 'mp_recharge_menu') {
+    await sendMpRechargeMenu(chatId, query.message.message_id);
+  } else if (action && action.startsWith('mp_recharge_') && !action.includes('menu')) {
+    const rawValue = action.slice('mp_recharge_'.length);
+    const amount = parseFloat(rawValue.replace(',', '.'));
+    if (!isNaN(amount) && amount > 0) {
+      await handleMpRecharge(chatId, query.from, amount);
+    }
   } else if (action === 'my_id') {
     sendProfileId(chatId, query.from);
   } else if (action === 'my_api') {

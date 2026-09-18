@@ -21,6 +21,16 @@ const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_jwt_key_gerador_paine
 const NOTIFIER_BOT_TOKEN = process.env.NOTIFIER_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '';
 const NOTIFY_CHAT_ID = process.env.NOTIFY_CHAT_ID || '';
 
+// ==========================================
+// MERCADO PAGO (recarga automática de saldo)
+// ------------------------------------------
+// MERCADOPAGO_ACCESS_TOKEN: Access Token da aplicação (Desenvolvedores -> Apps)
+// MERCADOPAGO_WEBHOOK_SECRET: Secret do webhook (opcional, válida a assinatura X-Signature)
+// ==========================================
+const MERCADOPAGO_ACCESS_TOKEN = process.env.MERCADOPAGO_ACCESS_TOKEN || '';
+const MERCADOPAGO_WEBHOOK_SECRET = process.env.MERCADOPAGO_WEBHOOK_SECRET || '';
+const MP_API_BASE = 'https://api.mercadopago.com';
+
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -243,6 +253,160 @@ async function notifyRecharge({ reseller, amountPaid, method = 'PIX' }) {
   ];
 
   await sendTelegramAlert(lines.join('\n'), NOTIFY_CHAT_ID, 'RECHARGE-' + Date.now());
+}
+
+// ==========================================
+// MERCADO PAGO — HELPERS
+// ==========================================
+
+// Chama a API do Mercado Pago com o Access Token (fetch global do Node 22)
+async function mpFetch(path, { method = 'GET', body = null, idempotencyKey = null } = {}) {
+  if (!MERCADOPAGO_ACCESS_TOKEN) {
+    const err = new Error('MERCADOPAGO_ACCESS_TOKEN não configurado no .env');
+    err.mpNotConfigured = true;
+    throw err;
+  }
+  const headers = {
+    Authorization: `Bearer ${MERCADOPAGO_ACCESS_TOKEN}`
+  };
+  if (body) headers['Content-Type'] = 'application/json';
+  if (idempotencyKey) headers['X-Idempotency-Key'] = idempotencyKey;
+
+  const res = await fetch(`${MP_API_BASE}${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.message || `Mercado Pago API erro ${res.status}`);
+    err.status = res.status;
+    err.details = data;
+    throw err;
+  }
+  return data;
+}
+
+// Cria a preferência de pagamento (Checkout Pro) e registra no banco como pendente.
+// Retorna o link de pagamento (init_point) — em credenciais de teste, sandbox_init_point.
+async function mpCreatePreference({ resellerId, amount }) {
+  const externalReference = `mp_recharge_${resellerId}_${crypto.randomBytes(6).toString('hex')}`;
+  const baseUrl = (process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
+  const roundedAmount = Math.round(parseFloat(amount) * 100) / 100;
+
+  const pref = await mpFetch('/checkout/preferences', {
+    method: 'POST',
+    idempotencyKey: externalReference,
+    body: {
+      items: [{
+        title: 'Recarga de saldo — revendedor',
+        quantity: 1,
+        unit_price: roundedAmount,
+        currency_id: 'BRL'
+      }],
+      external_reference: externalReference,
+      notification_url: `${baseUrl}/api/v1/mp/webhook`,
+      back_urls: {
+        success: `${baseUrl}/revendedor.html#mp_ok`,
+        pending: `${baseUrl}/revendedor.html#mp_pending`,
+        failure: `${baseUrl}/revendedor.html#mp_fail`
+      },
+      auto_return: 'approved',
+      // Saldo é crédito à vista — sem parcelamento
+      payment_methods: { installments: 1 }
+    }
+  });
+
+  const now = new Date().toISOString();
+  await dbHelpers.db.prepare(`
+    INSERT INTO mp_payments (payment_id, preference_id, external_reference, reseller_id, amount, status, payment_method, processed, created_at, updated_at)
+    VALUES (NULL, ?, ?, ?, ?, 'pending', 'Mercado Pago', 0, ?, ?)
+  `).run(pref.id, externalReference, resellerId, roundedAmount, now, now);
+
+  return {
+    init_point: pref.init_point,
+    sandbox_init_point: pref.sandbox_init_point,
+    preference_id: pref.id,
+    external_reference: externalReference,
+    amount: roundedAmount
+  };
+}
+
+// Valida a assinatura X-Signature do webhook (ativa apenas se MERCADOPAGO_WEBHOOK_SECRET estiver configurado)
+function verifyMpSignature(req) {
+  if (!MERCADOPAGO_WEBHOOK_SECRET) return true;
+  const xSig = req.headers['x-signature'] || '';
+  const xReqId = req.headers['x-request-id'] || '';
+  const ts = (xSig.match(/ts=(\d+)/) || [])[1];
+  const v1 = (xSig.match(/v1=([a-f0-9]+)/) || [])[1];
+  const dataId = req.body && req.body.data ? req.body.data.id : '';
+  if (!ts || !v1 || !dataId) return false;
+  const manifest = `id:${dataId};request-id:${xReqId};ts:${ts};`;
+  const hmac = crypto.createHmac('sha256', MERCADOPAGO_WEBHOOK_SECRET).update(manifest).digest('hex');
+  try {
+    return crypto.timingSafeEqual(Buffer.from(hmac, 'hex'), Buffer.from(v1, 'hex'));
+  } catch (e) {
+    return false;
+  }
+}
+
+// Processa um pagamento aprovado do Mercado Pago (fonte da verdade: consulta à API).
+// Idempotente: se o payment_id já foi processado, não credita de novo.
+async function mpProcessApprovedPayment(paymentId) {
+  const payment = await mpFetch(`/v1/payments/${paymentId}`);
+  const ref = String(payment.external_reference || '');
+
+  // Só aceita pagamentos aprovados com referência de recarga do sistema
+  if (payment.status !== 'approved') {
+    return { ok: false, reason: `pagamento não aprovado (${payment.status || 'unknown'})` };
+  }
+  if (!ref.startsWith('mp_recharge_')) {
+    return { ok: false, reason: 'external_reference inválida' };
+  }
+
+  // Idempotência por payment_id
+  const byPaymentId = await dbHelpers.db.prepare('SELECT * FROM mp_payments WHERE payment_id = ?').get(String(paymentId));
+  if (byPaymentId && Number(byPaymentId.processed) === 1) {
+    return { ok: true, alreadyProcessed: true };
+  }
+
+  const record = await dbHelpers.db.prepare('SELECT * FROM mp_payments WHERE external_reference = ?').get(ref);
+  if (!record) {
+    return { ok: false, reason: 'preferência de recarga não encontrada' };
+  }
+
+  // Valor pago deve bater com o valor da preferência (centavos)
+  const expected = Math.round(Number(record.amount) * 100);
+  const paid = Math.round(Number(payment.transaction_amount) * 100);
+  if (expected !== paid) {
+    return { ok: false, reason: `valor divergente (esperado ${expected}, pago ${paid})` };
+  }
+
+  const reseller = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE id = ?').get(record.reseller_id);
+  if (!reseller) {
+    return { ok: false, reason: 'revendedor não encontrado' };
+  }
+
+  const amount = Number(record.amount);
+  const now = new Date().toISOString();
+
+  // Credita o saldo (R$) e registra a recarga como aprovada
+  await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits + ? AS NUMERIC), 2) WHERE id = ?')
+    .run(amount, record.reseller_id);
+  await dbHelpers.db.prepare(`
+    INSERT INTO recharges (reseller_id, credits, amount_paid, status, payment_method, created_at)
+    VALUES (?, ?, ?, 'approved', 'Mercado Pago', ?)
+  `).run(record.reseller_id, Math.floor(amount / parseFloat(reseller.cost_per_link || 2.99)), amount, now);
+
+  // Marca como processado + grava o payment_id (idempotência definitiva)
+  await dbHelpers.db.prepare('UPDATE mp_payments SET payment_id = ?, status = ?, processed = 1, updated_at = ? WHERE id = ?')
+    .run(String(paymentId), 'approved', now, record.id);
+
+  // Alerta no bot do dono
+  notifyRecharge({ reseller, amountPaid: amount, method: 'Mercado Pago PIX' })
+    .catch((e) => console.error('notifyRecharge (MP) falhou:', e.message));
+
+  return { ok: true, alreadyProcessed: false, amount, reseller: reseller.name };
 }
 
 async function notifyNewSale(opts = {}) {
@@ -1006,6 +1170,133 @@ app.post('/api/reseller/recharge', resellerUserAuth, async (req, res) => {
     balance: Number(updated.credits).toFixed(2),
     amount_paid: amountPaid
   });
+});
+
+// ==========================================
+// MERCADO PAGO — ROTAS
+// ==========================================
+
+// Cria preferência de pagamento (Painel do Revendedor — sessão JWT)
+app.post('/api/reseller/mp/create-preference', resellerUserAuth, async (req, res) => {
+  const { amount } = req.body;
+  const settings = await dbHelpers.getSettings();
+  const minAmount = parseFloat(settings.min_recharge_amount || '15.00');
+  const amountValue = parseFloat(amount);
+
+  if (isNaN(amountValue) || amountValue < minAmount) {
+    return res.status(400).json({
+      success: false,
+      error: `O valor mínimo para recarga via Mercado Pago é de R$ ${minAmount.toFixed(2).replace('.', ',')}.`
+    });
+  }
+
+  try {
+    const pref = await mpCreatePreference({ resellerId: req.reseller.id, amount: amountValue });
+    res.json({ success: true, ...pref, message: 'Preferência de pagamento criada. Abra o link para pagar.' });
+  } catch (err) {
+    dbHelpers.logError({
+      endpoint: '/api/reseller/mp/create-preference',
+      method: 'POST',
+      statusCode: 500,
+      errorType: 'MpPreferenceError',
+      message: err.message || String(err),
+      ip: getClientIp(req),
+      source: 'server',
+      details: err.details || null
+    });
+    res.status(err.mpNotConfigured ? 503 : 502).json({
+      success: false,
+      error: err.mpNotConfigured
+        ? 'Mercado Pago não configurado. O administrador precisa definir MERCADOPAGO_ACCESS_TOKEN no servidor.'
+        : `Falha ao criar o pagamento no Mercado Pago: ${err.message}`
+    });
+  }
+});
+
+// Cria preferência de pagamento (Bot do Telegram — API key + X-Telegram-Id)
+app.post('/api/v1/mp/create-preference', resellerBotAuth, async (req, res) => {
+  const { amount } = req.body;
+  const settings = await dbHelpers.getSettings();
+  const minAmount = parseFloat(settings.min_recharge_amount || '15.00');
+  const amountValue = parseFloat(amount);
+
+  if (isNaN(amountValue) || amountValue < minAmount) {
+    return res.status(400).json({
+      success: false,
+      error: `O valor mínimo para recarga via Mercado Pago é de R$ ${minAmount.toFixed(2).replace('.', ',')}.`
+    });
+  }
+
+  try {
+    const pref = await mpCreatePreference({ resellerId: req.reseller.id, amount: amountValue });
+    res.json({ success: true, ...pref, message: 'Preferência de pagamento criada. Abra o link para pagar.' });
+  } catch (err) {
+    res.status(err.mpNotConfigured ? 503 : 502).json({
+      success: false,
+      error: err.mpNotConfigured
+        ? 'Mercado Pago não configurado no servidor.'
+        : `Falha ao criar o pagamento no Mercado Pago: ${err.message}`
+    });
+  }
+});
+
+// Webhook do Mercado Pago (público — o MP chama ao receber um pagamento)
+app.post('/api/v1/mp/webhook', async (req, res) => {
+  // Sempre responde 200 para o MP não reenviar em loop
+  try {
+    if (!verifyMpSignature(req)) {
+      return res.status(401).json({ success: false, error: 'Assinatura inválida.' });
+    }
+
+    const { type, data } = req.body || {};
+    const paymentId = data && data.id;
+
+    if (type !== 'payment' || !paymentId) {
+      return res.json({ success: true, ignored: true });
+    }
+
+    const result = await mpProcessApprovedPayment(paymentId);
+    console.log(`[mp-webhook] payment ${paymentId}: ${result.ok ? 'processado' : 'ignorado'} (${result.reason || (result.alreadyProcessed ? 'já processado' : 'ok')})`);
+
+    if (!result.ok && result.reason) {
+      dbHelpers.logError({
+        endpoint: '/api/v1/mp/webhook',
+        method: 'POST',
+        statusCode: 200,
+        errorType: 'MpWebhookIgnored',
+        message: `Pagamento ${paymentId} ignorado: ${result.reason}`,
+        ip: getClientIp(req),
+        source: 'mercado_pago'
+      });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[mp-webhook] erro:', err.message);
+    dbHelpers.logError({
+      endpoint: '/api/v1/mp/webhook',
+      method: 'POST',
+      statusCode: 500,
+      errorType: 'MpWebhookError',
+      message: err.message || String(err),
+      ip: getClientIp(req),
+      source: 'mercado_pago'
+    });
+    res.json({ success: true, error: err.message }); // 200 mesmo assim (evita loop de reenvio)
+  }
+});
+
+// Lista os pagamentos Mercado Pago do revendedor (polling do painel enquanto espera o pagamento)
+app.get('/api/reseller/mp/payments', resellerUserAuth, async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit || '10', 10), 50);
+  const payments = await dbHelpers.db.prepare(`
+    SELECT id, external_reference, amount, status, payment_method, processed, created_at, updated_at
+    FROM mp_payments
+    WHERE reseller_id = ?
+    ORDER BY id DESC
+    LIMIT ?
+  `).all(req.reseller.id, limit);
+  res.json({ success: true, data: payments });
 });
 
 // Geração Manual de Link pelo Revendedor usando Saldo em Dinheiro (Desconta R$ 2,99)
