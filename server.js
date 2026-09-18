@@ -196,6 +196,33 @@ async function syncTelegramProfile() {
   }
 }
 
+// Próximo número de pedido (usado nas mensagens de falha quando a venda
+// ainda não foi gravada — ex.: estorno automático após falha na entrega)
+async function nextOrderNumber() {
+  try {
+    const row = await dbHelpers.db.prepare('SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM sales').get();
+    return row && row.next_id ? Number(row.next_id) : 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+// Estorno automático: devolve o custo debitado ao saldo do revendedor quando
+// a entrega falha. Idempotente por construção (o chamador controla quem estorna).
+async function autoRefund(resellerId, amount, extra = {}) {
+  await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits + ? AS NUMERIC), 2) WHERE id = ?').run(amount, resellerId);
+  dbHelpers.logError({
+    endpoint: extra.endpoint || '/api/v1/generate',
+    method: extra.method || 'POST',
+    statusCode: extra.statusCode || 409,
+    errorType: extra.errorType || 'DeliveryFailedRefund',
+    message: extra.message || `Estorno automático de R$ ${Number(amount).toFixed(2)} para o revendedor #${resellerId}.`,
+    ip: extra.ip || '127.0.0.1',
+    source: extra.source || 'server',
+    details: extra.details ? { ...extra.details, refunded: true, refund_amount: amount } : { refunded: true, refund_amount: amount }
+  }).catch(() => {});
+}
+
 // Envia alerta de nova venda para o bot de notificações do dono
 // Notifica no bot de alertas quando um revendedor recarrega o saldo
 async function notifyRecharge({ reseller, amountPaid, method = 'PIX' }) {
@@ -1002,9 +1029,11 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
   const finalSalePrice = sale_price ? parseFloat(sale_price) : (reseller.sale_price || 15.00);
   const profit = Math.max(0, finalSalePrice - costPrice);
 
+  let debited = false;
   try {
     // Desconta exatamente R$ 2,99 do saldo do revendedor
     await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits - ? AS NUMERIC), 2) WHERE id = ?').run(costPrice, reseller.id);
+    debited = true; // débito concluído — falhas daqui pra frente disparam estorno automático
 
     // Gera o link
     const generation = await dbHelpers.generateLink(`painel_manual:${reseller.name}`, reseller.id, ip);
@@ -1056,7 +1085,36 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
       sale_id: saleResult.lastInsertRowid
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: 'Erro ao gerar link manualmente: ' + err.message });
+    const orderNumber = await nextOrderNumber();
+    const reason = (err && err.message) || 'Falha na entrega do produto.';
+
+    // ESTORNO AUTOMÁTICO: devolve o valor debitado ao saldo do revendedor
+    if (debited) {
+      try {
+        await autoRefund(reseller.id, costPrice, {
+          endpoint: '/api/reseller/generate-manual',
+          method: 'POST',
+          errorType: 'DeliveryFailedRefund',
+          message: `Falha na entrega manual (${reason}). Estorno automático de R$ ${costPrice.toFixed(2).replace('.', ',')} para o revendedor #${reseller.id} (pedido #${orderNumber}).`,
+          ip,
+          source: 'reseller_panel',
+          details: { reseller_id: reseller.id, order_number: orderNumber, product: 'Spotify Premium', amount: finalSalePrice, error: reason }
+        });
+      } catch (refundErr) {
+        console.error('[generate-manual] estorno automático falhou:', refundErr.message);
+      }
+    }
+
+    res.status(debited ? 409 : 500).json({
+      success: false,
+      error: 'Erro ao gerar link manualmente: ' + reason,
+      refunded: debited,
+      refund_amount: debited ? Number(costPrice).toFixed(2) : '0.00',
+      order_number: orderNumber || null,
+      product: 'Spotify Premium',
+      amount: Number(finalSalePrice).toFixed(2),
+      reason
+    });
   }
 });
 
@@ -1102,9 +1160,11 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
   const finalSalePrice = sale_price ? parseFloat(sale_price) : (reseller.sale_price || 15.00);
   const profit = Math.max(0, finalSalePrice - costPrice);
 
+  let debited = false;
   try {
     // 3. Decrementa exatamente R$ 2,99 do Saldo do Revendedor
     await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits - ? AS NUMERIC), 2) WHERE id = ?').run(costPrice, reseller.id);
+    debited = true; // débito concluído — falhas daqui pra frente disparam estorno automático
 
     // 4. Gera o Link
     const generation = await dbHelpers.generateLink(`bot:${reseller.name}`, reseller.id, ip);
@@ -1168,18 +1228,113 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
     });
 
   } catch (err) {
+    const orderNumber = await nextOrderNumber();
+    const reason = (err && err.message) || 'Falha na entrega do produto.';
+
+    // ESTORNO AUTOMÁTICO: se o saldo já foi debitado e a entrega falhou,
+    // devolve o valor para o saldo do revendedor na hora.
+    if (debited) {
+      try {
+        await autoRefund(reseller.id, costPrice, {
+          endpoint: '/api/v1/generate',
+          method: 'POST',
+          errorType: 'DeliveryFailedRefund',
+          message: `Falha na entrega (${reason}). Estorno automático de R$ ${costPrice.toFixed(2).replace('.', ',')} para o revendedor #${reseller.id} (pedido #${orderNumber}).`,
+          ip,
+          source: 'bot_api',
+          details: { reseller_id: reseller.id, order_number: orderNumber, product: finalProduct, amount: finalSalePrice, error: reason }
+        });
+      } catch (refundErr) {
+        console.error('[generate] estorno automático falhou:', refundErr.message);
+      }
+    }
+
     dbHelpers.logError({
       endpoint: '/api/v1/generate',
       method: 'POST',
-      statusCode: 500,
+      statusCode: debited ? 409 : 500,
       errorType: 'BotGenerationError',
       message: err.message,
       ip,
       source: 'bot_api',
-      details: err.stack
+      details: { stack: err.stack, refunded: debited, order_number: orderNumber }
     });
-    res.status(500).json({ success: false, error: 'Falha no servidor ao gerar link para o bot.' });
+
+    res.status(debited ? 409 : 500).json({
+      success: false,
+      error: reason,
+      refunded: debited,                      // true: estorno já foi feito pelo servidor
+      refund_amount: debited ? Number(costPrice).toFixed(2) : '0.00',
+      order_number: orderNumber || null,
+      product: finalProduct,
+      amount: Number(finalSalePrice).toFixed(2),
+      reason
+    });
   }
+});
+
+// ==========================================
+// ESTORNO DE PEDIDO (falha de entrega reportada pelo bot/fornecedor)
+// - Devolve o custo debitado ao saldo do revendedor
+// - Idempotente: pedido já estornado não é estornado de novo
+// ==========================================
+app.post('/api/v1/refund', resellerBotAuth, async (req, res) => {
+  const ip = getClientIp(req);
+  const reseller = req.reseller;
+  const { token, reason } = req.body || {};
+
+  if (!token) {
+    return res.status(400).json({ success: false, error: 'O token do pedido é obrigatório para o estorno.' });
+  }
+
+  const sale = await dbHelpers.db.prepare('SELECT * FROM sales WHERE token = ?').get(String(token).trim());
+  if (!sale) {
+    return res.status(404).json({ success: false, error: 'Pedido não encontrado. Confira o token informado.' });
+  }
+
+  const alreadyFailed = String(sale.delivery_status || '').toLowerCase().includes('falhou');
+  const costPrice = parseFloat(sale.cost_price != null ? sale.cost_price : (reseller.cost_per_link || 2.99));
+  const failReason = (reason && String(reason).trim()) || 'Falha na entrega do produto.';
+  const newStatus = `Falhou (${failReason})`;
+
+  if (alreadyFailed) {
+    // Já estornado anteriormente — resposta idempotente (sem debitar nada de novo)
+    return res.json({
+      success: true,
+      already_refunded: true,
+      message: 'Este pedido já foi estornado anteriormente.',
+      order_number: sale.id,
+      product: sale.product || 'Spotify Premium',
+      amount: Number(sale.sale_price || 0).toFixed(2),
+      refund_amount: Number(costPrice).toFixed(2),
+      reason: failReason,
+      refunded: false
+    });
+  }
+
+  // Estorno: devolve o custo ao saldo do revendedor (autoRefund já credita e loga)
+  await autoRefund(reseller.id, costPrice, {
+    endpoint: '/api/v1/refund',
+    method: 'POST',
+    errorType: 'SaleRefunded',
+    message: `Estorno do pedido #${sale.id} (${sale.product || 'Spotify Premium'}) — R$ ${costPrice.toFixed(2).replace('.', ',')} devolvidos ao saldo do revendedor #${reseller.id}. Motivo: ${failReason}`,
+    ip,
+    source: 'bot_api',
+    details: { sale_id: sale.id, token: sale.token, reseller_id: reseller.id, refund_amount: costPrice, reason: failReason, delivery_status: newStatus }
+  });
+  await dbHelpers.db.prepare('UPDATE sales SET delivery_status = ? WHERE id = ?').run(newStatus, sale.id);
+
+  res.json({
+    success: true,
+    refunded: true,
+    message: 'Estorno concluído — o valor voltou para o saldo do revendedor.',
+    order_number: sale.id,
+    product: sale.product || 'Spotify Premium',
+    amount: Number(sale.sale_price || 0).toFixed(2),
+    refund_amount: Number(costPrice).toFixed(2),
+    reason: failReason,
+    delivery_status: newStatus
+  });
 });
 
 // Consulta de saldo do Revendedor
