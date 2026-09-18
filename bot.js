@@ -286,6 +286,9 @@ function brl(value) {
 // Usado pelos botões "Copiar código" e "Verificar" sem precisar reconsultar a API.
 const pixCache = new Map();
 
+// Última mensagem de PIX (QR/foto) enviada por chat — garante que só exista UMA cobrança na tela
+const lastPixMsg = new Map();
+
 // Cria a cobrança PIX no Mercado Pago e exibe o QR Code + copia-e-cola
 // DIRETO no chat do Telegram (o pagamento é feito sem sair do bot).
 async function handleMpRecharge(chatId, user, amount, messageId) {
@@ -360,28 +363,33 @@ async function handleMpRecharge(chatId, user, amount, messageId) {
     dropWaiting();
 
     // Envia o QR Code como FOTO (o app do banco lê direto da tela)
+    // Mantém apenas 1 mensagem na conversa: apaga QR anterior e a mensagem clicada ("Gerando...")
+    const prevPixMsg = lastPixMsg.get(chatId);
+    if (prevPixMsg && prevPixMsg !== messageId) bot.deleteMessage(chatId, prevPixMsg).catch(() => {});
+    let sentPix = null;
     if (data.qr_code_base64) {
-      await bot.sendPhoto(
+      sentPix = await bot.sendPhoto(
         chatId,
         Buffer.from(data.qr_code_base64, 'base64'),
         { caption, parse_mode: 'HTML', ...keyboard },
         { filename: 'pix-qrcode.png', contentType: 'image/png' }
       ).catch(async (e) => {
         console.error('[recarga] envio do QR falhou:', e && e.message ? e.message : e);
-        await bot.sendMessage(chatId,
+        sentPix = await bot.sendMessage(chatId,
           `${caption}\n\n🔑 <b>PIX Copia e Cola:</b>\n<code>${escapeHtml(data.qr_code)}</code>`,
           { parse_mode: 'HTML', ...keyboard }
-        ).catch(() => {});
+        ).catch(() => null);
       });
     } else {
-      await bot.sendMessage(chatId,
+      sentPix = await bot.sendMessage(chatId,
         `${caption}\n\n🔑 <b>PIX Copia e Cola:</b>\n<code>${escapeHtml(data.qr_code)}</code>`,
         { parse_mode: 'HTML', ...keyboard }
-      );
+      ).catch(() => null);
     }
-
-    // Restaura a mensagem clicada (que virou "Gerando...") para o menu de recarga
-    if (messageId) sendMpRechargeMenu(chatId, messageId);
+    if (sentPix) {
+      lastPixMsg.set(chatId, sentPix.message_id);
+      if (messageId) bot.deleteMessage(chatId, messageId).catch(() => {});
+    }
   } catch (e) {
     console.error('[recarga] falha:', e && e.message ? e.message : e);
     dropWaiting();
@@ -866,9 +874,18 @@ function formatPurchaseDate(iso) {
 // seguro (safeSend remove o teclado se o Telegram rejeitar o botão).
 function sendOrEdit(chatId, messageId, text, options) {
   const opts = options || {};
+  const isNotModified = (e) => e && e.message && String(e.message).includes('message is not modified');
   if (messageId) {
     return bot.editMessageText(text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML', ...opts })
-      .catch(() => safeSend(chatId, text, opts));
+      .catch((e) => {
+        if (isNotModified(e)) return null; // já está com esse conteúdo: sucesso
+        // Mensagem com mídia (foto do QR PIX): edita a LEGENDA mantendo a foto
+        return bot.editMessageCaption(chatId, messageId, text, { parse_mode: 'HTML', ...opts })
+          .catch((e2) => {
+            if (isNotModified(e2)) return null;
+            return safeSend(chatId, text, opts);
+          });
+      });
   }
   return safeSend(chatId, text, opts);
 }
