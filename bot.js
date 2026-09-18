@@ -179,7 +179,7 @@ function getMainKeyboard() {
           { text: '💳 Meu Saldo & Vendas (Revendedor)', callback_data: 'check_balance' }
         ],
         [
-          { text: '💰 Recarregar Saldo (Mercado Pago)', callback_data: 'mp_recharge_menu' }
+          { text: '💰 Recarregar Saldo via PIX', callback_data: 'mp_recharge_menu' }
         ],
         [
           { text: '🔑 Minha API (Revendedor)', callback_data: 'my_api' }
@@ -251,9 +251,9 @@ bot.onText(/\/ajuda/, (msg) => {
 // Menu de valores rápidos para recarga
 async function sendMpRechargeMenu(chatId, messageId) {
   const text =
-    `💰 <b>RECARGA DE SALDO</b>\n\n` +
-    `Escolha um valor para recarregar seu saldo de revendedor.\n\n` +
-    `⚡ O crédito entra <b>automaticamente</b> assim que o pagamento for aprovado pelo Mercado Pago (PIX ou cartão, à vista).\n\n` +
+    `💰 <b>RECARGA DE SALDO — PIX NA HORA</b>\n\n` +
+    `Escolha um valor e o <b>QR Code PIX + código copia-e-cola</b> aparecem aqui mesmo no chat.\n\n` +
+    `⚡ O saldo é creditado <b>automaticamente</b> assim que o pagamento for confirmado.\n\n` +
     `💡 Ou use o comando <code>/recarga 50</code> com um valor personalizado (mínimo R$ 15,00).`;
 
   const keyboard = {
@@ -277,7 +277,17 @@ async function sendMpRechargeMenu(chatId, messageId) {
   }
 }
 
-// Cria a preferência de pagamento e envia o link do Mercado Pago
+// Formata um número como moeda brasileira (R$ 30,00)
+function brl(value) {
+  return 'R$ ' + Number(value).toFixed(2).replace('.', ',');
+}
+
+// Cache em memória das cobranças PIX geradas nesta sessão do bot.
+// Usado pelos botões "Copiar código" e "Verificar" sem precisar reconsultar a API.
+const pixCache = new Map();
+
+// Cria a cobrança PIX no Mercado Pago e exibe o QR Code + copia-e-cola
+// DIRETO no chat do Telegram (o pagamento é feito sem sair do bot).
 async function handleMpRecharge(chatId, user, amount) {
   if (!RESELLER_API_KEY) {
     return bot.sendMessage(chatId, '⚠️ <b>Bot em Manutenção:</b> chave de revendedor não configurada.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
@@ -288,59 +298,178 @@ async function handleMpRecharge(chatId, user, amount) {
     return bot.sendMessage(chatId, '⚠️ O valor mínimo para recarga é <b>R$ 15,00</b>.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
   }
 
-  const waitingMsg = await bot.sendMessage(chatId, `⏳ Gerando link de pagamento de <b>R$ ${amountValue.toFixed(2).replace('.', ',')}</b>...`).catch(() => null);
+  const waitingMsg = await bot.sendMessage(chatId, `⏳ Gerando cobrança PIX de <b>${brl(amountValue)}</b>...`).catch(() => null);
+  const dropWaiting = () => { if (waitingMsg) bot.deleteMessage(chatId, waitingMsg.message_id).catch(() => {}); };
 
   try {
     const headers = { 'X-API-Key': RESELLER_API_KEY, 'Content-Type': 'application/json' };
     if (user && user.id) headers['X-Telegram-Id'] = String(user.id);
 
-    const res = await fetch(`${API_BASE_URL}/api/v1/mp/create-preference`, {
+    const res = await fetch(`${API_BASE_URL}/api/v1/mp/create-pix`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ amount: amountValue })
     });
     const data = await res.json();
 
-    if (!data.success || !data.init_point) {
+    if (!data.success || !data.qr_code) {
       const errMsg = (data && data.error) || 'Erro desconhecido';
-      if (waitingMsg) bot.deleteMessage(chatId, waitingMsg.message_id).catch(() => {});
+      dropWaiting();
       return bot.sendMessage(chatId,
-        `❌ <b>ERRO AO GERAR PAGAMENTO</b>\n\n${escapeHtml(errMsg)}\n\n` +
+        `❌ <b>ERRO AO GERAR O PIX</b>\n\n${escapeHtml(errMsg)}\n\n` +
         `💡 Se o problema persistir, recarregue pelo painel web: ${PUBLIC_BASE_URL}/revendedor.html`,
         { parse_mode: 'HTML', ...backToMenuKeyboard() }
       );
     }
 
-    const isTest = String(data.init_point).includes('sandbox');
-    const payText =
-      `✅ <b>PAGAMENTO GERADO!</b>\n\n` +
-      `💰 <b>Valor:</b> R$ ${amountValue.toFixed(2).replace('.', ',')}\n` +
-      `🧾 <b>Referência:</b> <code>${escapeHtml(data.external_reference)}</code>\n` +
-      (isTest ? `🧪 <i>Ambiente de TESTE do Mercado Pago (sandbox).</i>\n` : '') +
-      `\n` +
-      `👇 Toque no botão abaixo para abrir o pagamento (PIX ou cartão).\n\n` +
-      `⚡ Assim que o pagamento for aprovado, seu saldo é creditado <b>automaticamente</b> aqui no bot.`;
+    pixCache.set(data.external_reference, { code: data.qr_code, amount: amountValue, payment_id: data.payment_id });
 
-    const payKeyboard = {
+    const expiresTxt = data.expiration_minutes ? `${data.expiration_minutes} minutos` : '30 minutos';
+    const caption =
+      `⚡ <b>RECARGA VIA PIX</b>\n` +
+      `━━━━━━━━━━━━━━━\n` +
+      `💵 <b>Valor:</b> ${brl(amountValue)}\n` +
+      `⏳ <b>Válido por:</b> ${expiresTxt}\n` +
+      `🧾 <b>Referência:</b> <code>${escapeHtml(data.external_reference)}</code>\n` +
+      `━━━━━━━━━━━━━━━\n\n` +
+      `📱 <b>Como pagar:</b>\n` +
+      `1️⃣ Abra o app do seu banco\n` +
+      `2️⃣ Escolha <b>PIX → Ler QR Code</b> (ou PIX Copia e Cola)\n` +
+      `3️⃣ Aponte para o QR Code abaixo (ou use o botão de copiar)\n\n` +
+      `⚡ O saldo entra <b>automaticamente</b> assim que o pagamento for confirmado.`;
+
+    const keyboard = {
       reply_markup: {
         inline_keyboard: [
-          [{ text: '💳 Pagar Agora', url: data.init_point }],
+          [{ text: '📋 Copiar código PIX (Copia e Cola)', callback_data: `mp_pix_code_${data.external_reference}` }],
+          [{ text: '🔄 Já Paguei / Verificar Saldo', callback_data: `mp_pix_check_${data.external_reference}` }],
           [{ text: '📊 Ver Meu Saldo', callback_data: 'check_balance' }],
           [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
         ]
       }
     };
 
-    if (waitingMsg) {
-      bot.editMessageText(payText, { chat_id: chatId, message_id: waitingMsg.message_id, parse_mode: 'HTML', ...payKeyboard })
-        .catch(() => bot.sendMessage(chatId, payText, { parse_mode: 'HTML', ...payKeyboard }));
+    dropWaiting();
+
+    // Envia o QR Code como FOTO (o app do banco lê direto da tela)
+    if (data.qr_code_base64) {
+      await bot.sendPhoto(
+        chatId,
+        Buffer.from(data.qr_code_base64, 'base64'),
+        { caption, parse_mode: 'HTML', ...keyboard },
+        { filename: 'pix-qrcode.png', contentType: 'image/png' }
+      ).catch(async (e) => {
+        console.error('[recarga] envio do QR falhou:', e && e.message ? e.message : e);
+        await bot.sendMessage(chatId,
+          `${caption}\n\n🔑 <b>PIX Copia e Cola:</b>\n<code>${escapeHtml(data.qr_code)}</code>`,
+          { parse_mode: 'HTML', ...keyboard }
+        ).catch(() => {});
+      });
     } else {
-      bot.sendMessage(chatId, payText, { parse_mode: 'HTML', ...payKeyboard });
+      await bot.sendMessage(chatId,
+        `${caption}\n\n🔑 <b>PIX Copia e Cola:</b>\n<code>${escapeHtml(data.qr_code)}</code>`,
+        { parse_mode: 'HTML', ...keyboard }
+      );
     }
   } catch (e) {
     console.error('[recarga] falha:', e && e.message ? e.message : e);
-    if (waitingMsg) bot.deleteMessage(chatId, waitingMsg.message_id).catch(() => {});
-    bot.sendMessage(chatId, `❌ <b>Erro de Conexão:</b> não foi possível gerar o pagamento (${API_BASE_URL}).`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
+    dropWaiting();
+    bot.sendMessage(chatId, `❌ <b>Erro de Conexão:</b> não foi possível gerar o PIX (${API_BASE_URL}).`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
+  }
+}
+
+// Envia o código PIX copia-e-cola em bloco <code> (tocar para copiar no Telegram)
+async function sendPixCopyPaste(chatId, externalReference) {
+  const cached = pixCache.get(externalReference);
+  if (!cached || !cached.code) {
+    return bot.sendMessage(chatId,
+      '⚠️ <b>Código PIX expirado nesta conversa.</b>\n\nGere uma nova cobrança em <b>Recarregar Saldo</b> para receber um novo QR Code.',
+      { parse_mode: 'HTML', ...backToMenuKeyboard() }
+    );
+  }
+
+  const text =
+    `🔑 <b>PIX COPIA E COLA</b>\n` +
+    `💵 Valor: ${brl(cached.amount)}\n\n` +
+    `👇 Toque no código abaixo para <b>copiar</b>, depois cole no app do seu banco em <b>PIX → Copia e Cola</b>:`;
+
+  const keyboard = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🔄 Já Paguei / Verificar Saldo', callback_data: `mp_pix_check_${externalReference}` }],
+        [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
+      ]
+    }
+  };
+
+  return bot.sendMessage(chatId, `${text}\n\n<code>${escapeHtml(cached.code)}</code>`, { parse_mode: 'HTML', ...keyboard });
+}
+
+// Consulta o status da cobrança PIX e informa o revendedor (com crédito automático)
+async function checkPixStatus(chatId, user, externalReference) {
+  const cached = pixCache.get(externalReference);
+  try {
+    const headers = { 'X-API-Key': RESELLER_API_KEY };
+    if (user && user.id) headers['X-Telegram-Id'] = String(user.id);
+
+    const res = await fetch(`${API_BASE_URL}/api/v1/mp/payment-status?external_reference=${encodeURIComponent(externalReference)}`, { headers });
+    const data = await res.json();
+
+    if (!data.success) {
+      return bot.sendMessage(chatId, `❌ ${escapeHtml((data && data.error) || 'Não foi possível consultar o pagamento.')}`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
+    }
+
+    const amountTxt = brl(cached ? cached.amount : data.amount);
+
+    if (data.processed || data.status === 'approved') {
+      const okText =
+        `🎉 <b>PAGAMENTO CONFIRMADO!</b>\n\n` +
+        `✅ Recebemos seu PIX de <b>${amountTxt}</b>.\n` +
+        `💰 <b>Saldo atual:</b> <b>${brl(data.balance)}</b>\n\n` +
+        `O crédito já está disponível para gerar seus links!`;
+      const okKeyboard = {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🛒 Comprar / Gerar Link', callback_data: 'buy_now' }],
+            [{ text: '📊 Ver Meu Saldo', callback_data: 'check_balance' }],
+            [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
+          ]
+        }
+      };
+      return bot.sendMessage(chatId, okText, { parse_mode: 'HTML', ...okKeyboard });
+    }
+
+    const statusLabel = {
+      pending: '⏳ Aguardando pagamento',
+      in_process: '⏳ Em processamento',
+      authorized: '⏳ Autorizado (aguardando confirmação)',
+      rejected: '❌ Recusado',
+      cancelled: '❌ Cancelado',
+      expired: '⌛ Expirado'
+    }[data.status] || `⏳ ${data.status}`;
+
+    const waitText =
+      `<b>STATUS DA COBRANÇA PIX</b>\n\n` +
+      `💵 Valor: <b>${amountTxt}</b>\n` +
+      `📌 Situação: <b>${statusLabel}</b>\n\n` +
+      (data.status === 'rejected' || data.status === 'cancelled' || data.status === 'expired'
+        ? `Gere uma nova cobrança em <b>Recarregar Saldo</b>.`
+        : `Assim que o pagamento for identificado, o saldo entra <b>automaticamente</b>.\nSe você acabou de pagar, aguarde alguns segundos e toque em <b>Já Paguei</b> novamente.`);
+
+    const waitKeyboard = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🔄 Já Paguei / Verificar Saldo', callback_data: `mp_pix_check_${externalReference}` }],
+          [{ text: '📋 Ver código PIX', callback_data: `mp_pix_code_${externalReference}` }],
+          [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
+        ]
+      }
+    };
+
+    return bot.sendMessage(chatId, waitText, { parse_mode: 'HTML', ...waitKeyboard });
+  } catch (e) {
+    console.error('[recarga] status falhou:', e && e.message ? e.message : e);
+    bot.sendMessage(chatId, '❌ Não foi possível consultar o pagamento agora. Tente novamente em instantes.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
   }
 }
 
@@ -368,6 +497,12 @@ bot.on('callback_query', async (query) => {
     if (!isNaN(amount) && amount > 0) {
       await handleMpRecharge(chatId, query.from, amount);
     }
+  } else if (action && action.startsWith('mp_pix_code_')) {
+    // Botão "Copiar código PIX" — reenvia o copia-e-cola em bloco copiável
+    await sendPixCopyPaste(chatId, action.slice('mp_pix_code_'.length));
+  } else if (action && action.startsWith('mp_pix_check_')) {
+    // Botão "Já Paguei" — consulta o status e credita se o MP já aprovou
+    await checkPixStatus(chatId, query.from, action.slice('mp_pix_check_'.length));
   } else if (action === 'my_id') {
     sendProfileId(chatId, query.from);
   } else if (action === 'my_api') {

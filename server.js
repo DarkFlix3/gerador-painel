@@ -332,6 +332,62 @@ async function mpCreatePreference({ resellerId, amount }) {
   };
 }
 
+// Monta a data de expiração do PIX no formato ISO 8601 com offset do Brasil (-03:00)
+function mpPixExpiration(minutes) {
+  const ttl = Number.isFinite(minutes) && minutes > 0 ? minutes : 30;
+  // Converte para o horário de Brasília (UTC-3) e formata com offset explícito
+  const br = new Date(Date.now() + ttl * 60 * 1000 - 3 * 60 * 60 * 1000);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${br.getUTCFullYear()}-${p(br.getUTCMonth() + 1)}-${p(br.getUTCDate())}T${p(br.getUTCHours())}:${p(br.getUTCMinutes())}:${p(br.getUTCSeconds())}.000-03:00`;
+}
+
+// Cria uma cobrança PIX (pagamento imediato, sem redirecionamento) e registra no banco como pendente.
+// Retorna o QR Code (imagem base64 para o Telegram), o código copia-e-cola e o link do comprovante.
+// Usada pelo bot do Telegram (pagamento direto no chat) e pelo painel web.
+async function mpCreatePixPayment({ resellerId, amount, reseller }) {
+  const externalReference = `mp_recharge_${resellerId}_${crypto.randomBytes(6).toString('hex')}`;
+  const baseUrl = (process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
+  const roundedAmount = Math.round(parseFloat(amount) * 100) / 100;
+  const expirationMinutes = parseInt(process.env.MP_PIX_EXPIRATION_MINUTES || '30', 10);
+
+  const payment = await mpFetch('/v1/payments', {
+    method: 'POST',
+    idempotencyKey: externalReference,
+    body: {
+      transaction_amount: roundedAmount,
+      description: `Recarga de saldo - ${(reseller && reseller.name) || 'revendedor'}`,
+      payment_method_id: 'pix',
+      external_reference: externalReference,
+      notification_url: `${baseUrl}/api/v1/mp/webhook`,
+      date_of_expiration: mpPixExpiration(expirationMinutes),
+      payer: {
+        email: (reseller && reseller.email) || 'recarga@gerador-painel.local',
+        first_name: (reseller && reseller.name) || 'Revendedor'
+      }
+    }
+  });
+
+  const txData = (payment.point_of_interaction && payment.point_of_interaction.transaction_data) || {};
+
+  const now = new Date().toISOString();
+  await dbHelpers.db.prepare(`
+    INSERT INTO mp_payments (payment_id, preference_id, external_reference, reseller_id, amount, status, payment_method, processed, created_at, updated_at)
+    VALUES (?, NULL, ?, ?, ?, ?, 'PIX', 0, ?, ?)
+  `).run(String(payment.id), externalReference, resellerId, roundedAmount, payment.status || 'pending', now, now);
+
+  return {
+    payment_id: String(payment.id),
+    status: payment.status || 'pending',
+    external_reference: externalReference,
+    amount: roundedAmount,
+    expires_at: payment.date_of_expiration || null,
+    expiration_minutes: expirationMinutes,
+    qr_code: txData.qr_code || null,
+    qr_code_base64: txData.qr_code_base64 || null,
+    ticket_url: txData.ticket_url || null
+  };
+}
+
 // Valida a assinatura X-Signature do webhook (ativa apenas se MERCADOPAGO_WEBHOOK_SECRET estiver configurado)
 function verifyMpSignature(req) {
   if (!MERCADOPAGO_WEBHOOK_SECRET) return true;
@@ -390,20 +446,24 @@ async function mpProcessApprovedPayment(paymentId) {
   const amount = Number(record.amount);
   const now = new Date().toISOString();
 
+  // Rótulo do método: PIX (pagamento direto) ou Checkout Pro (link)
+  const isPix = String(payment.payment_method_id || '').toLowerCase() === 'pix';
+  const methodLabel = isPix ? 'Mercado Pago PIX' : 'Mercado Pago';
+
   // Credita o saldo (R$) e registra a recarga como aprovada
   await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits + ? AS NUMERIC), 2) WHERE id = ?')
     .run(amount, record.reseller_id);
   await dbHelpers.db.prepare(`
     INSERT INTO recharges (reseller_id, credits, amount_paid, status, payment_method, created_at)
-    VALUES (?, ?, ?, 'approved', 'Mercado Pago', ?)
-  `).run(record.reseller_id, Math.floor(amount / parseFloat(reseller.cost_per_link || 2.99)), amount, now);
+    VALUES (?, ?, ?, 'approved', ?, ?)
+  `).run(record.reseller_id, Math.floor(amount / parseFloat(reseller.cost_per_link || 2.99)), amount, methodLabel, now);
 
   // Marca como processado + grava o payment_id (idempotência definitiva)
-  await dbHelpers.db.prepare('UPDATE mp_payments SET payment_id = ?, status = ?, processed = 1, updated_at = ? WHERE id = ?')
-    .run(String(paymentId), 'approved', now, record.id);
+  await dbHelpers.db.prepare('UPDATE mp_payments SET payment_id = ?, status = ?, payment_method = ?, processed = 1, updated_at = ? WHERE id = ?')
+    .run(String(paymentId), 'approved', methodLabel, now, record.id);
 
   // Alerta no bot do dono
-  notifyRecharge({ reseller, amountPaid: amount, method: 'Mercado Pago PIX' })
+  notifyRecharge({ reseller, amountPaid: amount, method: methodLabel })
     .catch((e) => console.error('notifyRecharge (MP) falhou:', e.message));
 
   return { ok: true, alreadyProcessed: false, amount, reseller: reseller.name };
@@ -1240,6 +1300,132 @@ app.post('/api/v1/mp/create-preference', resellerBotAuth, async (req, res) => {
   }
 });
 
+// ==========================================
+// MERCADO PAGO — PIX DIRETO (QR Code + copia-e-cola)
+// ------------------------------------------
+// Gera a cobrança PIX sem redirecionamento: o QR e o código copia-e-cola
+// são exibidos dentro do próprio bot do Telegram.
+// ==========================================
+
+// Valida o valor de recarga e devolve o número já arredondado (ou lança erro tratado)
+async function parseRechargeAmount(rawAmount) {
+  const settings = await dbHelpers.getSettings();
+  const minAmount = parseFloat(settings.min_recharge_amount || '15.00');
+  const amountValue = parseFloat(rawAmount);
+  if (isNaN(amountValue) || amountValue < minAmount) {
+    return { error: `O valor mínimo para recarga é de R$ ${minAmount.toFixed(2).replace('.', ',')}.` };
+  }
+  if (amountValue > 5000) {
+    return { error: 'O valor máximo para uma recarga é de R$ 5.000,00.' };
+  }
+  return { amount: Math.round(amountValue * 100) / 100 };
+}
+
+// PIX direto — Painel do Revendedor (sessão JWT)
+app.post('/api/reseller/mp/create-pix', resellerUserAuth, async (req, res) => {
+  const parsed = await parseRechargeAmount(req.body && req.body.amount);
+  if (parsed.error) {
+    return res.status(400).json({ success: false, error: parsed.error });
+  }
+  try {
+    const pix = await mpCreatePixPayment({ resellerId: req.reseller.id, amount: parsed.amount, reseller: req.reseller });
+    res.json({ success: true, ...pix });
+  } catch (err) {
+    dbHelpers.logError({
+      endpoint: '/api/reseller/mp/create-pix',
+      method: 'POST',
+      statusCode: 502,
+      errorType: 'MpPixError',
+      message: err.message || String(err),
+      ip: getClientIp(req),
+      source: 'server',
+      details: err.details || null
+    });
+    res.status(err.mpNotConfigured ? 503 : 502).json({
+      success: false,
+      error: err.mpNotConfigured
+        ? 'Mercado Pago não configurado. O administrador precisa definir MERCADOPAGO_ACCESS_TOKEN no servidor.'
+        : `Falha ao gerar o PIX: ${err.message}`
+    });
+  }
+});
+
+// PIX direto — Bot do Telegram (API Key + X-Telegram-Id)
+app.post('/api/v1/mp/create-pix', resellerBotAuth, async (req, res) => {
+  const parsed = await parseRechargeAmount(req.body && req.body.amount);
+  if (parsed.error) {
+    return res.status(400).json({ success: false, error: parsed.error });
+  }
+  try {
+    const pix = await mpCreatePixPayment({ resellerId: req.reseller.id, amount: parsed.amount, reseller: req.reseller });
+    res.json({ success: true, ...pix });
+  } catch (err) {
+    dbHelpers.logError({
+      endpoint: '/api/v1/mp/create-pix',
+      method: 'POST',
+      statusCode: 502,
+      errorType: 'MpPixError',
+      message: err.message || String(err),
+      ip: getClientIp(req),
+      source: 'server',
+      details: err.details || null
+    });
+    res.status(err.mpNotConfigured ? 503 : 502).json({
+      success: false,
+      error: err.mpNotConfigured
+        ? 'Mercado Pago não configurado no servidor.'
+        : `Falha ao gerar o PIX: ${err.message}`
+    });
+  }
+});
+
+// Consulta o status de um pagamento PIX pelo external_reference (polling do bot/painel).
+// Se o webhook já creditou, processed = 1 e o saldo atual é devolvido.
+app.get('/api/v1/mp/payment-status', resellerBotAuth, async (req, res) => {
+  const ref = String(req.query.external_reference || '').trim();
+  if (!ref) {
+    return res.status(400).json({ success: false, error: 'Informe external_reference.' });
+  }
+
+  const record = await dbHelpers.db.prepare('SELECT * FROM mp_payments WHERE external_reference = ? AND reseller_id = ?')
+    .get(ref, req.reseller.id);
+  if (!record) {
+    return res.status(404).json({ success: false, error: 'Cobrança não encontrada.' });
+  }
+
+  let status = record.status;
+  let processed = Number(record.processed) === 1;
+
+  // Se o webhook ainda não chegou, consulta o MP na hora (fonte da verdade).
+  // Isso cobre webhook atrasado/não configurado: o crédito acontece assim que o usuário checa.
+  if (!processed && MERCADOPAGO_ACCESS_TOKEN && record.payment_id) {
+    try {
+      const result = await mpProcessApprovedPayment(record.payment_id);
+      if (result.ok && !result.alreadyProcessed) {
+        processed = true;
+        status = 'approved';
+      } else if (!result.ok && result.reason && result.reason.includes('não aprovado')) {
+        const payment = await mpFetch(`/v1/payments/${record.payment_id}`);
+        status = payment.status || status;
+        await dbHelpers.db.prepare('UPDATE mp_payments SET status = ?, updated_at = ? WHERE id = ?')
+          .run(status, new Date().toISOString(), record.id);
+      }
+    } catch (e) {
+      console.error('[mp-status] verificação falhou:', e.message);
+    }
+  }
+
+  const reseller = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(req.reseller.id);
+  res.json({
+    success: true,
+    external_reference: ref,
+    status,
+    processed,
+    amount: Number(record.amount),
+    balance: reseller ? parseFloat(reseller.credits).toFixed(2) : null
+  });
+});
+
 // Webhook do Mercado Pago (público — o MP chama ao receber um pagamento)
 app.post('/api/v1/mp/webhook', async (req, res) => {
   // Sempre responde 200 para o MP não reenviar em loop
@@ -1248,10 +1434,20 @@ app.post('/api/v1/mp/webhook', async (req, res) => {
       return res.status(401).json({ success: false, error: 'Assinatura inválida.' });
     }
 
-    const { type, data } = req.body || {};
-    const paymentId = data && data.id;
+    // O Mercado Pago entrega o mesmo evento de formas diferentes:
+    //  - Webhook (JSON):   { type: 'payment', data: { id: '123' } }
+    //  - IPN (query):      ?topic=payment&id=123
+    //  - Alguns casos:     { action: 'payment.updated', data: { id: '123' } }
+    const body = req.body || {};
+    const type = body.type || body.topic || req.query.type || req.query.topic || '';
+    const data = body.data || {};
+    const paymentId = data.id
+      || req.query['data.id']
+      || req.query.id
+      || (body.resource ? String(body.resource).split('/').pop() : '');
 
-    if (type !== 'payment' || !paymentId) {
+    // Ignora tópicos que não sejam de pagamento (ex.: merchant_order)
+    if (!paymentId || (type && type !== 'payment')) {
       return res.json({ success: true, ignored: true });
     }
 
