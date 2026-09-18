@@ -63,6 +63,13 @@ const formatMoneyBr = (value) => {
   return 'R$ ' + n.toFixed(2).replace('.', ',');
 };
 
+// Mascara telefone/ID para a notificação (ex.: 7740000084 -> 774***84)
+const maskUserId = (value) => {
+  const s = String(value == null ? '' : value).replace(/\D/g, '');
+  if (s.length <= 5) return s || '—';
+  return s.slice(0, 3) + '***' + s.slice(-2);
+};
+
 // Custo do produto definido pelo ADMIN (settings.admin_cost_per_link) — com cache
 let _adminCostCache = null;
 async function getAdminCost() {
@@ -190,6 +197,26 @@ async function syncTelegramProfile() {
 }
 
 // Envia alerta de nova venda para o bot de notificações do dono
+// Notifica no bot de alertas quando um revendedor recarrega o saldo
+async function notifyRecharge({ reseller, amountPaid, method = 'PIX' }) {
+  if (!NOTIFIER_BOT_TOKEN || !NOTIFY_CHAT_ID) return;
+  if (typeof fetch !== 'function') return;
+
+  const phone = (reseller && reseller.phone) || (reseller && reseller.telegram_id) || '';
+  const userLabel = maskUserId(phone);
+  const methodLabel = `Depósito via ${escHtml(method)}${String(method).toLowerCase().includes('binance') ? ' 🟡' : ''}`;
+
+  const lines = [
+    '<b>Novos créditos adicionados!</b>',
+    '',
+    `👤 Usuário: ${userLabel}`,
+    `💵 Valor: ${formatMoneyBr(amountPaid)}`,
+    `💳 Método: ${methodLabel}`
+  ];
+
+  await sendTelegramAlert(lines.join('\n'), NOTIFY_CHAT_ID, 'RECHARGE-' + Date.now());
+}
+
 async function notifyNewSale(opts = {}) {
   const {
     service = 'Spotify Premium',
@@ -908,7 +935,8 @@ app.post('/api/reseller/regenerate-key', resellerUserAuth, async (req, res) => {
 
 // Recarregar Saldo / Créditos pelo Revendedor (Valor Mínimo: R$ 15,00)
 app.post('/api/reseller/recharge', resellerUserAuth, async (req, res) => {
-  const { credits, amount } = req.body;
+  const { credits, amount, payment_method } = req.body;
+  const paymentMethod = String(payment_method || 'PIX').trim() || 'PIX';
   const settings = await dbHelpers.getSettings();
   const minAmount = parseFloat(settings.min_recharge_amount || '15.00');
   const costPerCredit = parseFloat(req.reseller.cost_per_link || 2.99);
@@ -934,8 +962,12 @@ app.post('/api/reseller/recharge', resellerUserAuth, async (req, res) => {
   await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits + ? AS NUMERIC), 2) WHERE id = ?').run(amountPaid, req.reseller.id);
   await dbHelpers.db.prepare(`
     INSERT INTO recharges (reseller_id, credits, amount_paid, status, payment_method, created_at)
-    VALUES (?, ?, ?, 'approved', 'PIX', ?)
-  `).run(req.reseller.id, Math.floor(amountPaid / costPerCredit), amountPaid, now);
+    VALUES (?, ?, ?, 'approved', ?, ?)
+  `).run(req.reseller.id, Math.floor(amountPaid / costPerCredit), amountPaid, paymentMethod, now);
+
+  // Notifica a recarga no bot de alertas (formato: Novos créditos adicionados!)
+  notifyRecharge({ reseller: req.reseller, amountPaid, method: paymentMethod })
+    .catch((err) => console.error('notifyRecharge falhou:', err.message));
 
   const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(req.reseller.id);
 

@@ -572,19 +572,51 @@ document.addEventListener('DOMContentLoaded', () => {
   // ==========================================
   // RECARGA DE SALDO (VALOR MÍNIMO R$ 15,00)
   // ==========================================
-  window.rechargeCredits = async function(credits, amount) {
+  // Método de pagamento atualmente selecionado no formulário de recarga (PIX | Binance Pay)
+  let selectedPaymentMethod = 'PIX';
+
+  const setRechargeMethod = (method) => {
+    selectedPaymentMethod = method;
+    document.querySelectorAll('.recharge-method-btn').forEach((btn) => {
+      const active = btn.dataset.method === method;
+      btn.classList.toggle('border-emerald-500/60', active);
+      btn.classList.toggle('border-white/10', !active);
+      const check = btn.querySelector('.method-check');
+      if (check) {
+        check.classList.toggle('border-emerald-400', active);
+        check.classList.toggle('bg-emerald-400', active);
+        check.classList.toggle('text-slate-950', active);
+        check.classList.toggle('border-white/20', !active);
+        check.classList.toggle('text-transparent', !active);
+      }
+    });
+    const btnRechargeLabel = document.getElementById('btn-recharge-label');
+    if (btnRechargeLabel) {
+      btnRechargeLabel.textContent = String(method).toLowerCase().includes('binance')
+        ? 'CONFIRMAR RECARGA VIA BINANCE PAY 🟡'
+        : 'CONFIRMAR RECARGA VIA PIX';
+    }
+  };
+
+  document.querySelectorAll('.recharge-method-btn').forEach((btn) => {
+    btn.addEventListener('click', () => setRechargeMethod(btn.dataset.method));
+  });
+
+  window.rechargeCredits = async function(credits, amount, paymentMethod) {
+    const method = String(paymentMethod || selectedPaymentMethod || 'PIX').trim() || 'PIX';
+    const methodLabel = String(method).toLowerCase().includes('binance') ? 'Binance Pay 🟡' : 'PIX';
     const minRecharge = 15.00;
     if (amount < minRecharge) {
       showToast(`O valor mínimo para recarga de saldo é de R$ ${minRecharge.toFixed(2).replace('.', ',')}.`, 'error');
       return;
     }
 
-    if (!confirm(`Confirmar recarga de +${credits} créditos por R$ ${amount.toFixed(2).replace('.', ',')} via PIX?`)) return;
+    if (!confirm(`Confirmar recarga de R$ ${amount.toFixed(2).replace('.', ',')} via ${methodLabel}?`)) return;
 
     try {
       const res = await resellerFetch('/api/reseller/recharge', {
         method: 'POST',
-        body: JSON.stringify({ credits, amount })
+        body: JSON.stringify({ credits, amount, payment_method: method })
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error);
@@ -637,7 +669,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      rechargeCredits(null, amount);
+      rechargeCredits(null, amount, selectedPaymentMethod);
     });
   }
 
