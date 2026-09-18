@@ -316,7 +316,13 @@ const resellerUserAuth = async (req, res, next) => {
 };
 
 // 3. Reseller Bot API Auth (Chave de API / Header)
-const resellerBotAuth = async (req, res, next) => {
+// -------------------------------------------------
+// botKeyAuth: valida SOMENTE a chave de API e carrega o revendedor dono da
+// chave. NÃO exige vínculo de Telegram — usado no "Minhas Compras" do bot,
+// onde o cliente final não possui conta de revendedor vinculada.
+// resellerBotAuth: botKeyAuth + vínculo opcional pelo header X-Telegram-Id.
+// -------------------------------------------------
+const botKeyAuth = async (req, res, next) => {
   const ip = getClientIp(req);
   let apiKey = req.headers['x-api-key'];
   
@@ -355,6 +361,16 @@ const resellerBotAuth = async (req, res, next) => {
     return res.status(403).json({ success: false, error: 'Chave de API inválida.' });
   }
 
+  req.reseller = reseller;
+  next();
+};
+
+const resellerBotAuth = async (req, res, next) => {
+  // 1) Valida apenas a chave de API (em caso de falha, botKeyAuth já respondeu)
+  let keyValid = false;
+  await botKeyAuth(req, res, () => { keyValid = true; });
+  if (!keyValid) return;
+
   // ==========================================
   // VÍNCULO POR ID DE PERFIL (Telegram)
   // ------------------------------------------
@@ -376,19 +392,19 @@ const resellerBotAuth = async (req, res, next) => {
     if (byTg.blocked === 1 || byTg.active !== 1) {
       return res.status(403).json({ success: false, error: 'A conta vinculada a este perfil está bloqueada ou inativa.' });
     }
-    reseller = byTg;
+    req.reseller = byTg;
   }
 
-  if (reseller.blocked === 1) {
+  if (req.reseller.blocked === 1) {
     dbHelpers.logError({
       endpoint: req.originalUrl,
       method: req.method,
       statusCode: 403,
       errorType: 'ResellerBlocked',
-      message: `Bot bloqueado: Revendedor #${reseller.id} (${reseller.name}) foi bloqueado pelo administrador.`,
+      message: `Bot bloqueado: Revendedor #${req.reseller.id} (${req.reseller.name}) foi bloqueado pelo administrador.`,
       ip,
       source: 'bot_api',
-      details: { reseller_id: reseller.id, name: reseller.name }
+      details: { reseller_id: req.reseller.id, name: req.reseller.name }
     });
     return res.status(403).json({
       success: false,
@@ -396,20 +412,19 @@ const resellerBotAuth = async (req, res, next) => {
     });
   }
 
-  if (reseller.active !== 1) {
+  if (req.reseller.active !== 1) {
     dbHelpers.logError({
       endpoint: req.originalUrl,
       method: req.method,
       statusCode: 403,
       errorType: 'ResellerInactive',
-      message: `Bot pausado: Revendedor #${reseller.id} (${reseller.name}) está inativo.`,
+      message: `Bot pausado: Revendedor #${req.reseller.id} (${req.reseller.name}) está inativo.`,
       ip,
       source: 'bot_api'
     });
     return res.status(403).json({ success: false, error: 'Conta de revendedor inativa ou pausada.' });
   }
 
-  req.reseller = reseller;
   next();
 };
 
@@ -964,8 +979,8 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
     // Registra a venda no histórico de clientes do revendedor
     const now = new Date().toISOString();
     const saleResult = await dbHelpers.db.prepare(`
-      INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_id, customer_contact, sale_price, cost_price, profit, delivery_status, created_at)
-      VALUES (?, ?, ?, ?, 'manual_web', ?, ?, ?, ?, 'Entregue (Manual)', ?) RETURNING id
+      INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_id, customer_contact, product, sale_price, cost_price, profit, delivery_status, created_at)
+      VALUES (?, ?, ?, ?, 'manual_web', ?, ?, ?, ?, ?, 'Entregue (Manual)', ?) RETURNING id
     `).run(
       reseller.id,
       generation.token,
@@ -1048,6 +1063,7 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
   const finalCustomerName = customer_name ? customer_name.trim() : 'Cliente Anônimo';
   const finalCustomerId = customer_id ? String(customer_id).trim() : null;
   const finalContact = customer_contact ? String(customer_contact).trim() : null;
+  const finalProduct = (req.body && req.body.product ? String(req.body.product).trim() : '') || 'Spotify Premium';
 
   // Preço de venda cobrado do cliente (ou usa o padrão do revendedor)
   const finalSalePrice = sale_price ? parseFloat(sale_price) : (reseller.sale_price || 15.00);
@@ -1063,8 +1079,8 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
     // 5. Registra a Venda no Histórico de Clientes do Revendedor
     const now = new Date().toISOString();
     const saleResult = await dbHelpers.db.prepare(`
-      INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_id, customer_contact, sale_price, cost_price, profit, delivery_status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Entregue', ?) RETURNING id
+      INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_id, customer_contact, product, sale_price, cost_price, profit, delivery_status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Entregue', ?) RETURNING id
     `).run(
       reseller.id,
       generation.token,
@@ -1072,6 +1088,7 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
       finalCustomerName,
       finalCustomerId,
       finalContact,
+      finalProduct,
       finalSalePrice,
       costPrice,
       profit,
@@ -1152,6 +1169,82 @@ app.get('/api/v1/balance', resellerBotAuth, async (req, res) => {
     total_sales: Number(stats.total_sales || 0),
     total_revenue: Number(stats.total_revenue || 0)
   });
+});
+
+// ==========================================
+// MINHAS COMPRAS (cliente final do bot)
+// ------------------------------------------
+// Consulta as compras do comprador final identificado pelo Telegram:
+// headers X-Telegram-Id (id numérico) e/ou X-Telegram-Username (@usuario).
+// Agrupa por produto e devolve os itens entregues para o bot gerar o .txt.
+// ==========================================
+app.get('/api/v1/my-purchases', botKeyAuth, async (req, res) => {
+  try {
+    const tgId = (req.headers['x-telegram-id'] || '').toString().trim();
+    const tgUsername = (req.headers['x-telegram-username'] || '').toString().trim().replace(/^@/, '').toLowerCase();
+
+    if (!tgId && !tgUsername) {
+      return res.status(400).json({ success: false, error: 'Identificação do cliente não fornecida. Envie o header X-Telegram-Id e/ou X-Telegram-Username.' });
+    }
+
+    const clauses = [];
+    const params = [];
+    if (tgId) {
+      clauses.push('customer_id = ?');
+      params.push('tg_' + tgId);
+      clauses.push('customer_id = ?');
+      params.push(tgId);
+    }
+    if (tgUsername) {
+      clauses.push('LOWER(customer_contact) = LOWER(?)');
+      params.push('@' + tgUsername);
+    }
+
+    const where = clauses.map((c) => `(${c})`).join(' OR ');
+    const rows = await dbHelpers.db.prepare(`
+      SELECT id, token, target_url, product, sale_price, delivery_status, created_at
+      FROM sales
+      WHERE ${where}
+      ORDER BY created_at DESC
+    `).all(...params);
+
+    // Agrupa por produto (coluna product com fallback para o produto padrão)
+    const byProduct = {};
+    for (const row of rows) {
+      const product = (row.product && String(row.product).trim()) || 'Spotify Premium';
+      if (!byProduct[product]) byProduct[product] = [];
+      byProduct[product].push({
+        id: row.id,
+        token: row.token,
+        link: row.target_url,
+        sale_price: row.sale_price,
+        delivery_status: row.delivery_status,
+        created_at: row.created_at
+      });
+    }
+
+    const purchases = Object.entries(byProduct)
+      .map(([product, items]) => ({ product, total: items.length, items }))
+      .sort((a, b) => b.total - a.total);
+
+    res.json({
+      success: true,
+      customer_id: tgId ? 'tg_' + tgId : null,
+      customer_contact: tgUsername ? '@' + tgUsername : null,
+      purchases
+    });
+  } catch (err) {
+    dbHelpers.logError({
+      endpoint: '/api/v1/my-purchases',
+      method: 'GET',
+      statusCode: 500,
+      errorType: 'QueryError',
+      message: err.message,
+      source: 'bot_api',
+      details: err.stack
+    });
+    res.status(500).json({ success: false, error: 'Erro interno ao consultar suas compras.' });
+  }
 });
 
 // ==========================================

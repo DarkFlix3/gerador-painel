@@ -169,6 +169,7 @@ const SQLITE_DDL = `
     customer_name TEXT,
     customer_id TEXT,
     customer_contact TEXT,
+    product TEXT DEFAULT 'Spotify Premium',
     sale_price REAL DEFAULT 15.00,
     cost_price REAL DEFAULT 2.99,
     profit REAL DEFAULT 12.01,
@@ -249,6 +250,7 @@ const POSTGRES_DDL = `
     customer_name TEXT,
     customer_id TEXT,
     customer_contact TEXT,
+    product TEXT DEFAULT 'Spotify Premium',
     sale_price DOUBLE PRECISION DEFAULT 15.00,
     cost_price DOUBLE PRECISION DEFAULT 2.99,
     profit DOUBLE PRECISION DEFAULT 12.01,
@@ -303,6 +305,10 @@ const EXTRA_COLUMNS = {
     'cost_per_link DOUBLE PRECISION DEFAULT 2.99',
     // ID de perfil do Telegram: une a conta do site com o bot (saldo único)
     'telegram_id TEXT'
+  ],
+  sales: [
+    // Produto vendido (ex.: Spotify Premium) — usado no menu Minhas Compras do bot
+    "product TEXT DEFAULT 'Spotify Premium'"
   ]
 };
 

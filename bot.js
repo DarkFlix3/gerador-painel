@@ -99,9 +99,19 @@ function sendProfileId(chatId, user) {
     `1️⃣ Abra o painel: ${PUBLIC_BASE_URL}/revendedor.html\n` +
     `2️⃣ Entre na aba <b>Meu Perfil</b>\n` +
     `3️⃣ Cole seu ID de Perfil e salve.\n\n` +
-    `Depois de vinculado, o comando /saldo mostra o saldo da SUA conta.`;
+    `Depois de vinculado, o comando /saldo mostra o saldo da SUA conta.\n\n` +
+    `📦 Toque em <b>Minhas Compras</b> para baixar um arquivo <b>.txt</b> com todos os acessos que você já recebeu.`;
 
-  bot.sendMessage(chatId, text, { parse_mode: 'HTML', ...backToMenuKeyboard() });
+  const profileKeyboard = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '📦 Minhas Compras', callback_data: 'my_purchases' }],
+        [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
+      ]
+    }
+  };
+
+  bot.sendMessage(chatId, text, { parse_mode: 'HTML', ...profileKeyboard });
 }
 
 // Envio seguro: se o botão (URL) for rejeitado pelo Telegram, entrega o texto sem botões
@@ -232,6 +242,11 @@ bot.on('callback_query', async (query) => {
     await handleMyApi(chatId, query.from);
   } else if (action === 'my_api_rotate') {
     await handleMyApiRotate(chatId, query.from);
+  } else if (action === 'my_purchases') {
+    await handleMyPurchases(chatId, query.from, query.message.message_id);
+  } else if (action && action.startsWith('my_purchases_prod_')) {
+    const idx = parseInt(action.slice('my_purchases_prod_'.length), 10);
+    if (!isNaN(idx)) await handleMyPurchasesProductTxt(chatId, query.from, idx);
   } else if (action === 'how_it_works') {
     sendHelpMessage(chatId);
   } else if (action === 'support') {
@@ -272,6 +287,7 @@ async function handlePurchase(chatId, user) {
         customer_name: customerName,
         customer_id: customerId,
         customer_contact: customerContact,
+        product: 'Spotify Premium',
         sale_price: DEFAULT_SALE_PRICE
       })
     });
@@ -506,6 +522,160 @@ async function handleMyApiRotate(chatId, user) {
     }
   } catch (e) {
     bot.sendMessage(chatId, '❌ Não foi possível conectar ao servidor para renovar a chave.');
+  }
+}
+
+// ==========================================
+// MINHAS COMPRAS (cliente final)
+// ------------------------------------------
+// Lista os produtos que a pessoa comprou e entrega um arquivo .txt com
+// os acessos já entregues daquele produto.
+// ==========================================
+
+// Consulta as compras na API usando o ID/username do Telegram
+async function fetchMyPurchases(user) {
+  const headers = { 'X-API-Key': RESELLER_API_KEY };
+  if (user && user.id) headers['X-Telegram-Id'] = String(user.id);
+  if (user && user.username) headers['X-Telegram-Username'] = user.username;
+  const res = await fetch(`${API_BASE_URL}/api/v1/my-purchases`, { headers });
+  return { status: res.status, data: await res.json() };
+}
+
+// Ícone sugestivo por produto (fallback genérico)
+function productIcon(product) {
+  const p = String(product || '').toLowerCase();
+  if (p.includes('spotify')) return '🎧';
+  if (p.includes('netflix')) return '🎬';
+  if (p.includes('gemin')) return '🤖';
+  if (p.includes('disney')) return '🏰';
+  if (p.includes('prime')) return '📺';
+  if (p.includes('apple')) return '🍎';
+  return '📦';
+}
+
+// Formata a data ISO (UTC) para pt-BR no fuso de Brasília
+function formatPurchaseDate(iso) {
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return String(iso || '');
+    return d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+  } catch (e) {
+    return String(iso || '');
+  }
+}
+
+// Envia uma mensagem editando a atual quando possível (sem poluir o chat)
+function sendOrEdit(chatId, messageId, text, options) {
+  if (messageId) {
+    return bot.editMessageText(text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML', ...options })
+      .catch(() => bot.sendMessage(chatId, text, { parse_mode: 'HTML', ...options }).catch(() => {}));
+  }
+  return bot.sendMessage(chatId, text, { parse_mode: 'HTML', ...options }).catch(() => {});
+}
+
+// Tela: lista os produtos comprados (botões) para escolher e baixar o .txt
+async function handleMyPurchases(chatId, user, messageId) {
+  if (!RESELLER_API_KEY) {
+    return bot.sendMessage(chatId, '⚠️ <b>Bot em Manutenção:</b> chave de revendedor não configurada.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
+  }
+
+  try {
+    const { status, data } = await fetchMyPurchases(user);
+    if (!data || !data.success) {
+      const errMsg = (data && data.error) || 'Não foi possível consultar suas compras.';
+      return sendOrEdit(chatId, messageId, `❌ <b>Erro:</b> ${escapeHtml(errMsg)}`, backToMenuKeyboard());
+    }
+
+    const purchases = data.purchases || [];
+    if (purchases.length === 0) {
+      const emptyText =
+        `📦 <b>MINHAS COMPRAS</b>\n\n` +
+        `Você ainda não possui compras registradas neste bot.\n\n` +
+        `🛒 Toque em <b>Comprar</b> no menu principal para fazer seu primeiro pedido!`;
+      return sendOrEdit(chatId, messageId, emptyText, backToMenuKeyboard());
+    }
+
+    const title =
+      `📦 <b>MINHAS COMPRAS</b>\n\n` +
+      `Selecione um produto para baixar o <b>.txt</b> com os acessos que já foram entregues:`;
+
+    const keyboard = purchases.map((p, i) => [
+      { text: `${productIcon(p.product)} ${p.product} (${p.total})`, callback_data: `my_purchases_prod_${i}` }
+    ]);
+    keyboard.push([{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]);
+
+    sendOrEdit(chatId, messageId, title, { reply_markup: { inline_keyboard: keyboard } });
+  } catch (e) {
+    console.error('[minhas compras] falha:', e && e.message ? e.message : e);
+    sendOrEdit(chatId, messageId, `❌ <b>Erro de Conexão:</b> não foi possível consultar suas compras (${API_BASE_URL}).`, backToMenuKeyboard());
+  }
+}
+
+// Tela: envia o arquivo .txt do produto escolhido com os acessos entregues
+async function handleMyPurchasesProductTxt(chatId, user, index) {
+  try {
+    const { status, data } = await fetchMyPurchases(user);
+    if (!data || !data.success || !data.purchases || !data.purchases[index]) {
+      return bot.sendMessage(
+        chatId,
+        '❌ <b>Produto não encontrado.</b> Toque em Minhas Compras novamente.',
+        { parse_mode: 'HTML', ...backToMenuKeyboard() }
+      );
+    }
+
+    const product = data.purchases[index];
+    const delivered = product.items.filter((it) => String(it.delivery_status || '').toLowerCase().startsWith('entregue'));
+    const listed = delivered.length > 0 ? delivered : product.items;
+
+    const lines = [];
+    lines.push('==================================================');
+    lines.push(`  MINHAS COMPRAS - ${String(product.product).toUpperCase()}`);
+    lines.push(`  Cliente: ${data.customer_contact || data.customer_id || 'Cliente'}`);
+    lines.push(`  Total de itens: ${product.total}`);
+    lines.push(`  Gerado em: ${new Date().toLocaleString('pt-BR')}`);
+    lines.push('==================================================');
+    lines.push('');
+
+    if (listed.length === 0) {
+      lines.push('Nenhum item entregue encontrado para este produto.');
+    } else {
+      listed.forEach((item, idx) => {
+        lines.push(`----------------------------------------------`);
+        lines.push(`#${idx + 1} | Pedido: ${item.token}`);
+        lines.push(`Link: ${item.link}`);
+        lines.push(`Status: ${item.delivery_status}`);
+        lines.push(`Data: ${formatPurchaseDate(item.created_at)}`);
+      });
+    }
+    lines.push('');
+    lines.push('==================================================');
+    lines.push('Obrigado por comprar conosco!');
+
+    const content = lines.join('\n');
+    const slug = String(product.product).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'produto';
+    const fileName = `minhas-compras-${slug}.txt`;
+
+    const caption =
+      `📦 <b>${product.product}</b> - ${product.total} item(ns)\n\n` +
+      `📄 Arquivo .txt com os acessos já entregues.`;
+
+    await bot.sendDocument(chatId, Buffer.from(content, 'utf-8'), {
+      filename: fileName,
+      caption,
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '📦 Voltar às Minhas Compras', callback_data: 'my_purchases' }],
+          [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
+        ]
+      }
+    }).catch((err) => {
+      console.error('[txt] falha ao enviar arquivo:', err && err.message ? err.message : err);
+      bot.sendMessage(chatId, '❌ Não foi possível enviar o arquivo. Tente novamente.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
+    });
+  } catch (e) {
+    console.error('[minhas compras txt] falha:', e && e.message ? e.message : e);
+    bot.sendMessage(chatId, `❌ <b>Erro de Conexão:</b> não foi possível gerar o arquivo (${API_BASE_URL}).`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
   }
 }
 
