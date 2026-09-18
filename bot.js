@@ -87,7 +87,7 @@ function sendMainMenu(chatId, messageId) {
 }
 
 // Mostra o ID de Perfil da pessoa (id único no bot e no site do gerador)
-function sendProfileId(chatId, user) {
+function sendProfileId(chatId, user, messageId) {
   const firstName = escapeHtml(user.first_name || 'Cliente');
   const username = user.username ? '@' + escapeHtml(user.username) : '—';
   const profileId = String(user.id);
@@ -114,7 +114,7 @@ function sendProfileId(chatId, user) {
     }
   };
 
-  bot.sendMessage(chatId, text, { parse_mode: 'HTML', ...profileKeyboard });
+  sendOrEdit(chatId, messageId, text, { parse_mode: 'HTML', ...profileKeyboard });
 }
 
 // Envio seguro: se o botão (URL) for rejeitado pelo Telegram, entrega o texto sem botões
@@ -288,17 +288,25 @@ const pixCache = new Map();
 
 // Cria a cobrança PIX no Mercado Pago e exibe o QR Code + copia-e-cola
 // DIRETO no chat do Telegram (o pagamento é feito sem sair do bot).
-async function handleMpRecharge(chatId, user, amount) {
+async function handleMpRecharge(chatId, user, amount, messageId) {
   if (!RESELLER_API_KEY) {
-    return bot.sendMessage(chatId, '⚠️ <b>Bot em Manutenção:</b> chave de revendedor não configurada.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
+    return sendOrEdit(chatId, messageId, '⚠️ <b>Bot em Manutenção:</b> chave de revendedor não configurada.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
   }
 
   const amountValue = Math.round(parseFloat(amount) * 100) / 100;
   if (isNaN(amountValue) || amountValue < 15) {
-    return bot.sendMessage(chatId, '⚠️ O valor mínimo para recarga é <b>R$ 15,00</b>.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
+    return sendOrEdit(chatId, messageId, '⚠️ O valor mínimo para recarga é <b>R$ 15,00</b>.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
   }
 
-  const waitingMsg = await bot.sendMessage(chatId, `⏳ Gerando cobrança PIX de <b>${brl(amountValue)}</b>...`).catch(() => null);
+  // Indicador de processamento: em CLIQUE no menu, a própria mensagem clicada vira o
+  // "Gerando..."; fora de clique (ex.: /recarga 30), envia mensagem nova e apaga depois.
+  const waitingText = `⏳ Gerando cobrança PIX de <b>${brl(amountValue)}</b>...`;
+  let waitingMsg = null;
+  if (messageId) {
+    await bot.editMessageText(waitingText, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML' }).catch(() => {});
+  } else {
+    waitingMsg = await bot.sendMessage(chatId, waitingText).catch(() => null);
+  }
   const dropWaiting = () => { if (waitingMsg) bot.deleteMessage(chatId, waitingMsg.message_id).catch(() => {}); };
 
   try {
@@ -315,7 +323,7 @@ async function handleMpRecharge(chatId, user, amount) {
     if (!data.success || !data.qr_code) {
       const errMsg = (data && data.error) || 'Erro desconhecido';
       dropWaiting();
-      return bot.sendMessage(chatId,
+      return sendOrEdit(chatId, messageId,
         `❌ <b>ERRO AO GERAR O PIX</b>\n\n${escapeHtml(errMsg)}\n\n` +
         `💡 Se o problema persistir, recarregue pelo painel web: ${PUBLIC_BASE_URL}/revendedor.html`,
         { parse_mode: 'HTML', ...backToMenuKeyboard() }
@@ -371,18 +379,21 @@ async function handleMpRecharge(chatId, user, amount) {
         { parse_mode: 'HTML', ...keyboard }
       );
     }
+
+    // Restaura a mensagem clicada (que virou "Gerando...") para o menu de recarga
+    if (messageId) sendMpRechargeMenu(chatId, messageId);
   } catch (e) {
     console.error('[recarga] falha:', e && e.message ? e.message : e);
     dropWaiting();
-    bot.sendMessage(chatId, `❌ <b>Erro de Conexão:</b> não foi possível gerar o PIX (${API_BASE_URL}).`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
+    sendOrEdit(chatId, messageId, `❌ <b>Erro de Conexão:</b> não foi possível gerar o PIX (${API_BASE_URL}).`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
   }
 }
 
 // Envia o código PIX copia-e-cola em bloco <code> (tocar para copiar no Telegram)
-async function sendPixCopyPaste(chatId, externalReference) {
+async function sendPixCopyPaste(chatId, externalReference, messageId) {
   const cached = pixCache.get(externalReference);
   if (!cached || !cached.code) {
-    return bot.sendMessage(chatId,
+    return sendOrEdit(chatId, messageId,
       '⚠️ <b>Código PIX expirado nesta conversa.</b>\n\nGere uma nova cobrança em <b>Recarregar Saldo</b> para receber um novo QR Code.',
       { parse_mode: 'HTML', ...backToMenuKeyboard() }
     );
@@ -402,11 +413,11 @@ async function sendPixCopyPaste(chatId, externalReference) {
     }
   };
 
-  return bot.sendMessage(chatId, `${text}\n\n<code>${escapeHtml(cached.code)}</code>`, { parse_mode: 'HTML', ...keyboard });
+  return sendOrEdit(chatId, messageId, `${text}\n\n<code>${escapeHtml(cached.code)}</code>`, { parse_mode: 'HTML', ...keyboard });
 }
 
 // Consulta o status da cobrança PIX e informa o revendedor (com crédito automático)
-async function checkPixStatus(chatId, user, externalReference) {
+async function checkPixStatus(chatId, user, externalReference, messageId) {
   const cached = pixCache.get(externalReference);
   try {
     const headers = { 'X-API-Key': RESELLER_API_KEY };
@@ -416,7 +427,7 @@ async function checkPixStatus(chatId, user, externalReference) {
     const data = await res.json();
 
     if (!data.success) {
-      return bot.sendMessage(chatId, `❌ ${escapeHtml((data && data.error) || 'Não foi possível consultar o pagamento.')}`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
+      return sendOrEdit(chatId, messageId, `❌ ${escapeHtml((data && data.error) || 'Não foi possível consultar o pagamento.')}`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
     }
 
     const amountTxt = brl(cached ? cached.amount : data.amount);
@@ -436,7 +447,7 @@ async function checkPixStatus(chatId, user, externalReference) {
           ]
         }
       };
-      return bot.sendMessage(chatId, okText, { parse_mode: 'HTML', ...okKeyboard });
+      return sendOrEdit(chatId, messageId, okText, { parse_mode: 'HTML', ...okKeyboard });
     }
 
     const statusLabel = {
@@ -466,10 +477,10 @@ async function checkPixStatus(chatId, user, externalReference) {
       }
     };
 
-    return bot.sendMessage(chatId, waitText, { parse_mode: 'HTML', ...waitKeyboard });
+    return sendOrEdit(chatId, messageId, waitText, { parse_mode: 'HTML', ...waitKeyboard });
   } catch (e) {
     console.error('[recarga] status falhou:', e && e.message ? e.message : e);
-    bot.sendMessage(chatId, '❌ Não foi possível consultar o pagamento agora. Tente novamente em instantes.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
+    sendOrEdit(chatId, messageId, '❌ Não foi possível consultar o pagamento agora. Tente novamente em instantes.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
   }
 }
 
@@ -486,43 +497,43 @@ bot.on('callback_query', async (query) => {
   bot.answerCallbackQuery(query.id);
 
   if (action === 'buy_now') {
-    await handlePurchase(chatId, query.from);
+    await handlePurchase(chatId, query.from, query.message.message_id);
   } else if (action === 'check_balance') {
-    await handleCheckBalance(chatId, query.from);
+    await handleCheckBalance(chatId, query.from, query.message.message_id);
   } else if (action === 'mp_recharge_menu') {
     await sendMpRechargeMenu(chatId, query.message.message_id);
   } else if (action && action.startsWith('mp_recharge_') && !action.includes('menu')) {
     const rawValue = action.slice('mp_recharge_'.length);
     const amount = parseFloat(rawValue.replace(',', '.'));
     if (!isNaN(amount) && amount > 0) {
-      await handleMpRecharge(chatId, query.from, amount);
+      await handleMpRecharge(chatId, query.from, amount, query.message.message_id);
     }
   } else if (action && action.startsWith('mp_pix_code_')) {
     // Botão "Copiar código PIX" — reenvia o copia-e-cola em bloco copiável
-    await sendPixCopyPaste(chatId, action.slice('mp_pix_code_'.length));
+    await sendPixCopyPaste(chatId, action.slice('mp_pix_code_'.length), query.message.message_id);
   } else if (action && action.startsWith('mp_pix_check_')) {
     // Botão "Já Paguei" — consulta o status e credita se o MP já aprovou
-    await checkPixStatus(chatId, query.from, action.slice('mp_pix_check_'.length));
+    await checkPixStatus(chatId, query.from, action.slice('mp_pix_check_'.length), query.message.message_id);
   } else if (action === 'my_id') {
-    sendProfileId(chatId, query.from);
+    sendProfileId(chatId, query.from, query.message.message_id);
   } else if (action === 'my_api') {
-    await handleMyApi(chatId, query.from);
+    await handleMyApi(chatId, query.from, query.message.message_id);
   } else if (action === 'my_api_rotate') {
-    await handleMyApiRotate(chatId, query.from);
+    await handleMyApiRotate(chatId, query.from, query.message.message_id);
   } else if (action === 'my_purchases') {
     await handleMyPurchases(chatId, query.from, query.message.message_id);
   } else if (action && action.startsWith('my_purchases_prod_')) {
     const idx = parseInt(action.slice('my_purchases_prod_'.length), 10);
-    if (!isNaN(idx)) await handleMyPurchasesProductTxt(chatId, query.from, idx);
+    if (!isNaN(idx)) await handleMyPurchasesProductTxt(chatId, query.from, idx, query.message.message_id);
   } else if (action === 'how_it_works') {
-    sendHelpMessage(chatId);
+    sendHelpMessage(chatId, query.message.message_id);
   } else if (action === 'support') {
-    bot.sendMessage(chatId, 
+    sendOrEdit(chatId, query.message.message_id, 
       `📞 <b>Atendimento & Suporte:</b>\n\nPrecisa de ajuda ou teve alguma dúvida?\nFale com nosso suporte oficial: ${SUPPORT_USER}`, 
       { parse_mode: 'HTML', ...backToMenuKeyboard() }
     );
   } else if (action === 'store_policy') {
-    bot.sendMessage(chatId, 
+    sendOrEdit(chatId, query.message.message_id, 
       `📄 <b>POLÍTICAS DA LOJA</b>\n━━━━━━━━━━━━━━━\n` +
       `⚡️ <b>Entrega</b> — automática, direto no chat após a confirmação.\n` +
       `🛡 <b>Falhas</b> — se o fornecedor não entregar, o valor volta para o seu saldo automaticamente.\n` +
@@ -541,16 +552,21 @@ bot.on('callback_query', async (query) => {
 });
 
 // Função de Processar Compra e Gerar Link na API
-async function handlePurchase(chatId, user) {
+async function handlePurchase(chatId, user, messageId) {
   if (!RESELLER_API_KEY) {
-    return bot.sendMessage(chatId, 
-      '⚠️ <b>Bot em Manutenção:</b> A chave de revendedor não foi configurada pelo administrador no arquivo .env.',
-      { parse_mode: 'HTML' }
-    );
+    return sendOrEdit(chatId, messageId, '⚠️ <b>Bot em Manutenção:</b> A chave de revendedor não foi configurada pelo administrador no arquivo .env.', { parse_mode: 'HTML' });
   }
 
-  // Notificação de processamento
-  const loadingMsg = await bot.sendMessage(chatId, '⚡ <i>Processando seu pedido e gerando seu link exclusivo... Aguarde 2 segundos...</i>', { parse_mode: 'HTML' });
+  // Notificação de processamento: quando veio de um CLIQUE no menu (messageId),
+  // a própria mensagem clicada vira o "processando" e depois vira a entrega —
+  // zero mensagens novas no chat. Fora de clique (ex.: /comprar), envia nova.
+  const loadingText = '⚡ <i>Processando seu pedido e gerando seu link exclusivo... Aguarde 2 segundos...</i>';
+  let loadingMsg = null;
+  if (messageId) {
+    await bot.editMessageText(loadingText, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML' }).catch(() => {});
+  } else {
+    loadingMsg = await bot.sendMessage(chatId, loadingText, { parse_mode: 'HTML' }).catch(() => null);
+  }
 
   const customerName = [user.first_name, user.last_name].filter(Boolean).join(' ') || 'Cliente Telegram';
   const customerId = 'tg_' + user.id;
@@ -574,8 +590,8 @@ async function handlePurchase(chatId, user) {
 
     const data = await response.json();
 
-    // Apaga a mensagem de carregando
-    bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
+    // Apaga a mensagem de carregando (quando foi enviada como mensagem nova)
+    if (loadingMsg) bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
 
     if (response.status === 200 && data.success) {
       // SUCESSO! Link gerado e saldo debitado em R$ 2,99
@@ -607,11 +623,11 @@ async function handlePurchase(chatId, user) {
         }
       };
 
-      safeSend(chatId, deliveryText, { parse_mode: 'HTML', ...linkKeyboard });
+      sendOrEdit(chatId, messageId, deliveryText, { parse_mode: 'HTML', ...linkKeyboard });
 
     } else if (response.status === 402) {
       // Saldo Insuficiente (< R$ 2,99)
-      bot.sendMessage(chatId, 
+      sendOrEdit(chatId, messageId, 
         `⚠️ <b>Estoque Temporariamente Esgotado!</b>\n\n` +
         `O saldo do revendedor na central está abaixo de R$ 2,99.\n` +
         `Por favor, recarregue seu saldo no painel do revendedor para que o bot continue entregando links.\n\n` +
@@ -620,21 +636,21 @@ async function handlePurchase(chatId, user) {
       );
     } else if (response.status === 403) {
       // Conta Bloqueada
-      bot.sendMessage(chatId, 
+      sendOrEdit(chatId, messageId, 
         '🚫 <b>Acesso Suspenso:</b> A conta deste revendedor foi temporariamente suspensa pelo administrador da plataforma.',
         { parse_mode: 'HTML', ...backToMenuKeyboard() }
       );
     } else {
       // Outro Erro
-      bot.sendMessage(chatId, 
+      sendOrEdit(chatId, messageId, 
         `❌ <b>Falha ao gerar link:</b> ${data.error || 'Erro interno no servidor. Tente novamente em instantes.'}`,
         { parse_mode: 'HTML', ...backToMenuKeyboard() }
       );
     }
 
   } catch (err) {
-    bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
-    bot.sendMessage(chatId, 
+    if (loadingMsg) bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
+    sendOrEdit(chatId, messageId,
       `❌ <b>Erro de Conexão:</b> Não foi possível conectar ao servidor da API (${API_BASE_URL}). Verifique se o servidor está rodando!`,
       { parse_mode: 'HTML' }
     );
@@ -642,9 +658,9 @@ async function handlePurchase(chatId, user) {
 }
 
 // Função de Consultar Saldo e Métricas (da conta vinculada ao ID de perfil)
-async function handleCheckBalance(chatId, user) {
+async function handleCheckBalance(chatId, user, messageId) {
   if (!RESELLER_API_KEY) {
-    return bot.sendMessage(chatId, '⚠️ Chave de revendedor não configurada.', { parse_mode: 'HTML' });
+    return sendOrEdit(chatId, messageId, '⚠️ Chave de revendedor não configurada.', { parse_mode: 'HTML' });
   }
 
   try {
@@ -657,7 +673,7 @@ async function handleCheckBalance(chatId, user) {
     const data = await res.json();
 
     if (res.status === 404 && data.needs_link) {
-      return bot.sendMessage(chatId,
+      return sendOrEdit(chatId, messageId,
         `🔗 <b>Perfil ainda não vinculado!</b>\n\n` +
         `${data.error || ''}\n\n` +
         `👉 Abra o painel do revendedor, cole seu ID na aba <b>Meu Perfil</b> e tente /saldo novamente.`,
@@ -692,19 +708,19 @@ async function handleCheckBalance(chatId, user) {
         }
       };
 
-      safeSend(chatId, balanceText, { parse_mode: 'HTML', ...options });
+      sendOrEdit(chatId, messageId, balanceText, { parse_mode: 'HTML', ...options });
     } else {
-      bot.sendMessage(chatId, '❌ Erro ao consultar saldo: ' + (data.error || 'Chave inválida.'));
+      sendOrEdit(chatId, messageId, '❌ Erro ao consultar saldo: ' + (data.error || 'Chave inválida.'));
     }
   } catch (e) {
-    bot.sendMessage(chatId, '❌ Não foi possível conectar ao servidor para obter o saldo.');
+    sendOrEdit(chatId, messageId, '❌ Não foi possível conectar ao servidor para obter o saldo.');
   }
 }
 
 // Função: mostra a API Key própria do revendedor (para criar bots próprios)
-async function handleMyApi(chatId, user) {
+async function handleMyApi(chatId, user, messageId) {
   if (!RESELLER_API_KEY) {
-    return bot.sendMessage(chatId, '⚠️ Chave de revendedor não configurada.', { parse_mode: 'HTML' });
+    return sendOrEdit(chatId, messageId, '⚠️ Chave de revendedor não configurada.', { parse_mode: 'HTML' });
   }
 
   try {
@@ -715,7 +731,7 @@ async function handleMyApi(chatId, user) {
     const data = await res.json();
 
     if (res.status === 404 && data.needs_link) {
-      return bot.sendMessage(chatId,
+      return sendOrEdit(chatId, messageId,
         `🔗 <b>Perfil ainda não vinculado!</b>\n\n` +
         `${data.error || ''}\n\n` +
         `👉 Abra o painel do revendedor, cole seu ID na aba <b>Meu Perfil</b> e tente /api novamente.`,
@@ -746,19 +762,19 @@ async function handleMyApi(chatId, user) {
         }
       };
 
-      safeSend(chatId, apiText, { parse_mode: 'HTML', ...apiKeyboard });
+      sendOrEdit(chatId, messageId, apiText, { parse_mode: 'HTML', ...apiKeyboard });
     } else {
-      bot.sendMessage(chatId, '❌ Erro ao consultar sua API: ' + (data.error || 'Chave inválida.'));
+      sendOrEdit(chatId, messageId, '❌ Erro ao consultar sua API: ' + (data.error || 'Chave inválida.'));
     }
   } catch (e) {
-    bot.sendMessage(chatId, '❌ Não foi possível conectar ao servidor para obter sua API.');
+    sendOrEdit(chatId, messageId, '❌ Não foi possível conectar ao servidor para obter sua API.');
   }
 }
 
 // Função: renova a API Key do revendedor (a antiga é invalidada)
-async function handleMyApiRotate(chatId, user) {
+async function handleMyApiRotate(chatId, user, messageId) {
   if (!RESELLER_API_KEY) {
-    return bot.sendMessage(chatId, '⚠️ Chave de revendedor não configurada.', { parse_mode: 'HTML' });
+    return sendOrEdit(chatId, messageId, '⚠️ Chave de revendedor não configurada.', { parse_mode: 'HTML' });
   }
 
   try {
@@ -772,7 +788,7 @@ async function handleMyApiRotate(chatId, user) {
     const data = await res.json();
 
     if (res.status === 404 && data.needs_link) {
-      return bot.sendMessage(chatId,
+      return sendOrEdit(chatId, messageId,
         `🔗 <b>Perfil ainda não vinculado!</b>\n\n` +
         `${data.error || ''}\n\n` +
         `👉 Abra o painel do revendedor, cole seu ID na aba <b>Meu Perfil</b> e tente novamente.`,
@@ -796,12 +812,12 @@ async function handleMyApiRotate(chatId, user) {
         }
       };
 
-      safeSend(chatId, rotatedText, { parse_mode: 'HTML', ...rotatedKeyboard });
+      sendOrEdit(chatId, messageId, rotatedText, { parse_mode: 'HTML', ...rotatedKeyboard });
     } else {
-      bot.sendMessage(chatId, '❌ Erro ao renovar chave: ' + (data.error || 'Tente novamente.'));
+      sendOrEdit(chatId, messageId, '❌ Erro ao renovar chave: ' + (data.error || 'Tente novamente.'));
     }
   } catch (e) {
-    bot.sendMessage(chatId, '❌ Não foi possível conectar ao servidor para renovar a chave.');
+    sendOrEdit(chatId, messageId, '❌ Não foi possível conectar ao servidor para renovar a chave.');
   }
 }
 
@@ -844,19 +860,23 @@ function formatPurchaseDate(iso) {
   }
 }
 
-// Envia uma mensagem editando a atual quando possível (sem poluir o chat)
+// Envia/edita uma mensagem EDITANDO a atual quando possível (sem poluir o chat).
+// Se messageId for informado, tenta reutilizar a mensagem atual: se a edição falhar
+// (ex.: a mensagem é uma foto ou o texto ficou idêntico), envia nova com fallback
+// seguro (safeSend remove o teclado se o Telegram rejeitar o botão).
 function sendOrEdit(chatId, messageId, text, options) {
+  const opts = options || {};
   if (messageId) {
-    return bot.editMessageText(text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML', ...options })
-      .catch(() => bot.sendMessage(chatId, text, { parse_mode: 'HTML', ...options }).catch(() => {}));
+    return bot.editMessageText(text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML', ...opts })
+      .catch(() => safeSend(chatId, text, opts));
   }
-  return bot.sendMessage(chatId, text, { parse_mode: 'HTML', ...options }).catch(() => {});
+  return safeSend(chatId, text, opts);
 }
 
 // Tela: lista os produtos comprados (botões) para escolher e baixar o .txt
 async function handleMyPurchases(chatId, user, messageId) {
   if (!RESELLER_API_KEY) {
-    return bot.sendMessage(chatId, '⚠️ <b>Bot em Manutenção:</b> chave de revendedor não configurada.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
+    return sendOrEdit(chatId, messageId, '⚠️ <b>Bot em Manutenção:</b> chave de revendedor não configurada.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
   }
 
   try {
@@ -892,15 +912,11 @@ async function handleMyPurchases(chatId, user, messageId) {
 }
 
 // Tela: envia o arquivo .txt do produto escolhido com os acessos entregues
-async function handleMyPurchasesProductTxt(chatId, user, index) {
+async function handleMyPurchasesProductTxt(chatId, user, index, messageId) {
   try {
     const { status, data } = await fetchMyPurchases(user);
     if (!data || !data.success || !data.purchases || !data.purchases[index]) {
-      return bot.sendMessage(
-        chatId,
-        '❌ <b>Produto não encontrado.</b> Toque em Minhas Compras novamente.',
-        { parse_mode: 'HTML', ...backToMenuKeyboard() }
-      );
+      return sendOrEdit(chatId, messageId, '❌ <b>Produto não encontrado.</b> Toque em Minhas Compras novamente.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
     }
 
     const product = data.purchases[index];
@@ -961,14 +977,14 @@ async function handleMyPurchasesProductTxt(chatId, user, index) {
     });
   } catch (e) {
     console.error('[minhas compras txt] falha:', e && e.message ? e.message : e);
-    bot.sendMessage(chatId, `❌ <b>Erro de Conexão:</b> não foi possível gerar o arquivo (${API_BASE_URL}).`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
+    sendOrEdit(chatId, messageId, `❌ <b>Erro de Conexão:</b> não foi possível gerar o arquivo (${API_BASE_URL}).`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
   }
 }
 
 startKeepAlive();
 
 // Mensagem de Ajuda
-function sendHelpMessage(chatId) {
+function sendHelpMessage(chatId, messageId) {
   const helpText = 
     `ℹ️ <b>COMO FUNCIONA O GERADOR:</b>\n\n` +
     `1. Cada link é gerado <b>individualmente e de forma única</b> para você.\n` +
@@ -976,5 +992,5 @@ function sendHelpMessage(chatId) {
     `3. Ao abrir o link, você cai na nossa tela de validação segura e é redirecionado instantaneamente para sua conta do Spotify Premium <b>3 meses</b>.\n\n` +
     `Dúvidas? Fale com nosso suporte: ${SUPPORT_USER}`;
 
-  bot.sendMessage(chatId, helpText, { parse_mode: 'HTML', ...backToMenuKeyboard() });
+  sendOrEdit(chatId, messageId, helpText, { parse_mode: 'HTML', ...backToMenuKeyboard() });
 }
