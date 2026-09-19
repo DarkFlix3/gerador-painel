@@ -214,7 +214,7 @@ function getMainKeyboard() {
     reply_markup: {
       inline_keyboard: [
         [
-          { text: '🛒 Comprar / Gerar Link', callback_data: 'catalog' }
+          { text: '🛒 Produtos', callback_data: 'catalog' }
         ],
         [
           { text: 'ℹ️ Como Funciona', callback_data: 'how_it_works' },
@@ -488,7 +488,7 @@ async function checkPixStatus(chatId, user, externalReference, messageId) {
       const okKeyboard = {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '🛒 Comprar / Gerar Link', callback_data: 'catalog' }],
+            [{ text: '🛒 Produtos', callback_data: 'catalog' }],
             [{ text: '📊 Ver Meu Saldo', callback_data: 'check_balance' }],
             [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
           ]
@@ -640,11 +640,11 @@ async function showCatalog(chatId, messageId) {
     const products = await fetchProducts();
     let text, keyboard;
     if (!products.length) {
-      text = '🛒 <b>CATÁLOGO DE PRODUTOS</b>\n\n⚠️ Nenhum produto disponível no momento. Tente novamente mais tarde.';
+      text = '🛒 <b>PRODUTOS</b>\n\n⚠️ Nenhum produto disponível no momento. Tente novamente mais tarde.';
       keyboard = { reply_markup: { inline_keyboard: [[{ text: '🏠 Menu Principal', callback_data: 'back_to_menu' }]] } };
     } else {
-      text = '🛒 <b>CATÁLOGO DE PRODUTOS</b>\n\nEscolha o produto desejado:';
-      const rows = products.map((p) => [{ text: `🎧 ${p.name} — ${brl(p.sale_price)}`, callback_data: `prod_${p.id}` }]);
+      text = '🛒 <b>PRODUTOS</b>\n\nEscolha o produto desejado:';
+      const rows = products.map((p) => [{ text: `${productIcon(p.name)} ${p.name} — ${brl(p.sale_price)}`, callback_data: `prod_${p.id}` }]);
       rows.push([{ text: '🏠 Menu Principal', callback_data: 'back_to_menu' }]);
       keyboard = { reply_markup: { inline_keyboard: rows } };
     }
@@ -675,7 +675,6 @@ async function showProductDetail(chatId, messageId, pid) {
         inline_keyboard: [
           [{ text: `✅ Comprar agora — ${brl(p.sale_price)}`, callback_data: `buy_prod_${p.id}` }],
           [{ text: '🎟 Tenho cupom de desconto', callback_data: `coupon_prod_${p.id}` }],
-          [{ text: '⬅️ Voltar ao Catálogo', callback_data: 'catalog' }],
           [{ text: '🏠 Menu Principal', callback_data: 'back_to_menu' }]
         ]
       }
@@ -862,7 +861,7 @@ async function handlePurchase(chatId, user, messageId, opts) {
               { text: '🚀 ABRIR MEU ACESSO AGORA', url: data.link }
             ],
             [
-              { text: '🔄 Comprar Outro Link', callback_data: 'catalog' },
+              { text: '🔄 Outro Produto', callback_data: 'catalog' },
               { text: '🏠 Menu Principal', callback_data: 'back_to_menu' }
             ]
           ]

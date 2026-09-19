@@ -461,22 +461,6 @@ async function initDb() {
     console.log('Admin criado: usuário "felipe", senha "felipe123"');
   }
 
-  // Seed produto padrao (Spotify) — mantem compatibilidade com o fluxo antigo
-  const countProducts = await db.prepare('SELECT COUNT(*) as count FROM products').get();
-  if (Number(countProducts.count) === 0) {
-    await db.prepare(`
-      INSERT INTO products (name, description, cost_price, price_type, price_value, active, sort_order, created_at)
-      VALUES (?, ?, ?, 'fixed', ?, 1, 1, ?)
-    `).run(
-      'Spotify Premium 3 Meses',
-      'Acesso individual 3 meses — link exclusivo com entrega automatica.',
-      2.99,
-      15.00,
-      new Date().toISOString()
-    );
-    console.log('Produto padrao criado: Spotify Premium 3 Meses (R$ 15,00)');
-  }
-
   // Seed default demo reseller if none exists
   const countResellers = await db.prepare('SELECT COUNT(*) as count FROM resellers').get();
   if (Number(countResellers.count) === 0) {
