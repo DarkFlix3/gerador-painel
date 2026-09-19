@@ -360,6 +360,28 @@
                 <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Estoque (opcional)</label>
                 <input type="number" min="0" step="1" id="product-stock" placeholder="Vazio = ilimitado. 0 = esgotado." class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500">
                 <p class="text-[10px] text-slate-500 mt-1">Quantas unidades podem ser vendidas. Deixe vazio para estoque ilimitado.</p>
+                <p class="text-[10px] text-emerald-400/80 mt-1" id="product-stock-hint"></p>
+              </div>
+              <div class="sm:col-span-2">
+                <div class="flex items-center gap-2">
+                  <label class="block text-xs font-semibold text-emerald-300 uppercase tracking-wider">📦 Itens do Estoque (Contas / Links)</label>
+                </div>
+                <p class="text-[10px] text-slate-500 mt-1">Cada item vale 1 unidade vendável. <b class="text-emerald-400">Contas:</b> escreva <code class="text-amber-300">login:senha</code> (ou <code class="text-amber-300">login|senha</code>) — 1 por linha. <b class="text-emerald-400">Links:</b> 1 link por linha. O estoque do produto é atualizado automaticamente com a quantidade de itens.</p>
+                <div class="flex flex-col sm:flex-row gap-2 mt-2">
+                  <select id="product-items-type" class="px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-emerald-500 w-full sm:w-40">
+                    <option value="account">Contas (login:senha)</option>
+                    <option value="link">Links</option>
+                  </select>
+                  <input type="hidden" id="product-items-product-id">
+                  <textarea id="product-items-lines" rows="4" placeholder="Contas:&#10;exemplo@gmail.com:senha123&#10;outro@email.com|outrasenha&#10;&#10;ou Links:&#10;https://exemplo.com/acesso/1&#10;https://exemplo.com/acesso/2" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-emerald-500 font-mono"></textarea>
+                </div>
+                <div class="flex items-center gap-2 mt-2">
+                  <button id="btn-add-product-items" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white rounded-xl">➕ ADICIONAR ITENS</button>
+                  <span id="product-items-status" class="text-[11px] text-slate-400"></span>
+                </div>
+                <div id="product-items-list" class="mt-3 space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                  <!-- Itens carregados via JS -->
+                </div>
               </div>
               <div>
                 <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Ordem de Exibição</label>
@@ -382,6 +404,7 @@
                     <th class="px-5 py-3">Preço de Venda</th>
                     <th class="px-5 py-3">Margem</th>
                     <th class="px-5 py-3">Estoque</th>
+                    <th class="px-5 py-3">Itens</th>
                     <th class="px-5 py-3">Status</th>
                     <th class="px-5 py-3">Ações</th>
                   </tr>

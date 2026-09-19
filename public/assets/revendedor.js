@@ -483,10 +483,24 @@ document.addEventListener('DOMContentLoaded', () => {
         const data = await res.json();
         if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao gerar link.');
 
-        // Preenche dados do link gerado
-        manualGeneratedLink.value = data.link;
-        manualTokenPreview.innerText = data.token;
-        if (btnOpenManualLink) btnOpenManualLink.href = data.link;
+        // Preenche dados da entrega (item do estoque ou link de ativacao)
+        let generatedText = data.link;
+        let tokenPreview = data.token;
+        let openHref = data.link;
+        if (data.delivered_item) {
+          const it = data.delivered_item;
+          if (it.type === 'link') {
+            generatedText = it.content;
+            tokenPreview = 'Link do estoque';
+            openHref = it.content;
+          } else {
+            generatedText = 'Login: ' + it.login + '\nSenha: ' + it.password;
+            tokenPreview = 'Conta entregue';
+          }
+        }
+        manualGeneratedLink.value = generatedText;
+        manualTokenPreview.innerText = tokenPreview;
+        if (btnOpenManualLink) btnOpenManualLink.href = openHref;
 
         // Atualiza saldo na tela
         const formattedBal = 'R$ ' + Number(data.balance_remaining || 0).toFixed(2).replace('.', ',');
@@ -872,7 +886,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!data.success || !data.data.length) return;
       select.innerHTML = '<option value="">— Produto padrão —</option>' + data.data.map(p => {
         const soldOut = p.stock !== null && p.stock !== undefined && Number(p.stock) <= 0;
-        return '<option value="' + p.id + '"' + (soldOut ? ' disabled' : '') + '>' + escapeHtml(p.name) + ' — R$ ' + Number(p.sale_price).toFixed(2).replace('.', ',') + (soldOut ? ' (ESGOTADO)' : '') + '</option>';
+        const qty = (!soldOut && p.stock !== null && p.stock !== undefined) ? ' (' + Number(p.stock) + ')' : '';
+        return '<option value="' + p.id + '"' + (soldOut ? ' disabled' : '') + '>' + escapeHtml(p.name) + ' — R$ ' + Number(p.sale_price).toFixed(2).replace('.', ',') + qty + (soldOut ? ' (ESGOTADO)' : '') + '</option>';
       }).join('');
     } catch (e) {
       console.warn('Erro ao carregar produtos:', e);

@@ -724,7 +724,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!data.success) return;
       __adminProducts = data.data || [];
       if (__adminProducts.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="px-5 py-8 text-center text-slate-500">Nenhum produto cadastrado ainda.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="px-5 py-8 text-center text-slate-500">Nenhum produto cadastrado ainda.</td></tr>';
         return;
       }
       tbody.innerHTML = __adminProducts.map(p => {
@@ -736,6 +736,10 @@ document.addEventListener('DOMContentLoaded', () => {
           : (pStock <= 0
             ? '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-950/60 text-rose-400 border border-rose-500/30">ESGOTADO</span>'
             : `<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950/60 text-emerald-400 border border-emerald-500/30">${pStock} DISPONÍVEL</span>`);
+        const pItems = Number(p.item_count || 0);
+        const itemsBadge = pItems > 0
+          ? `<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-indigo-950/60 text-indigo-400 border border-indigo-500/30">📦 ${pItems} ITENS</span>`
+          : '<span class="text-[10px] text-slate-600">—</span>';
         return `<tr class="hover:bg-white/[0.02] transition-colors">
             <td class="px-5 py-3.5">
               <span class="font-bold text-white block text-xs">${escapeHtml(p.name)}</span>
@@ -745,6 +749,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <td class="px-5 py-3.5 font-mono font-bold text-emerald-400">R$ ${salePrice.toFixed(2).replace('.', ',')}</td>
             <td class="px-5 py-3.5 font-mono text-[11px] text-slate-400">${margin.toFixed(0)}%</td>
             <td class="px-5 py-3.5">${stockBadge}</td>
+            <td class="px-5 py-3.5">${itemsBadge}</td>
             <td class="px-5 py-3.5">
               <button onclick="toggleProduct(${p.id})" class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${Number(p.active) ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-500/30' : 'bg-rose-950/60 text-rose-400 border border-rose-500/30'}">
                 <span class="w-1.5 h-1.5 rounded-full ${Number(p.active) ? 'bg-emerald-400' : 'bg-rose-400'}"></span>
@@ -779,6 +784,23 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('product-price-value').value = p ? p.price_value : '';
     document.getElementById('product-sort-order').value = p ? (p.sort_order || 0) : 0;
     document.getElementById('product-stock').value = p ? ((p.stock === null || p.stock === undefined) ? '' : p.stock) : '';
+    const pItemCount = p ? Number(p.item_count || 0) : 0;
+    const stockInput = document.getElementById('product-stock');
+    if (stockInput) stockInput.disabled = pItemCount > 0;
+    const stockHint = document.getElementById('product-stock-hint');
+    if (stockHint) stockHint.innerText = pItemCount > 0 ? 'Estoque automático controlado pelos itens abaixo (' + pItemCount + ' disponíveis).' : '';
+    // Seção de itens do estoque
+    const itemsProductId = document.getElementById('product-items-product-id');
+    if (itemsProductId) itemsProductId.value = p ? p.id : '';
+    const linesInput = document.getElementById('product-items-lines');
+    if (linesInput) linesInput.value = '';
+    const statusEl = document.getElementById('product-items-status');
+    if (statusEl) statusEl.innerText = '';
+    if (p) {
+      loadProductItems(p.id);
+    } else {
+      renderProductItems([]);
+    }
     document.getElementById('product-form-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
   window.editProduct = (id) => {
@@ -851,6 +873,109 @@ document.addEventListener('DOMContentLoaded', () => {
         if (card) card.classList.add('hidden');
         loadProducts();
       } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+  }
+
+  // ==============================================
+  // ITENS DE ESTOQUE DO PRODUTO (ADMIN)
+  // ==============================================
+  async function loadProductItems(productId) {
+    const listEl = document.getElementById('product-items-list');
+    if (!listEl || !productId) return;
+    try {
+      const res = await apiFetch('/api/admin/products/' + productId + '/items');
+      const data = await res.json();
+      const items = (data && data.success) ? (data.data || []) : [];
+      renderProductItems(items, productId);
+      const statusEl = document.getElementById('product-items-status');
+      if (statusEl && items.length) statusEl.innerText = items.length + ' item(ns) disponível(eis).';
+    } catch (e) {
+      console.warn('Erro ao carregar itens do produto:', e);
+    }
+  }
+
+  function renderProductItems(items, productId) {
+    const listEl = document.getElementById('product-items-list');
+    if (!listEl) return;
+    if (!items || items.length === 0) {
+      listEl.innerHTML = '<div class="text-[11px] text-slate-500 italic">Nenhum item no estoque. Adicione contas ou links acima.</div>';
+      return;
+    }
+    listEl.innerHTML = items.map(it => {
+      const label = it.type === 'link'
+        ? `<span class="text-cyan-300 font-mono text-[11px] break-all">${escapeHtml(it.content)}</span>`
+        : `<span class="text-emerald-300 font-mono text-[11px]">${escapeHtml(it.login)}<span class="text-slate-500">:</span>${escapeHtml(it.password)}</span>`;
+      return `<div class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-slate-900/70 border border-white/5">
+        <div class="min-w-0 flex items-center gap-2">
+          <span class="px-1.5 py-0.5 rounded bg-slate-800 text-[9px] font-bold uppercase ${it.type === 'link' ? 'text-cyan-400' : 'text-emerald-400'}">${it.type === 'link' ? 'Link' : 'Conta'}</span>
+          <span class="truncate">${label}</span>
+        </div>
+        <button onclick="removeProductItem(event, ${productId}, ${it.id})" class="p-1 text-slate-500 hover:text-rose-400" title="Remover do estoque"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+      </div>`;
+    }).join('');
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  window.removeProductItem = async (event, productId, itemId) => {
+    event.stopPropagation();
+    if (!confirm('Remover este item do estoque?')) return;
+    try {
+      const res = await apiFetch('/api/admin/products/' + productId + '/items/' + itemId, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao remover.');
+      showToast(data.message || 'Item removido.', 'success');
+      const p = __adminProducts.find(x => Number(x.id) === Number(productId));
+      if (p) { p.stock = data.stock; p.item_count = Number(data.stock); }
+      const stockInput = document.getElementById('product-stock');
+      if (stockInput) stockInput.value = data.stock;
+      const stockHint = document.getElementById('product-stock-hint');
+      if (stockHint) stockHint.innerText = Number(data.stock) > 0 ? 'Estoque automático: ' + data.stock + ' disponível(eis).' : 'Estoque zerado — adicione mais itens para vender.';
+      loadProductItems(productId);
+      loadProducts();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const btnAddProductItems = document.getElementById('btn-add-product-items');
+  if (btnAddProductItems) {
+    btnAddProductItems.addEventListener('click', async () => {
+      const productId = document.getElementById('product-items-product-id').value;
+      if (!productId) {
+        showToast('Salve o produto antes de adicionar itens ao estoque.', 'error');
+        return;
+      }
+      const type = document.getElementById('product-items-type').value;
+      const lines = document.getElementById('product-items-lines').value;
+      if (!lines || !lines.trim()) {
+        showToast('Cole as contas (uma por linha) ou os links.', 'error');
+        return;
+      }
+      const statusEl = document.getElementById('product-items-status');
+      if (statusEl) statusEl.innerText = 'Adicionando...';
+      try {
+        const res = await apiFetch('/api/admin/products/' + productId + '/items', {
+          method: 'POST',
+          body: JSON.stringify({ type, lines: lines.split(/\r?\n/) })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao adicionar itens.');
+        document.getElementById('product-items-lines').value = '';
+        if (statusEl) {
+          statusEl.innerText = data.message + (data.errors && data.errors.length ? ' | Ignorados: ' + data.errors.join('; ') : '');
+        }
+        const p = __adminProducts.find(x => Number(x.id) === Number(productId));
+        if (p) { p.stock = data.stock; p.item_count = Number(data.stock); }
+        const stockInput = document.getElementById('product-stock');
+        if (stockInput) { stockInput.disabled = true; stockInput.value = data.stock; }
+        const stockHint = document.getElementById('product-stock-hint');
+        if (stockHint) stockHint.innerText = 'Estoque automático: ' + data.stock + ' disponível(eis). Para editar manualmente, remova os itens.';
+        loadProductItems(productId);
+        loadProducts();
+      } catch (err) {
+        if (statusEl) statusEl.innerText = '';
         showToast(err.message, 'error');
       }
     });

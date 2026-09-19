@@ -227,6 +227,20 @@ const SQLITE_DDL = `
     created_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS product_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id INTEGER NOT NULL,
+    type TEXT NOT NULL DEFAULT 'account',
+    login TEXT,
+    password TEXT,
+    content TEXT,
+    status TEXT NOT NULL DEFAULT 'available',
+    sale_id INTEGER,
+    sold_at TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_product_items_product ON product_items(product_id, status);
+
   CREATE TABLE IF NOT EXISTS coupons (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     code TEXT UNIQUE NOT NULL,
@@ -347,6 +361,20 @@ const POSTGRES_DDL = `
     stock INTEGER,
     created_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS product_items (
+    id BIGSERIAL PRIMARY KEY,
+    product_id BIGINT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'account',
+    login TEXT,
+    password TEXT,
+    content TEXT,
+    status TEXT NOT NULL DEFAULT 'available',
+    sale_id BIGINT,
+    sold_at TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_product_items_product ON product_items(product_id, status);
 
   CREATE TABLE IF NOT EXISTS coupons (
     id BIGSERIAL PRIMARY KEY,

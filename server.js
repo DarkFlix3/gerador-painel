@@ -1523,7 +1523,9 @@ async function resolveOrderPricing(req, reseller) {
     baseSalePrice: null,
     discount: 0,
     finalSalePrice: null,
-    productStock: null
+    productStock: null,
+    productHasItems: false,
+    productItemCount: 0
   };
 
   // 1. Produto do catalogo (opcional)
@@ -1543,7 +1545,16 @@ async function resolveOrderPricing(req, reseller) {
     // Destino do link de ativação (target_url do produto, se definido)
     result.productTargetUrl = product.target_url ? String(product.target_url).trim() : null;
     result.productStock = (product.stock === null || product.stock === undefined) ? null : Number(product.stock);
-    if (result.productStock !== null && result.productStock <= 0) {
+    try {
+      const itemRow = await dbHelpers.db.prepare('SELECT COUNT(*) AS c FROM product_items WHERE product_id = ? AND status = \'available\'').get(result.productId);
+      result.productItemCount = Number(itemRow ? itemRow.c : 0);
+      result.productHasItems = result.productItemCount > 0;
+    } catch (itemErr) {
+      // Tabela product_items ainda nao existe (DB antigo) — segue sem itens
+      result.productItemCount = 0;
+      result.productHasItems = false;
+    }
+    if (result.productStock !== null && result.productStock <= 0 && !result.productHasItems) {
       return { ...result, error: 'Produto esgotado no momento. Tente novamente mais tarde.' };
     }
   } else {
@@ -1617,6 +1628,13 @@ async function consumeCoupon(couponId) {
 
 app.get('/api/admin/products', adminAuth, async (req, res) => {
   const products = await dbHelpers.db.prepare('SELECT * FROM products ORDER BY sort_order ASC, id ASC').all();
+  const itemsCount = new Map();
+  try {
+    const itemRows = await dbHelpers.db.prepare('SELECT product_id, COUNT(*) AS c FROM product_items WHERE status = \'available\' GROUP BY product_id').all();
+    for (const r of itemRows) {
+      itemsCount.set(Number(r.product_id), Number(r.c));
+    }
+  } catch (itemErr) { /* tabela product_items ausente — segue sem itens */ }
   res.json({
     success: true,
     data: products.map((p) => ({
@@ -1626,7 +1644,8 @@ app.get('/api/admin/products', adminAuth, async (req, res) => {
       price_value: Number(p.price_value || 0),
       active: Number(p.active || 0),
       sort_order: Number(p.sort_order || 0),
-      stock: (p.stock === null || p.stock === undefined) ? null : Number(p.stock)
+      stock: (p.stock === null || p.stock === undefined) ? null : Number(p.stock),
+      item_count: itemsCount.get(Number(p.id)) || 0
     }))
   });
 });
@@ -1725,7 +1744,124 @@ app.delete('/api/admin/products/:id', adminAuth, async (req, res) => {
     return res.status(404).json({ success: false, error: 'Produto nao encontrado.' });
   }
   await dbHelpers.db.prepare('DELETE FROM products WHERE id = ?').run(id);
+  try {
+    await dbHelpers.db.prepare('DELETE FROM product_items WHERE product_id = ?').run(id);
+  } catch (itemErr) { /* tabela product_items ausente */ }
   res.json({ success: true, message: 'Produto "' + product.name + '" removido com sucesso! (historico de vendas preservado)' });
+});
+
+// ==========================================
+// ITENS DE ESTOQUE (contas / links do produto)
+// ------------------------------------------
+// Cada item equivale a 1 unidade vendável. Ao adicionar/remover itens,
+// o estoque do produto é sincronizado: stock = COUNT(itens disponíveis).
+// ==========================================
+
+// Lista os itens disponíveis de um produto
+app.get('/api/admin/products/:id/items', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const product = await dbHelpers.db.prepare('SELECT id, name FROM products WHERE id = ?').get(id);
+  if (!product) {
+    return res.status(404).json({ success: false, error: 'Produto nao encontrado.' });
+  }
+  const items = await dbHelpers.db.prepare('SELECT * FROM product_items WHERE product_id = ? AND status = \'available\' ORDER BY id ASC').all(id);
+  res.json({
+    success: true,
+    data: items.map((it) => ({
+      id: Number(it.id),
+      type: it.type || 'account',
+      login: it.login,
+      password: it.password,
+      content: it.content,
+      status: it.status,
+      created_at: it.created_at
+    }))
+  });
+});
+
+// Adiciona itens: contas ("login:senha" ou "login|senha", 1 por linha) e/ou links (1 por linha)
+app.post('/api/admin/products/:id/items', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const { type, lines } = req.body || {};
+  const product = await dbHelpers.db.prepare('SELECT id, name FROM products WHERE id = ?').get(id);
+  if (!product) {
+    return res.status(404).json({ success: false, error: 'Produto nao encontrado.' });
+  }
+  const itemType = type === 'link' ? 'link' : 'account';
+  const rawLines = Array.isArray(lines) ? lines : String(lines || '').split(/\r?\n/);
+  const parsed = [];
+  const errors = [];
+  let lineNo = 0;
+  for (const raw of rawLines) {
+    lineNo++;
+    const line = String(raw || '').trim();
+    if (!line) continue;
+    if (line.length > 4000) {
+      errors.push('Linha ' + lineNo + ': muito longa (max 4000 chars).');
+      continue;
+    }
+    if (itemType === 'link') {
+      parsed.push({ type: 'link', login: null, password: null, content: line });
+    } else {
+      let sepIdx = line.indexOf(':');
+      if (sepIdx === -1) sepIdx = line.indexOf('|');
+      if (sepIdx <= 0 || sepIdx === line.length - 1) {
+        errors.push('Linha ' + lineNo + ': formato invalido. Use login:senha (ou login|senha).');
+        continue;
+      }
+      parsed.push({
+        type: 'account',
+        login: line.slice(0, sepIdx).trim(),
+        password: line.slice(sepIdx + 1).trim(),
+        content: null
+      });
+    }
+  }
+  if (parsed.length === 0) {
+    return res.status(400).json({ success: false, error: 'Nenhum item valido para adicionar.' });
+  }
+  if (parsed.length > 1000) {
+    return res.status(400).json({ success: false, error: 'Maximo de 1000 itens por envio.' });
+  }
+  const now = new Date().toISOString();
+  const insert = dbHelpers.db.prepare('INSERT INTO product_items (product_id, type, login, password, content, status, created_at) VALUES (?, ?, ?, ?, ?, \'available\', ?)');
+  for (const it of parsed) {
+    await insert.run(id, it.type, it.login, it.password, it.content, now);
+  }
+  // Sincroniza estoque: stock = total de itens disponíveis
+  const countRow = await dbHelpers.db.prepare('SELECT COUNT(*) AS c FROM product_items WHERE product_id = ? AND status = \'available\'').get(id);
+  const stock = Number(countRow ? countRow.c : 0);
+  await dbHelpers.db.prepare('UPDATE products SET stock = ? WHERE id = ?').run(stock, id);
+  res.json({
+    success: true,
+    added: parsed.length,
+    errors,
+    stock,
+    message: parsed.length + ' item(ns) adicionado(s) ao estoque de "' + product.name + '". Estoque agora: ' + stock
+  });
+});
+
+// Remove um item disponível (conta/link) do estoque
+app.delete('/api/admin/products/:id/items/:itemId', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const itemId = parseInt(req.params.itemId, 10);
+  const product = await dbHelpers.db.prepare('SELECT id, name FROM products WHERE id = ?').get(id);
+  if (!product) {
+    return res.status(404).json({ success: false, error: 'Produto nao encontrado.' });
+  }
+  const item = await dbHelpers.db.prepare('SELECT id, status FROM product_items WHERE id = ? AND product_id = ?').get(itemId, id);
+  if (!item) {
+    return res.status(404).json({ success: false, error: 'Item nao encontrado.' });
+  }
+  if (item.status !== 'available') {
+    return res.status(400).json({ success: false, error: 'Este item ja foi vendido e nao pode ser removido.' });
+  }
+  await dbHelpers.db.prepare('DELETE FROM product_items WHERE id = ?').run(itemId);
+  // Recalcula o estoque após remover o item
+  const countRow = await dbHelpers.db.prepare('SELECT COUNT(*) AS c FROM product_items WHERE product_id = ? AND status = \'available\'').get(id);
+  const stock = Number(countRow ? countRow.c : 0);
+  await dbHelpers.db.prepare('UPDATE products SET stock = ? WHERE id = ?').run(stock, id);
+  res.json({ success: true, message: 'Item removido do estoque.', stock });
 });
 
 // ---------- CUPONS: PAINEL ADMIN ----------
@@ -1941,10 +2077,30 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
 
   let debited = false;
   let stockDecremented = false;
+  let itemConsumed = null;
+  let deliveredItem = null;
   let outOfStock = false;
   let stockRemaining = null;
   try {
-    // 0a. Decrementa o estoque do produto (apenas quando ha controle de estoque definido)
+    // 0a. Consome 1 item do estoque (conta/link) de forma atomica, se o produto tiver itens
+    if (pricing.productHasItems && pricing.productId) {
+      // Retry loop: outra venda pode ter consumido o item entre o SELECT e o UPDATE
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const candidate = await dbHelpers.db.prepare('SELECT id, type, login, password, content FROM product_items WHERE product_id = ? AND status = \'available\' ORDER BY id ASC LIMIT 1').get(pricing.productId);
+        if (!candidate) break;
+        const consumeRes = await dbHelpers.db.prepare('UPDATE product_items SET status = \'sold\', sold_at = ? WHERE id = ? AND status = \'available\'').run(new Date().toISOString(), candidate.id);
+        if (Number(consumeRes.changes) === 1) {
+          itemConsumed = candidate;
+          break;
+        }
+      }
+      if (!itemConsumed) {
+        outOfStock = true;
+        throw Object.assign(new Error('Produto esgotado no momento. Tente novamente mais tarde.'), { code: 'OUT_OF_STOCK' });
+      }
+    }
+
+    // 0b. Decrementa o estoque do produto (apenas quando ha controle de estoque definido)
     if (pricing.productStock !== null && pricing.productId) {
       const stockRes = await dbHelpers.db.prepare('UPDATE products SET stock = stock - 1 WHERE id = ? AND stock > 0').run(pricing.productId);
       if (Number(stockRes.changes) === 0) {
@@ -1985,6 +2141,18 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
     // Consome o cupom (incrementa o contador de usos)
     await consumeCoupon(pricing.couponId);
 
+    // Vincula o item consumido a venda (historico/estorno) e monta a entrega
+    if (itemConsumed) {
+      await dbHelpers.db.prepare('UPDATE product_items SET sale_id = ? WHERE id = ?').run(saleResult.lastInsertRowid, itemConsumed.id);
+      deliveredItem = {
+        id: Number(itemConsumed.id),
+        type: itemConsumed.type === 'link' ? 'link' : 'account',
+        login: itemConsumed.login || null,
+        password: itemConsumed.password || null,
+        content: itemConsumed.content || null
+      };
+    }
+
     const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
 
     // Alerta de venda manual (painel do revendedor)
@@ -2017,7 +2185,8 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
       discount: pricing.discount,
       coupon_code: pricing.couponCode,
       sale_id: saleResult.lastInsertRowid,
-      stock_remaining: stockRemaining
+      stock_remaining: stockRemaining,
+      delivered_item: deliveredItem
     });
   } catch (err) {
     const orderNumber = await nextOrderNumber();
@@ -2026,6 +2195,15 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
     // Restaura o estoque do produto se a venda falhou apos o decremento
     if (stockDecremented) {
       await dbHelpers.db.prepare('UPDATE products SET stock = stock + 1 WHERE id = ?').run(pricing.productId);
+    }
+
+    // Devolve o item consumido se a venda falhou apos o consumo
+    if (itemConsumed) {
+      try {
+        await dbHelpers.db.prepare('UPDATE product_items SET status = \'available\', sale_id = NULL, sold_at = NULL WHERE id = ? AND status = \'sold\'').run(itemConsumed.id);
+      } catch (itemRestoreErr) {
+        console.error('[generate-manual] restauracao do item falhou:', itemRestoreErr.message);
+      }
     }
 
     // ESTORNO AUTOMÁTICO: devolve o valor debitado ao saldo do revendedor
@@ -2045,7 +2223,7 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
       }
     }
 
-    res.status(debited ? 409 : 500).json({
+    res.status(debited || outOfStock ? 409 : 500).json({
       success: false,
       error: outOfStock ? reason : 'Erro ao gerar link manualmente: ' + reason,
       refunded: debited,
@@ -2109,10 +2287,30 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
 
   let debited = false;
   let stockDecremented = false;
+  let itemConsumed = null;
+  let deliveredItem = null;
   let outOfStock = false;
   let stockRemaining = null;
   try {
-    // 3a. Decrementa o estoque do produto (apenas quando ha controle de estoque definido)
+    // 3a. Consome 1 item do estoque (conta/link) de forma atomica, se o produto tiver itens
+    if (pricing.productHasItems && pricing.productId) {
+      // Retry loop: outra venda pode ter consumido o item entre o SELECT e o UPDATE
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const candidate = await dbHelpers.db.prepare('SELECT id, type, login, password, content FROM product_items WHERE product_id = ? AND status = \'available\' ORDER BY id ASC LIMIT 1').get(pricing.productId);
+        if (!candidate) break;
+        const consumeRes = await dbHelpers.db.prepare('UPDATE product_items SET status = \'sold\', sold_at = ? WHERE id = ? AND status = \'available\'').run(new Date().toISOString(), candidate.id);
+        if (Number(consumeRes.changes) === 1) {
+          itemConsumed = candidate;
+          break;
+        }
+      }
+      if (!itemConsumed) {
+        outOfStock = true;
+        throw Object.assign(new Error('Produto esgotado no momento. Tente novamente mais tarde.'), { code: 'OUT_OF_STOCK' });
+      }
+    }
+
+    // 3b. Decrementa o estoque do produto (apenas quando ha controle de estoque definido)
     if (pricing.productStock !== null && pricing.productId) {
       const stockRes = await dbHelpers.db.prepare('UPDATE products SET stock = stock - 1 WHERE id = ? AND stock > 0').run(pricing.productId);
       if (Number(stockRes.changes) === 0) {
@@ -2153,6 +2351,18 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
     );
     // Consome o cupom (incrementa o contador de usos)
     await consumeCoupon(pricing.couponId);
+
+    // Vincula o item consumido a venda (historico/estorno) e monta a entrega
+    if (itemConsumed) {
+      await dbHelpers.db.prepare('UPDATE product_items SET sale_id = ? WHERE id = ?').run(saleResult.lastInsertRowid, itemConsumed.id);
+      deliveredItem = {
+        id: Number(itemConsumed.id),
+        type: itemConsumed.type === 'link' ? 'link' : 'account',
+        login: itemConsumed.login || null,
+        password: itemConsumed.password || null,
+        content: itemConsumed.content || null
+      };
+    }
 
     const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
 
@@ -2195,7 +2405,8 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
       stock_remaining: stockRemaining,
       sale_id: saleResult.lastInsertRowid,
       created_at: now,
-      expires_at: generation.expiresAt
+      expires_at: generation.expiresAt,
+      delivered_item: deliveredItem
     });
 
   } catch (err) {
@@ -2205,6 +2416,15 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
     // Restaura o estoque do produto se a venda falhou apos o decremento
     if (stockDecremented) {
       await dbHelpers.db.prepare('UPDATE products SET stock = stock + 1 WHERE id = ?').run(pricing.productId);
+    }
+
+    // Devolve o item consumido se a venda falhou apos o consumo
+    if (itemConsumed) {
+      try {
+        await dbHelpers.db.prepare('UPDATE product_items SET status = \'available\', sale_id = NULL, sold_at = NULL WHERE id = ? AND status = \'sold\'').run(itemConsumed.id);
+      } catch (itemRestoreErr) {
+        console.error('[generate] restauracao do item falhou:', itemRestoreErr.message);
+      }
     }
 
     // ESTORNO AUTOMÁTICO: se o saldo já foi debitado e a entrega falhou,

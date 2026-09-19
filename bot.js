@@ -644,7 +644,12 @@ async function showCatalog(chatId, messageId) {
       keyboard = { reply_markup: { inline_keyboard: [[{ text: '🏠 Menu Principal', callback_data: 'back_to_menu' }]] } };
     } else {
       text = '🛒 <b>PRODUTOS</b>\n\nEscolha o produto desejado:';
-      const rows = products.map((p) => [{ text: `${productIcon(p.name)} ${p.name} — ${brl(p.sale_price)}${isSoldOut(p) ? ' — ❌ ESGOTADO' : ''}`, callback_data: `prod_${p.id}` }]);
+      const rows = products.map((p) => {
+        let suffix = '';
+        if (isSoldOut(p)) suffix = ' — ❌ ESGOTADO';
+        else if (p.stock !== null && p.stock !== undefined) suffix = ` (${Number(p.stock)})`;
+        return [{ text: `${productIcon(p.name)} ${p.name} — ${brl(p.sale_price)}${suffix}`, callback_data: `prod_${p.id}` }];
+      });
       rows.push([{ text: '🏠 Menu Principal', callback_data: 'back_to_menu' }]);
       keyboard = { reply_markup: { inline_keyboard: rows } };
     }
@@ -845,33 +850,66 @@ async function handlePurchase(chatId, user, messageId, opts) {
       const discountInfo = (data.discount && data.discount > 0)
         ? `🎟 <b>Cupom aplicado:</b> <code>${escapeHtml(data.coupon_code || '')}</code> (− ${brl(data.discount)})\n`
         : '';
-      const deliveryText = 
-        `🎉 <b>PAGAMENTO CONFIRMADO & ACESSO LIBERADO!</b>\n\n` +
-        `🎧 <b>Produto:</b> ${escapeHtml(productLabel)}\n` +
-        `👤 <b>Cliente:</b> ${customerName}\n` +
-        `${discountInfo}` +
-        `🔑 <b>Sua Chave Única:</b> <code>${data.token}</code>\n` +
-        `⏳ <b>Validade do Link:</b> 24 horas\n\n` +
-        `🔗 <b>Seu Link Individual:</b>\n` +
-        `👉 ${data.link}\n\n` +
-        `💡 <b>Como Ativar:</b>\n` +
-        `1. Clique no botão azul abaixo para abrir seu link exclusivo.\n` +
-        `2. Siga as instruções da nossa tela segura para ativar seu <b>${escapeHtml(productLabel)}</b>!\n\n` +
-        `<i>Obrigado por comprar conosco!</i>`;
-
-      const linkKeyboard = {
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: '🚀 ABRIR MEU ACESSO AGORA', url: data.link }
-            ],
-            [
-              { text: '🔄 Outro Produto', callback_data: 'catalog' },
-              { text: '🏠 Menu Principal', callback_data: 'back_to_menu' }
+      let deliveryText, linkKeyboard;
+      if (data.delivered_item) {
+        // Entrega de item do estoque (conta ou link cadastrado no painel)
+        const item = data.delivered_item;
+        const detailBlock = item.type === 'link'
+          ? `🔗 <b>Seu Link:</b>\n👉 ${escapeHtml(item.content)}\n\n`
+          : `🔑 <b>Login:</b> <code>${escapeHtml(item.login || '')}</code>\n` +
+            `🔒 <b>Senha:</b> <code>${escapeHtml(item.password || '')}</code>\n\n`;
+        deliveryText = 
+          `🎉 <b>PAGAMENTO CONFIRMADO & ACESSO LIBERADO!</b>\n\n` +
+          `🎧 <b>Produto:</b> ${escapeHtml(productLabel)}\n` +
+          `👤 <b>Cliente:</b> ${customerName}\n` +
+          `${discountInfo}` +
+          `📦 <b>Sua entrega:</b>\n` +
+          `${detailBlock}` +
+          `💡 <b>Atenção:</b> guarde esses dados com segurança. Eles são entregues apenas uma vez e não podem ser recuperados novamente.\n\n` +
+          `<i>Obrigado por comprar conosco!</i>`;
+        const urlRow = item.type === 'link'
+          ? [{ text: '🚀 ABRIR MEU LINK AGORA', url: item.content }]
+          : [];
+        linkKeyboard = {
+          reply_markup: {
+            inline_keyboard: [
+              ...(urlRow.length ? [urlRow] : []),
+              [
+                { text: '🔄 Outro Produto', callback_data: 'catalog' },
+                { text: '🏠 Menu Principal', callback_data: 'back_to_menu' }
+              ]
             ]
-          ]
-        }
-      };
+          }
+        };
+      } else {
+        deliveryText = 
+          `🎉 <b>PAGAMENTO CONFIRMADO & ACESSO LIBERADO!</b>\n\n` +
+          `🎧 <b>Produto:</b> ${escapeHtml(productLabel)}\n` +
+          `👤 <b>Cliente:</b> ${customerName}\n` +
+          `${discountInfo}` +
+          `🔑 <b>Sua Chave Única:</b> <code>${data.token}</code>\n` +
+          `⏳ <b>Validade do Link:</b> 24 horas\n\n` +
+          `🔗 <b>Seu Link Individual:</b>\n` +
+          `👉 ${data.link}\n\n` +
+          `💡 <b>Como Ativar:</b>\n` +
+          `1. Clique no botão azul abaixo para abrir seu link exclusivo.\n` +
+          `2. Siga as instruções da nossa tela segura para ativar seu <b>${escapeHtml(productLabel)}</b>!\n\n` +
+          `<i>Obrigado por comprar conosco!</i>`;
+
+        linkKeyboard = {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '🚀 ABRIR MEU ACESSO AGORA', url: data.link }
+              ],
+              [
+                { text: '🔄 Outro Produto', callback_data: 'catalog' },
+                { text: '🏠 Menu Principal', callback_data: 'back_to_menu' }
+              ]
+            ]
+          }
+        };
+      }
 
       sendOrEdit(chatId, messageId, deliveryText, { parse_mode: 'HTML', ...linkKeyboard });
 
