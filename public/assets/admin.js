@@ -159,6 +159,10 @@ document.addEventListener('DOMContentLoaded', () => {
       dashboard: 'Dashboard Geral & Estatísticas',
       resellers: 'Gestão Completa de Revendedores & Bloqueios',
       'all-sales': 'Vendas Realizadas por Bots para Clientes',
+      products: 'Produtos Vendidos pelos Bots',
+      coupons: 'Cupons de Desconto',
+      orders: 'Pedidos, Entregas e Status',
+      payments: 'Transações de Pagamento',
       'error-logs': 'Monitoramento de Falhas e Erros',
       settings: 'Configurações do Link Alvo',
       'api-docs': 'Documentação da API para Bots de Revenda'
@@ -169,6 +173,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (tabId === 'dashboard') loadStats();
     if (tabId === 'resellers') loadResellers();
     if (tabId === 'all-sales') setSection(currentSection);
+    if (tabId === 'products') loadProducts();
+    if (tabId === 'coupons') loadCoupons();
+    if (tabId === 'orders') loadOrders();
+    if (tabId === 'payments') loadPayments();
     if (tabId === 'error-logs') loadErrorLogs();
     if (tabId === 'settings') loadSettings();
   }
@@ -619,6 +627,376 @@ document.addEventListener('DOMContentLoaded', () => {
       showToast('Dados atualizados.', 'info');
     });
   }
+
+  // ==============================================
+  // 4. PRODUTOS, CUPONS, PEDIDOS E PAGAMENTOS
+  // ==============================================
+
+  // ----- PRODUTOS -----
+  async function loadProducts() {
+    const tbody = document.getElementById('products-body');
+    if (!tbody) return;
+
+    try {
+      const res = await apiFetch('/api/admin/products');
+      const data = await res.json();
+      if (!data.success) return;
+
+      if (data.data.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" class="px-5 py-8 text-center text-slate-500">Nenhum produto cadastrado. Clique em \"Novo Produto\".</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = data.data.map(p => {
+        const isActive = p.active === 1 || p.active === true;
+        const profit = Number(p.price || 0) - Number(p.cost_price || 0);
+        const createdAt = p.created_at ? new Date(p.created_at) : null;
+        return `
+          <tr class="hover:bg-white/[0.02] transition-colors ${!isActive ? 'opacity-50' : ''}">
+            <td class="px-5 py-3.5">
+              <span class="font-bold text-white block">${escapeHtml(p.emoji || '🎁')} ${escapeHtml(p.name)}</span>
+              ${p.description ? `<span class="text-[10px] text-slate-400 block">${escapeHtml(p.description)}</span>` : ''}
+            </td>
+            <td class="px-5 py-3.5 font-mono font-bold text-white">R$ ${Number(p.price || 0).toFixed(2).replace('.', ',')}</td>
+            <td class="px-5 py-3.5 font-mono text-slate-300">R$ ${Number(p.cost_price || 0).toFixed(2).replace('.', ',')}</td>
+            <td class="px-5 py-3.5 font-mono font-bold text-emerald-400">R$ ${profit.toFixed(2).replace('.', ',')}</td>
+            <td class="px-5 py-3.5">
+              ${isActive
+                ? `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-500/40"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Ativo</span>`
+                : `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-950 text-rose-400 border border-rose-500/40">Inativo</span>`
+              }
+            </td>
+            <td class="px-5 py-3.5 font-mono text-[11px] text-slate-400">${createdAt ? createdAt.toLocaleDateString('pt-BR') : '—'}</td>
+            <td class="px-5 py-3.5 text-right space-x-1.5 whitespace-nowrap">
+              <button onclick="editProduct(${p.id})" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[11px] font-semibold border border-white/10">Editar</button>
+              <button onclick="deleteProduct(${p.id}, '${escapeHtml(p.name)}')" class="p-1.5 hover:bg-rose-950/80 text-rose-400 rounded text-[11px]" title="Desativar Produto"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      if (window.lucide) window.lucide.createIcons();
+    } catch (e) {
+      console.warn('Erro ao carregar produtos:', e);
+    }
+  }
+
+  window.createProduct = async function() {
+    const name = prompt('Nome do produto (ex: Acesso Premium Spotify):');
+    if (!name) return;
+    const price = prompt('Preço de venda em R$ (ex: 15.00):', '15.00');
+    const cost = prompt('Custo do link em R$ (ex: 2.99):', '2.99');
+    const emoji = prompt('Emoji do produto (opcional):', '🎁') || '🎁';
+    const description = prompt('Descrição curta (opcional):');
+
+    try {
+      const res = await apiFetch('/api/admin/products', {
+        method: 'POST',
+        body: JSON.stringify({ name, price, cost_price: cost, emoji, description })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao criar produto.');
+
+      showToast(data.message, 'success');
+      loadProducts();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  window.editProduct = async function(id) {
+    try {
+      const res = await apiFetch('/api/admin/products');
+      const data = await res.json();
+      if (!data.success) return;
+      const p = data.data.find(x => x.id === id);
+      if (!p) return;
+
+      const name = prompt('Nome do produto:', p.name);
+      if (!name) return;
+      const price = prompt('Preço de venda em R$:', String(p.price));
+      const cost = prompt('Custo em R$:', String(p.cost_price));
+      const emoji = prompt('Emoji:', p.emoji || '🎁') || '🎁';
+      const desc = prompt('Descrição curta:', p.description || '');
+
+      const upd = await apiFetch(`/api/admin/products/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ name, price, cost_price: cost, emoji, description: desc, active: 1 })
+      });
+      const updData = await upd.json();
+      if (!upd.ok || !updData.success) throw new Error(updData.error || 'Falha ao atualizar produto.');
+
+      showToast(updData.message, 'success');
+      loadProducts();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  window.deleteProduct = async function(id, name) {
+    if (!confirm(`Desativar o produto \"${name}\"? Ele deixará de aparecer nos bots.`)) return;
+
+    try {
+      const res = await apiFetch(`/api/admin/products/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao desativar produto.');
+
+      showToast(data.message, 'info');
+      loadProducts();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  // ----- CUPONS -----
+  async function loadCoupons() {
+    const tbody = document.getElementById('coupons-body');
+    if (!tbody) return;
+
+    try {
+      const res = await apiFetch('/api/admin/coupons');
+      const data = await res.json();
+      if (!data.success) return;
+
+      if (data.data.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" class="px-5 py-8 text-center text-slate-500">Nenhum cupom criado. Clique em \"Novo Cupom\".</td></tr>`;
+        return;
+      }
+
+      const statusLabel = c => (c.active === 1 || c.active === true)
+        ? `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-500/40"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Ativo</span>`
+        : `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-950 text-rose-400 border border-rose-500/40">Inativo</span>`;
+
+      tbody.innerHTML = data.data.map(c => {
+        const discountLabel = c.discount_type === 'fixed'
+          ? `R$ ${Number(c.discount_value).toFixed(2).replace('.', ',')}`
+          : `${Number(c.discount_value).toFixed(0).replace('.', ',')}%`;
+        const expires = c.valid_until ? new Date(c.valid_until) : null;
+        const usesLabel = c.max_uses > 0 ? `${c.used_count || 0}/${c.max_uses}` : `${c.used_count || 0} (ilimitado)`;
+        return `
+          <tr class="hover:bg-white/[0.02] transition-colors">
+            <td class="px-5 py-3.5 font-mono font-bold text-fuchsia-300">${escapeHtml(c.code)}</td>
+            <td class="px-5 py-3.5 text-slate-300 capitalize">${c.discount_type === 'fixed' ? 'Valor fixo' : 'Percentual'}</td>
+            <td class="px-5 py-3.5 font-mono font-bold text-white">${discountLabel}</td>
+            <td class="px-5 py-3.5 font-mono text-[11px] text-slate-400">${usesLabel}</td>
+            <td class="px-5 py-3.5 font-mono text-[11px] ${expires && expires < new Date() ? 'text-rose-400' : 'text-slate-400'}">${expires ? expires.toLocaleDateString('pt-BR') : '—'}</td>
+            <td class="px-5 py-3.5">${statusLabel(c)}</td>
+            <td class="px-5 py-3.5 text-right space-x-1.5 whitespace-nowrap">
+              <button onclick="editCoupon(${c.id})" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[11px] font-semibold border border-white/10">Editar</button>
+              <button onclick="deleteCoupon(${c.id}, '${escapeHtml(c.code)}')" class="p-1.5 hover:bg-rose-950/80 text-rose-400 rounded text-[11px]" title="Desativar Cupom"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      if (window.lucide) window.lucide.createIcons();
+    } catch (e) {
+      console.warn('Erro ao carregar cupons:', e);
+    }
+  }
+
+  window.createCoupon = async function() {
+    const code = prompt('Código do cupom (ex: PROMO10):');
+    if (!code) return;
+    const type = prompt('Tipo de desconto — digite "percent" ou "fixed":', 'percent');
+    const value = prompt('Valor do desconto (10 = 10% ou R$ 10,00):', '10');
+    const maxUses = prompt('Limite de usos (0 = ilimitado):', '0');
+    const validUntil = prompt('Validade (formato AAAA-MM-DD, opcional):');
+
+    try {
+      const res = await apiFetch('/api/admin/coupons', {
+        method: 'POST',
+        body: JSON.stringify({
+          code,
+          discount_type: type === 'fixed' ? 'fixed' : 'percent',
+          discount_value: value,
+          max_uses: maxUses,
+          valid_until: validUntil || null
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao criar cupom.');
+
+      showToast(data.message, 'success');
+      loadCoupons();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  window.editCoupon = async function(id) {
+    try {
+      const res = await apiFetch('/api/admin/coupons');
+      const data = await res.json();
+      if (!data.success) return;
+      const c = data.data.find(x => x.id === id);
+      if (!c) return;
+
+      const type = prompt('Tipo de desconto — "percent" ou "fixed":', c.discount_type) || c.discount_type;
+      const value = prompt('Valor do desconto:', String(c.discount_value));
+      const maxUses = prompt('Limite de usos (0 = ilimitado):', String(c.max_uses || 0));
+      const validUntil = prompt('Validade (AAAA-MM-DD, vazio para sem expiração):', c.valid_until ? c.valid_until.slice(0, 10) : '');
+
+      const upd = await apiFetch(`/api/admin/coupons/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          discount_type: type === 'fixed' ? 'fixed' : 'percent',
+          discount_value: value,
+          max_uses: maxUses,
+          valid_until: validUntil || null
+        })
+      });
+      const updData = await upd.json();
+      if (!upd.ok || !updData.success) throw new Error(updData.error || 'Falha ao atualizar cupom.');
+
+      showToast(updData.message, 'success');
+      loadCoupons();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  window.deleteCoupon = async function(id, code) {
+    if (!confirm(`Desativar o cupom \"${code}\"? Ele não poderá mais ser usado.`)) return;
+
+    try {
+      const res = await apiFetch(`/api/admin/coupons/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao desativar cupom.');
+
+      showToast(data.message, 'info');
+      loadCoupons();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  // ----- PEDIDOS -----
+  const ORDER_STATUS_LABELS = {
+    pending: 'Pendente',
+    paid: 'Pago',
+    delivered: 'Entregue',
+    cancelled: 'Cancelado'
+  };
+
+  async function loadOrders() {
+    const tbody = document.getElementById('orders-body');
+    if (!tbody) return;
+
+    try {
+      const res = await apiFetch('/api/admin/orders');
+      const data = await res.json();
+      if (!data.success) return;
+
+      if (data.data.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="9" class="px-5 py-8 text-center text-slate-500">Nenhum pedido registrado ainda.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = data.data.map(o => {
+        const d = o.created_at ? new Date(o.created_at) : null;
+        return `
+          <tr class="hover:bg-white/[0.02] transition-colors">
+            <td class="px-5 py-3.5 font-mono text-[11px] text-sky-300">#${escapeHtml(o.order_code)}</td>
+            <td class="px-5 py-3.5 font-semibold text-white">${escapeHtml(o.product_name || '—')}</td>
+            <td class="px-5 py-3.5">${escapeHtml(o.customer_name || '—')}${o.customer_contact ? `<span class="text-[10px] text-slate-500 block">${escapeHtml(o.customer_contact)}</span>` : ''}</td>
+            <td class="px-5 py-3.5 text-slate-300">${escapeHtml(o.reseller_name || '—')}</td>
+            <td class="px-5 py-3.5 font-mono font-bold text-white">R$ ${Number(o.total || 0).toFixed(2).replace('.', ',')}</td>
+            <td class="px-5 py-3.5 font-mono text-[11px] text-slate-400">${escapeHtml(o.payment_method || '—')}</td>
+            <td class="px-5 py-3.5">
+              <select onchange="updateOrderStatus(${o.id}, this.value)" class="bg-slate-900 text-[10px] font-bold px-2 py-1.5 rounded-lg border border-white/10 text-slate-200 focus:outline-none">
+                ${Object.keys(ORDER_STATUS_LABELS).map(s => `<option value="${s}" ${o.status === s ? 'selected' : ''}>${ORDER_STATUS_LABELS[s]}</option>`).join('')}
+              </select>
+            </td>
+            <td class="px-5 py-3.5 font-mono text-[11px] text-slate-400">${d ? d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR') : '—'}</td>
+            <td class="px-5 py-3.5">${o.token ? `<span class="font-mono text-[10px] text-cyan-400">Link gerado</span>` : `<span class="text-[10px] text-slate-500">—</span>`}</td>
+          </tr>
+        `;
+      }).join('');
+
+      if (window.lucide) window.lucide.createIcons();
+    } catch (e) {
+      console.warn('Erro ao carregar pedidos:', e);
+    }
+  }
+
+  window.updateOrderStatus = async function(id, status) {
+    const label = ORDER_STATUS_LABELS[status] || status;
+    if (!confirm(`Alterar o status deste pedido para \"${label}\"?`)) {
+      loadOrders();
+      return;
+    }
+
+    try {
+      const res = await apiFetch(`/api/admin/orders/${id}/status`, {
+        method: 'POST',
+        body: JSON.stringify({ status })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao atualizar status.');
+
+      showToast(data.message, data.delivered ? 'success' : 'info');
+      loadOrders();
+    } catch (err) {
+      showToast(err.message, 'error');
+      loadOrders();
+    }
+  };
+
+  // ----- PAGAMENTOS -----
+  async function loadPayments() {
+    const tbody = document.getElementById('payments-body');
+    if (!tbody) return;
+
+    try {
+      const res = await apiFetch('/api/admin/payments');
+      const data = await res.json();
+      if (!data.success) return;
+
+      if (data.data.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" class="px-5 py-8 text-center text-slate-500">Nenhum pagamento registrado ainda.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = data.data.map(p => {
+        const d = p.created_at ? new Date(p.created_at) : null;
+        return `
+          <tr class="hover:bg-white/[0.02] transition-colors">
+            <td class="px-5 py-3.5 font-mono text-[11px] text-slate-500">#${p.id}</td>
+            <td class="px-5 py-3.5 font-mono text-[11px] text-sky-300">#${escapeHtml(p.order_code || '—')}</td>
+            <td class="px-5 py-3.5 font-semibold text-white">${escapeHtml(p.product_name || '—')}</td>
+            <td class="px-5 py-3.5 text-slate-300">${escapeHtml(p.reseller_name || '—')}</td>
+            <td class="px-5 py-3.5 font-mono text-[11px] text-slate-400">${escapeHtml(p.provider || '—')}</td>
+            <td class="px-5 py-3.5 font-mono font-bold text-emerald-400">R$ ${Number(p.amount || 0).toFixed(2).replace('.', ',')}</td>
+            <td class="px-5 py-3.5">
+              <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-900 text-slate-300 border border-white/10 capitalize">${escapeHtml(p.status || '—')}</span>
+            </td>
+            <td class="px-5 py-3.5 font-mono text-[11px] text-slate-400">${d ? d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR') : '—'}</td>
+          </tr>
+        `;
+      }).join('');
+
+      if (window.lucide) window.lucide.createIcons();
+    } catch (e) {
+      console.warn('Erro ao carregar pagamentos:', e);
+    }
+  }
+
+  const btnNewProduct = document.getElementById('btn-new-product');
+  if (btnNewProduct) btnNewProduct.addEventListener('click', () => createProduct());
+  const btnRefreshProducts = document.getElementById('btn-refresh-products');
+  if (btnRefreshProducts) btnRefreshProducts.addEventListener('click', () => { loadProducts(); showToast('Produtos atualizados.', 'info'); });
+
+  const btnNewCoupon = document.getElementById('btn-new-coupon');
+  if (btnNewCoupon) btnNewCoupon.addEventListener('click', () => createCoupon());
+  const btnRefreshCoupons = document.getElementById('btn-refresh-coupons');
+  if (btnRefreshCoupons) btnRefreshCoupons.addEventListener('click', () => { loadCoupons(); showToast('Cupons atualizados.', 'info'); });
+
+  const btnRefreshOrdersAdmin = document.getElementById('btn-refresh-orders-admin');
+  if (btnRefreshOrdersAdmin) btnRefreshOrdersAdmin.addEventListener('click', () => { loadOrders(); showToast('Pedidos atualizados.', 'info'); });
+
+  const btnRefreshPayments = document.getElementById('btn-refresh-payments');
+  if (btnRefreshPayments) btnRefreshPayments.addEventListener('click', () => { loadPayments(); showToast('Pagamentos atualizados.', 'info'); });
 
   // ==============================================
   // 4. MONITORAMENTO & ERROR LOGS

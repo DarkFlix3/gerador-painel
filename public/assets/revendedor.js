@@ -146,7 +146,7 @@ document.addEventListener('DOMContentLoaded', () => {
       authToken = data.token;
       localStorage.setItem(tokenKey, authToken);
       hideAuthModal();
-      showToast('Conta criada com sucesso! 25 créditos grátis adicionados!', 'success');
+      showToast('Conta criada com sucesso! Faça uma recarga para começar a vender.', 'success');
       loadAllResellerData();
 
     } catch (err) {
@@ -197,7 +197,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (window.lucide) window.lucide.createIcons();
 
-    if (tabName === 'customers') loadAllSales();
+    if (tabName === 'sales') loadAllSales();
+    if (tabName === 'customers') loadResellerCustomers();
+    if (tabName === 'orders') loadResellerOrders();
   };
 
   // ==========================================
@@ -426,11 +428,140 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  const btnRefreshCustomers = document.getElementById('btn-refresh-customers');
-  if (btnRefreshCustomers) {
-    btnRefreshCustomers.addEventListener('click', () => {
+  const btnRefreshSales = document.getElementById('btn-refresh-sales');
+  if (btnRefreshSales) {
+    btnRefreshSales.addEventListener('click', () => {
       loadAllSales();
+      showToast('Lista de vendas atualizada.', 'info');
+    });
+  }
+
+  // ==========================================
+  // TAB CLIENTES (AGRUPADO POR CLIENTE)
+  // ==========================================
+  async function loadResellerCustomers() {
+    const tbody = document.getElementById('reseller-customers-body');
+    if (!tbody) return;
+
+    try {
+      const res = await resellerFetch('/api/reseller/customers');
+      const data = await res.json();
+      if (!data.success) return;
+
+      if (data.data.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" class="px-5 py-8 text-center text-slate-500">Nenhum cliente registrado ainda pelo seu bot.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = data.data.map(c => {
+        const lastPurchase = c.last_purchase ? new Date(c.last_purchase) : null;
+        return `
+          <tr class="hover:bg-white/[0.02] transition-colors">
+            <td class="px-5 py-3.5">
+              <span class="font-bold text-white block">${escapeHtml(c.customer_name || 'Cliente')}</span>
+            </td>
+            <td class="px-5 py-3.5 font-mono text-[11px] text-cyan-300">${escapeHtml(c.customer_contact || c.customer_id || 'Via Bot')}</td>
+            <td class="px-5 py-3.5"><span class="px-2.5 py-0.5 rounded-full bg-indigo-950/60 text-indigo-300 border border-indigo-500/30 font-bold">${c.purchase_count}</span></td>
+            <td class="px-5 py-3.5 font-mono font-bold text-white">R$ ${Number(c.total_spent).toFixed(2).replace('.', ',')}</td>
+            <td class="px-5 py-3.5 font-mono font-bold text-emerald-400">+ R$ ${Number(c.total_profit).toFixed(2).replace('.', ',')}</td>
+            <td class="px-5 py-3.5 font-mono text-[11px] text-slate-400">${lastPurchase ? lastPurchase.toLocaleDateString('pt-BR') + ' ' + lastPurchase.toLocaleTimeString('pt-BR') : '—'}</td>
+          </tr>
+        `;
+      }).join('');
+
+      if (window.lucide) window.lucide.createIcons();
+
+    } catch (e) {
+      console.warn('Erro ao carregar lista de clientes:', e);
+      showToast('Erro ao carregar clientes.', 'error');
+    }
+  }
+
+  const btnRefreshCustomersList = document.getElementById('btn-refresh-customers-list');
+  if (btnRefreshCustomersList) {
+    btnRefreshCustomersList.addEventListener('click', () => {
+      loadResellerCustomers();
       showToast('Lista de clientes atualizada.', 'info');
+    });
+  }
+
+  // ==========================================
+  // TAB MEUS PEDIDOS (COM CANCELAMENTO)
+  // ==========================================
+  async function loadResellerOrders() {
+    const tbody = document.getElementById('reseller-orders-body');
+    if (!tbody) return;
+
+    try {
+      const res = await resellerFetch('/api/reseller/orders');
+      const data = await res.json();
+      if (!data.success) return;
+
+      if (data.data.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" class="px-5 py-8 text-center text-slate-500">Nenhum pedido no momento.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = data.data.map(o => {
+        const d = o.created_at ? new Date(o.created_at) : null;
+        const statusMap = {
+          pending:   { label: 'Pendente',   cls: 'bg-yellow-950/60 text-yellow-400 border-yellow-500/30' },
+          paid:      { label: 'Pago',       cls: 'bg-cyan-950/60 text-cyan-400 border-cyan-500/30' },
+          delivered: { label: 'Entregue',   cls: 'bg-emerald-950/60 text-emerald-400 border-emerald-500/30' },
+          cancelled: { label: 'Cancelado',  cls: 'bg-rose-950/60 text-rose-400 border-rose-500/30' }
+        };
+        const st = statusMap[o.status] || { label: o.status, cls: 'bg-slate-800 text-slate-300 border-white/10' };
+        const canCancel = o.status === 'pending';
+        return `
+          <tr class="hover:bg-white/[0.02] transition-colors">
+            <td class="px-5 py-3.5 font-mono text-[11px] text-slate-300">${escapeHtml(o.order_code)}</td>
+            <td class="px-5 py-3.5 font-semibold text-white">${escapeHtml(o.product_name)}</td>
+            <td class="px-5 py-3.5">${escapeHtml(o.customer || '—')}</td>
+            <td class="px-5 py-3.5 font-mono font-bold text-white">R$ ${Number(o.total).toFixed(2).replace('.', ',')}</td>
+            <td class="px-5 py-3.5 font-mono text-[11px]">${escapeHtml(o.payment_method || '—')}</td>
+            <td class="px-5 py-3.5">
+              <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${st.cls}">${st.label}</span>
+            </td>
+            <td class="px-5 py-3.5">
+              <div class="flex items-center gap-2">
+                <span class="font-mono text-[11px] text-slate-500">${d ? d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR') : '—'}</span>
+                ${canCancel ? `<button onclick="cancelResellerOrder('${escapeHtml(o.id)}')" class="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-rose-950/60 text-rose-400 border border-rose-500/30 hover:bg-rose-900/60 transition-colors">Cancelar</button>` : ''}
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      if (window.lucide) window.lucide.createIcons();
+
+    } catch (e) {
+      console.warn('Erro ao carregar pedidos:', e);
+      showToast('Erro ao carregar pedidos.', 'error');
+    }
+  }
+
+  window.cancelResellerOrder = async function(id) {
+    if (!confirm('Tem certeza que deseja cancelar este pedido? O valor será estornado ao seu saldo.')) return;
+
+    try {
+      const res = await resellerFetch(`/api/reseller/orders/${id}/cancel`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao cancelar pedido.');
+
+      showToast(data.message || 'Pedido cancelado com sucesso!', 'success');
+      loadResellerOrders();
+      loadResellerDashboard();
+
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const btnRefreshOrders = document.getElementById('btn-refresh-orders');
+  if (btnRefreshOrders) {
+    btnRefreshOrders.addEventListener('click', () => {
+      loadResellerOrders();
+      showToast('Lista de pedidos atualizada.', 'info');
     });
   }
 

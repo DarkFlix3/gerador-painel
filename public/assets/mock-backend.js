@@ -11,7 +11,11 @@
     RESELLERS: 'quantum_mock_resellers',
     SALES: 'quantum_mock_sales',
     GENERATIONS: 'quantum_mock_generations',
-    LOGS: 'quantum_mock_logs'
+    LOGS: 'quantum_mock_logs',
+    PRODUCTS: 'quantum_mock_products',
+    COUPONS: 'quantum_mock_coupons',
+    ORDERS: 'quantum_mock_orders',
+    PAYMENTS: 'quantum_mock_payments'
   };
 
   // Inicializa dados padrão no localStorage se não existirem
@@ -71,6 +75,106 @@
       localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(defaultSales));
     }
 
+    if (!localStorage.getItem(STORAGE_KEYS.PRODUCTS)) {
+      const defaultProducts = [
+        {
+          id: 1,
+          name: 'Acesso Premium Spotify (12 Meses)',
+          description: 'Acesso VIP ao grupo premium com link individual.',
+          price: 15.00,
+          cost_price: 2.99,
+          emoji: '🎵',
+          active: 1,
+          sort_order: 1,
+          created_at: new Date(Date.now() - 30 * 86400000).toISOString()
+        }
+      ];
+      localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(defaultProducts));
+    }
+
+    if (!localStorage.getItem(STORAGE_KEYS.COUPONS)) {
+      const defaultCoupons = [
+        {
+          id: 1,
+          code: 'BEMVINDO10',
+          discount_type: 'percent',
+          discount_value: 10,
+          max_uses: 50,
+          used_count: 3,
+          valid_until: new Date(Date.now() + 30 * 86400000).toISOString(),
+          active: 1,
+          created_at: new Date(Date.now() - 20 * 86400000).toISOString()
+        }
+      ];
+      localStorage.setItem(STORAGE_KEYS.COUPONS, JSON.stringify(defaultCoupons));
+    }
+
+    if (!localStorage.getItem(STORAGE_KEYS.ORDERS)) {
+      const now = Date.now();
+      const defaultOrders = [
+        {
+          id: 1,
+          order_code: 'PED-1001',
+          reseller_id: 1,
+          product_id: 1,
+          product_name: 'Acesso Premium Spotify (12 Meses)',
+          customer_name: 'Gabriel Martins',
+          customer_id: 'tg_88921',
+          customer_contact: '@gabriel_vip',
+          unit_price: 15.00,
+          discount: 0,
+          total: 15.00,
+          coupon_code: null,
+          status: 'delivered',
+          payment_method: 'BALANCE',
+          payment_id: null,
+          token: 'SP-88A92B1F',
+          created_at: new Date(now - 3600000 * 2).toISOString(),
+          updated_at: new Date(now - 3600000).toISOString()
+        },
+        {
+          id: 2,
+          order_code: 'PED-1002',
+          reseller_id: 1,
+          product_id: 1,
+          product_name: 'Acesso Premium Spotify (12 Meses)',
+          customer_name: 'Lucas Ferreira',
+          customer_id: 'tg_77192',
+          customer_contact: '@lucas_ferr',
+          unit_price: 15.00,
+          discount: 1.50,
+          total: 13.50,
+          coupon_code: 'BEMVINDO10',
+          status: 'pending',
+          payment_method: 'PIX',
+          payment_id: null,
+          token: null,
+          created_at: new Date(now - 3600000).toISOString(),
+          updated_at: null
+        }
+      ];
+      localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(defaultOrders));
+    }
+
+    if (!localStorage.getItem(STORAGE_KEYS.PAYMENTS)) {
+      const defaultPayments = [
+        {
+          id: 1,
+          order_id: 2,
+          reseller_id: 1,
+          provider: 'PIX',
+          external_id: null,
+          amount: 13.50,
+          currency: 'BRL',
+          status: 'pending',
+          metadata: null,
+          created_at: new Date(Date.now() - 3600000).toISOString(),
+          updated_at: null
+        }
+      ];
+      localStorage.setItem(STORAGE_KEYS.PAYMENTS, JSON.stringify(defaultPayments));
+    }
+
     if (!localStorage.getItem(STORAGE_KEYS.LOGS)) {
       localStorage.setItem(STORAGE_KEYS.LOGS, JSON.stringify([]));
     }
@@ -92,6 +196,30 @@
   }
   function getLogs() {
     return JSON.parse(localStorage.getItem(STORAGE_KEYS.LOGS) || '[]');
+  }
+  function getProducts() {
+    return JSON.parse(localStorage.getItem(STORAGE_KEYS.PRODUCTS) || '[]');
+  }
+  function saveProducts(data) {
+    localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(data));
+  }
+  function getCoupons() {
+    return JSON.parse(localStorage.getItem(STORAGE_KEYS.COUPONS) || '[]');
+  }
+  function saveCoupons(data) {
+    localStorage.setItem(STORAGE_KEYS.COUPONS, JSON.stringify(data));
+  }
+  function getOrders() {
+    return JSON.parse(localStorage.getItem(STORAGE_KEYS.ORDERS) || '[]');
+  }
+  function saveOrders(data) {
+    localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(data));
+  }
+  function getPayments() {
+    return JSON.parse(localStorage.getItem(STORAGE_KEYS.PAYMENTS) || '[]');
+  }
+  function savePayments(data) {
+    localStorage.setItem(STORAGE_KEYS.PAYMENTS, JSON.stringify(data));
   }
 
   function mockResponse(status, data) {
@@ -523,6 +651,208 @@
           message: 'Nova API Key gerada com sucesso!',
           api_key: r.api_key
         });
+      }
+
+      // 20. ADMIN: PRODUTOS
+      if (cleanUrl.startsWith('/api/admin/products')) {
+        if (method === 'POST') {
+          if (!body.name || !String(body.name).trim()) {
+            return mockResponse(400, { success: false, error: 'Informe o nome do produto.' });
+          }
+          const products = getProducts();
+          const np = {
+            id: Date.now(),
+            name: String(body.name).trim(),
+            description: body.description || null,
+            price: Math.max(0, parseFloat(body.price) || 0),
+            cost_price: Math.max(0, parseFloat(body.cost_price) || 0),
+            emoji: body.emoji || '🎁',
+            active: body.active === false || body.active === 0 ? 0 : 1,
+            sort_order: parseInt(body.sort_order || '0', 10),
+            created_at: new Date().toISOString()
+          };
+          products.unshift(np);
+          saveProducts(products);
+          return mockResponse(200, { success: true, message: 'Produto criado com sucesso!', id: np.id });
+        }
+        const prodIdMatch = cleanUrl.match(/\/api\/admin\/products\/(\d+)/);
+        if (prodIdMatch) {
+          const pid = parseInt(prodIdMatch[1], 10);
+          const products = getProducts();
+          const p = products.find(x => x.id === pid);
+          if (!p) return mockResponse(404, { success: false, error: 'Produto não encontrado.' });
+          if (method === 'PUT') {
+            if (body.name !== undefined && body.name !== '') p.name = String(body.name).trim();
+            if (body.description !== undefined) p.description = body.description || null;
+            if (body.price !== undefined) p.price = Math.max(0, parseFloat(body.price) || 0);
+            if (body.cost_price !== undefined) p.cost_price = Math.max(0, parseFloat(body.cost_price) || 0);
+            if (body.emoji !== undefined) p.emoji = body.emoji || '🎁';
+            if (body.active !== undefined) p.active = (body.active === false || body.active === 0) ? 0 : 1;
+            if (body.sort_order !== undefined) p.sort_order = parseInt(body.sort_order || '0', 10);
+            saveProducts(products);
+            return mockResponse(200, { success: true, message: 'Produto atualizado com sucesso!' });
+          }
+          if (method === 'DELETE') {
+            p.active = 0;
+            saveProducts(products);
+            return mockResponse(200, { success: true, message: 'Produto desativado com sucesso.' });
+          }
+        }
+        const productsSorted = getProducts().sort((a, b) => ((a.sort_order || 0) - (b.sort_order || 0)) || (a.id - b.id));
+        return mockResponse(200, { success: true, data: productsSorted });
+      }
+
+      // 21. ADMIN: CUPONS
+      if (cleanUrl.startsWith('/api/admin/coupons')) {
+        if (method === 'POST') {
+          const cleanCode = body.code ? String(body.code).trim().toUpperCase().replace(/\s+/g, '') : '';
+          if (!cleanCode) return mockResponse(400, { success: false, error: 'Informe o código do cupom.' });
+          const value = parseFloat(body.discount_value);
+          if (isNaN(value) || value <= 0) return mockResponse(400, { success: false, error: 'Valor de desconto inválido.' });
+          if (body.discount_type !== 'fixed' && value > 100) return mockResponse(400, { success: false, error: 'Desconto percentual não pode passar de 100%.' });
+          const coupons = getCoupons();
+          if (coupons.find(x => x.code === cleanCode)) return mockResponse(400, { success: false, error: 'Já existe um cupom com este código.' });
+          const nc = {
+            id: Date.now(),
+            code: cleanCode,
+            discount_type: body.discount_type === 'fixed' ? 'fixed' : 'percent',
+            discount_value: value,
+            max_uses: Math.max(0, parseInt(body.max_uses || '0', 10)),
+            used_count: 0,
+            valid_until: body.valid_until ? new Date(body.valid_until).toISOString() : null,
+            active: body.active === false || body.active === 0 ? 0 : 1,
+            created_at: new Date().toISOString()
+          };
+          coupons.unshift(nc);
+          saveCoupons(coupons);
+          return mockResponse(200, { success: true, message: 'Cupom ' + cleanCode + ' criado com sucesso!', id: nc.id });
+        }
+        const coupIdMatch = cleanUrl.match(/\/api\/admin\/coupons\/(\d+)/);
+        if (coupIdMatch) {
+          const cid = parseInt(coupIdMatch[1], 10);
+          const coupons = getCoupons();
+          const c = coupons.find(x => x.id === cid);
+          if (!c) return mockResponse(404, { success: false, error: 'Cupom não encontrado.' });
+          if (method === 'PUT') {
+            if (body.discount_type !== undefined) c.discount_type = body.discount_type === 'fixed' ? 'fixed' : 'percent';
+            if (body.discount_value !== undefined) {
+              const nv = parseFloat(body.discount_value);
+              if (isNaN(nv) || nv <= 0) return mockResponse(400, { success: false, error: 'Valor de desconto inválido.' });
+              c.discount_value = nv;
+            }
+            if (body.max_uses !== undefined) c.max_uses = Math.max(0, parseInt(body.max_uses || '0', 10));
+            if (body.valid_until !== undefined) c.valid_until = body.valid_until ? new Date(body.valid_until).toISOString() : null;
+            if (body.active !== undefined) c.active = (body.active === false || body.active === 0) ? 0 : 1;
+            saveCoupons(coupons);
+            return mockResponse(200, { success: true, message: 'Cupom atualizado com sucesso!' });
+          }
+          if (method === 'DELETE') {
+            c.active = 0;
+            saveCoupons(coupons);
+            return mockResponse(200, { success: true, message: 'Cupom desativado.' });
+          }
+        }
+        return mockResponse(200, { success: true, data: getCoupons() });
+      }
+
+      // 22. ADMIN: PEDIDOS
+      if (cleanUrl.startsWith('/api/admin/orders')) {
+        const statusMatch = cleanUrl.match(/\/api\/admin\/orders\/(\d+)\/status/);
+        if (statusMatch && method === 'POST') {
+          const orderId = parseInt(statusMatch[1], 10);
+          const orders = getOrders();
+          const o = orders.find(x => x.id === orderId);
+          if (!o) return mockResponse(404, { success: false, error: 'Pedido não encontrado.' });
+          if (!['pending', 'paid', 'delivered', 'cancelled'].includes(body.status)) {
+            return mockResponse(400, { success: false, error: 'Status inválido.' });
+          }
+          o.status = body.status;
+          o.updated_at = new Date().toISOString();
+          if (o.status === 'delivered' && !o.token) {
+            o.token = 'SP-' + Array.from(crypto.getRandomValues(new Uint8Array(4))).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+          }
+          saveOrders(orders);
+          return mockResponse(200, {
+            success: true,
+            message: 'Pedido #' + o.order_code + ' atualizado para ' + o.status + '.',
+            delivered: o.status === 'delivered'
+          });
+        }
+        const resellers = getResellers();
+        const ordersList = getOrders().map(o => ({
+          ...o,
+          reseller_name: (resellers.find(r => r.id === o.reseller_id) || {}).name || null
+        }));
+        return mockResponse(200, { success: true, data: ordersList });
+      }
+
+      // 23. ADMIN: PAGAMENTOS
+      if (cleanUrl.startsWith('/api/admin/payments')) {
+        const orders = getOrders();
+        const resellers = getResellers();
+        const paymentsList = getPayments().map(p => {
+          const relOrder = orders.find(o => o.id === p.order_id) || {};
+          return {
+            ...p,
+            order_code: relOrder.order_code || null,
+            product_name: relOrder.product_name || null,
+            reseller_name: (resellers.find(r => r.id === p.reseller_id) || {}).name || null
+          };
+        });
+        return mockResponse(200, { success: true, data: paymentsList });
+      }
+
+      // 24. REVENDEDOR: PEDIDOS + CANCELAMENTO
+      if (cleanUrl.startsWith('/api/reseller/orders')) {
+        const id = parseInt(localStorage.getItem('quantum_mock_logged_reseller_id') || '1', 10);
+        const cancelMatch = cleanUrl.match(/\/api\/reseller\/orders\/(\d+)\/cancel/);
+        if (cancelMatch && method === 'POST') {
+          const orderId = parseInt(cancelMatch[1], 10);
+          const orders = getOrders();
+          const o = orders.find(x => x.id === orderId && x.reseller_id === id);
+          if (!o) return mockResponse(404, { success: false, error: 'Pedido não encontrado.' });
+          if (o.status !== 'pending') return mockResponse(400, { success: false, error: 'Apenas pedidos pendentes podem ser cancelados.' });
+          o.status = 'cancelled';
+          o.updated_at = new Date().toISOString();
+          saveOrders(orders);
+          return mockResponse(200, { success: true, message: 'Pedido #' + o.order_code + ' cancelado.' });
+        }
+        return mockResponse(200, { success: true, data: getOrders().filter(o => o.reseller_id === id) });
+      }
+
+      // 25. REVENDEDOR: CLIENTES AGRUPADOS
+      if (cleanUrl.startsWith('/api/reseller/customers')) {
+        const id = parseInt(localStorage.getItem('quantum_mock_logged_reseller_id') || '1', 10);
+        const sales = getSales().filter(s => s.reseller_id === id && s.customer_name);
+        const grouped = {};
+        sales.forEach(s => {
+          const key = (s.customer_id || '') + '|' + (s.customer_contact || '');
+          if (!grouped[key]) {
+            grouped[key] = {
+              customer_name: s.customer_name,
+              customer_id: s.customer_id || null,
+              customer_contact: s.customer_contact || null,
+              purchase_count: 0,
+              total_spent: 0,
+              total_profit: 0,
+              last_purchase: null
+            };
+          }
+          grouped[key].purchase_count += 1;
+          grouped[key].total_spent += parseFloat(s.sale_price || 0);
+          grouped[key].total_profit += parseFloat(s.profit || 0);
+          if (!grouped[key].last_purchase || s.created_at > grouped[key].last_purchase) {
+            grouped[key].last_purchase = s.created_at;
+          }
+        });
+        const customersList = Object.values(grouped)
+          .sort((a, b) => String(b.last_purchase || '').localeCompare(String(a.last_purchase || '')))
+          .map(c => ({
+            ...c,
+            total_spent: c.total_spent.toFixed(2),
+            total_profit: c.total_profit.toFixed(2)
+          }));
+        return mockResponse(200, { success: true, data: customersList });
       }
     }
 

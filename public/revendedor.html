@@ -78,11 +78,6 @@
           <input type="password" id="reg-password" required minlength="6" placeholder="Mínimo 6 caracteres" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm focus:outline-none focus:border-indigo-500 text-white">
         </div>
 
-        <div class="p-3 bg-emerald-950/40 rounded-xl border border-emerald-500/20 text-[11px] text-emerald-300 flex items-center gap-2">
-          <i data-lucide="gift" class="w-4 h-4 text-emerald-400 shrink-0"></i>
-          <span>Bônus especial: Ganhe <b>25 créditos grátis</b> ao cadastrar para testar seu bot!</span>
-        </div>
-
         <button type="submit" id="btn-reg-submit" class="w-full py-3 bg-gradient-to-r from-emerald-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white font-bold rounded-xl shadow-lg shadow-emerald-600/30 transition-all text-xs flex items-center justify-center gap-2">
           <span>Criar Minha Conta de Revendedor</span>
           <i data-lucide="check" class="w-4 h-4"></i>
@@ -149,9 +144,17 @@
           <i data-lucide="zap" class="w-4 h-4 text-cyan-400"></i>
           <span>Gerar Link Manual (-R$ 2,99)</span>
         </button>
+        <button data-tab="sales" class="tab-item px-3.5 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white flex items-center gap-2 shrink-0">
+          <i data-lucide="shopping-bag" class="w-4 h-4 text-emerald-400"></i>
+          <span>Minhas Vendas</span>
+        </button>
         <button data-tab="customers" class="tab-item px-3.5 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white flex items-center gap-2 shrink-0">
           <i data-lucide="users" class="w-4 h-4 text-cyan-400"></i>
-          <span>Clientes & Compras</span>
+          <span>Clientes</span>
+        </button>
+        <button data-tab="orders" class="tab-item px-3.5 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white flex items-center gap-2 shrink-0">
+          <i data-lucide="clipboard-list" class="w-4 h-4 text-amber-400"></i>
+          <span>Meus Pedidos</span>
         </button>
         <button data-tab="pricing" class="tab-item px-3.5 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white flex items-center gap-2 shrink-0">
           <i data-lucide="badge-percent" class="w-4 h-4 text-emerald-400"></i>
@@ -253,7 +256,7 @@
         <div class="glass-panel p-6 space-y-4">
           <div class="flex items-center justify-between">
             <h3 class="text-base font-bold text-white">Últimas Vendas Entregues</h3>
-            <button onclick="switchResellerTab('customers')" class="text-xs text-indigo-400 hover:text-indigo-300 font-bold">
+            <button onclick="switchResellerTab('sales')" class="text-xs text-indigo-400 hover:text-indigo-300 font-bold">
               Ver Todas as Vendas &rarr;
             </button>
           </div>
@@ -407,21 +410,21 @@
 
             <div class="p-3 bg-emerald-950/40 rounded-xl border border-emerald-500/20 text-[11px] text-emerald-300 flex items-center gap-2">
               <i data-lucide="check-circle" class="w-4 h-4 text-emerald-400 shrink-0"></i>
-              <span>Esta venda foi registrada automaticamente na aba <b>Clientes & Compras</b>!</span>
+              <span>Esta venda foi registrada automaticamente na aba <b>Minhas Vendas</b>!</span>
             </div>
           </div>
         </div>
       </div>
       <!-- ================================================= -->
-      <div id="reseller-tab-customers" class="tab-view hidden space-y-6">
+      <div id="reseller-tab-sales" class="tab-view hidden space-y-6">
         <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div>
-            <h2 class="text-xl font-black text-white">Clientes & Histórico de Compras</h2>
-            <p class="text-xs text-slate-400">Todos os clientes que compraram links através do seu bot com confirmação de entrega.</p>
+            <h2 class="text-xl font-black text-white">Minhas Vendas & Entregas</h2>
+            <p class="text-xs text-slate-400">Vendas realizadas pelos seus clientes através do bot, com entrega confirmada e lucro calculado.</p>
           </div>
-          <button id="btn-refresh-customers" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5">
+          <button id="btn-refresh-sales" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5">
             <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-indigo-400"></i>
-            <span>Atualizar Lista</span>
+            <span>Atualizar Vendas</span>
           </button>
         </div>
 
@@ -439,6 +442,79 @@
                 </tr>
               </thead>
               <tbody id="reseller-all-sales-body" class="divide-y divide-white/5">
+                <!-- JS Data -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================================================= -->
+      <!-- TAB: CLIENTES (AGRUPADO POR CLIENTE) -->
+      <!-- ================================================= -->
+      <div id="reseller-tab-customers" class="tab-view hidden space-y-6">
+        <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div>
+            <h2 class="text-xl font-black text-white">Meus Clientes</h2>
+            <p class="text-xs text-slate-400">Clientes que compraram através do seu bot, com total de compras, gasto e lucro gerado.</p>
+          </div>
+          <button id="btn-refresh-customers-list" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5">
+            <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-indigo-400"></i>
+            <span>Atualizar Lista</span>
+          </button>
+        </div>
+
+        <div class="glass-panel overflow-hidden">
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs">
+              <thead class="bg-slate-900/80 text-slate-400 uppercase text-[10px] tracking-wider border-b border-white/5">
+                <tr>
+                  <th class="px-5 py-3">Cliente</th>
+                  <th class="px-5 py-3">ID / Contato</th>
+                  <th class="px-5 py-3">Compras</th>
+                  <th class="px-5 py-3">Total Gasto</th>
+                  <th class="px-5 py-3">Seu Lucro</th>
+                  <th class="px-5 py-3">Última Compra</th>
+                </tr>
+              </thead>
+              <tbody id="reseller-customers-body" class="divide-y divide-white/5">
+                <!-- JS Data -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================================================= -->
+      <!-- TAB: MEUS PEDIDOS (PIX / SALDO) COM CANCELAMENTO -->
+      <!-- ================================================= -->
+      <div id="reseller-tab-orders" class="tab-view hidden space-y-6">
+        <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div>
+            <h2 class="text-xl font-black text-white">Meus Pedidos & Entregas</h2>
+            <p class="text-xs text-slate-400">Pedidos criados pelos seus clientes (PIX ou saldo). Você pode cancelar apenas pedidos pendentes.</p>
+          </div>
+          <button id="btn-refresh-orders" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5">
+            <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-indigo-400"></i>
+            <span>Atualizar Pedidos</span>
+          </button>
+        </div>
+
+        <div class="glass-panel overflow-hidden">
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs">
+              <thead class="bg-slate-900/80 text-slate-400 uppercase text-[10px] tracking-wider border-b border-white/5">
+                <tr>
+                  <th class="px-5 py-3">Pedido</th>
+                  <th class="px-5 py-3">Produto / Cliente</th>
+                  <th class="px-5 py-3">Valor Total</th>
+                  <th class="px-5 py-3">Pagamento</th>
+                  <th class="px-5 py-3">Status</th>
+                  <th class="px-5 py-3">Data</th>
+                  <th class="px-5 py-3 text-right">Ações</th>
+                </tr>
+              </thead>
+              <tbody id="reseller-orders-body" class="divide-y divide-white/5">
                 <!-- JS Data -->
               </tbody>
             </table>

@@ -81,6 +81,22 @@
             <i data-lucide="shopping-cart" class="w-4 h-4 text-emerald-400"></i>
             <span>Vendas & Clientes</span>
           </button>
+          <button data-tab="products" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
+            <i data-lucide="package" class="w-4 h-4 text-amber-400"></i>
+            <span>Produtos</span>
+          </button>
+          <button data-tab="coupons" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
+            <i data-lucide="badge-percent" class="w-4 h-4 text-fuchsia-400"></i>
+            <span>Cupons de Desconto</span>
+          </button>
+          <button data-tab="orders" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
+            <i data-lucide="clipboard-list" class="w-4 h-4 text-sky-400"></i>
+            <span>Pedidos</span>
+          </button>
+          <button data-tab="payments" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
+            <i data-lucide="credit-card" class="w-4 h-4 text-teal-400"></i>
+            <span>Pagamentos</span>
+          </button>
           <button data-tab="error-logs" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
             <i data-lucide="alert-triangle" class="w-4 h-4 text-rose-400"></i>
             <span>Monitoramento & Erros</span>
@@ -328,6 +344,169 @@
                   </tr>
                 </thead>
                 <tbody id="customers-table-body" class="divide-y divide-white/5">
+                  <!-- JS Data -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============================================== -->
+        <!-- TAB 4.5: PRODUTOS -->
+        <!-- ============================================== -->
+        <div id="tab-products" class="tab-content hidden space-y-6">
+          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div>
+              <h2 class="text-xl font-black text-white">Produtos da Loja</h2>
+              <p class="text-xs text-slate-400">Produtos vendidos pelos bots dos revendedores. O lucro de cada revendedor é calculado sobre o preço de custo.</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="btn-refresh-products" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5">
+                <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-indigo-400"></i>
+                <span>Atualizar</span>
+              </button>
+              <button id="btn-new-product" class="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow flex items-center gap-1.5">
+                <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                <span>Novo Produto</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="glass-panel overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs">
+                <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
+                  <tr>
+                    <th class="px-5 py-3">Produto</th>
+                    <th class="px-5 py-3">Preço Venda</th>
+                    <th class="px-5 py-3">Custo</th>
+                    <th class="px-5 py-3">Lucro</th>
+                    <th class="px-5 py-3">Status</th>
+                    <th class="px-5 py-3">Criado em</th>
+                    <th class="px-5 py-3">Ações</th>
+                  </tr>
+                </thead>
+                <tbody id="products-body" class="divide-y divide-white/5">
+                  <!-- JS Data -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============================================== -->
+        <!-- TAB 4.6: CUPONS DE DESCONTO -->
+        <!-- ============================================== -->
+        <div id="tab-coupons" class="tab-content hidden space-y-6">
+          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div>
+              <h2 class="text-xl font-black text-white">Cupons de Desconto</h2>
+              <p class="text-xs text-slate-400">Cupons aplicados nos pedidos dos bots. Percentuais ou valores fixos em Reais.</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="btn-refresh-coupons" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5">
+                <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-indigo-400"></i>
+                <span>Atualizar</span>
+              </button>
+              <button id="btn-new-coupon" class="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow flex items-center gap-1.5">
+                <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                <span>Novo Cupom</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="glass-panel overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs">
+                <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
+                  <tr>
+                    <th class="px-5 py-3">Código</th>
+                    <th class="px-5 py-3">Tipo</th>
+                    <th class="px-5 py-3">Desconto</th>
+                    <th class="px-5 py-3">Usos</th>
+                    <th class="px-5 py-3">Expira</th>
+                    <th class="px-5 py-3">Status</th>
+                    <th class="px-5 py-3">Ações</th>
+                  </tr>
+                </thead>
+                <tbody id="coupons-body" class="divide-y divide-white/5">
+                  <!-- JS Data -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============================================== -->
+        <!-- TAB 4.7: PEDIDOS -->
+        <!-- ============================================== -->
+        <div id="tab-orders" class="tab-content hidden space-y-6">
+          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div>
+              <h2 class="text-xl font-black text-white">Pedidos</h2>
+              <p class="text-xs text-slate-400">Todos os pedidos gerados pelos bot. Altere o status e a entrega automática do link acontece quando marcado como entregue.</p>
+            </div>
+            <button id="btn-refresh-orders-admin" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5">
+              <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-indigo-400"></i>
+              <span>Atualizar</span>
+            </button>
+          </div>
+
+          <div class="glass-panel overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs">
+                <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
+                  <tr>
+                    <th class="px-5 py-3">Pedido</th>
+                    <th class="px-5 py-3">Produto</th>
+                    <th class="px-5 py-3">Cliente</th>
+                    <th class="px-5 py-3">Revendedor</th>
+                    <th class="px-5 py-3">Total</th>
+                    <th class="px-5 py-3">Pagamento</th>
+                    <th class="px-5 py-3">Status</th>
+                    <th class="px-5 py-3">Data</th>
+                    <th class="px-5 py-3">Entrega</th>
+                  </tr>
+                </thead>
+                <tbody id="orders-body" class="divide-y divide-white/5">
+                  <!-- JS Data -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============================================== -->
+        <!-- TAB 4.8: PAGAMENTOS -->
+        <!-- ============================================== -->
+        <div id="tab-payments" class="tab-content hidden space-y-6">
+          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div>
+              <h2 class="text-xl font-black text-white">Pagamentos</h2>
+              <p class="text-xs text-slate-400">Transações de pagamento registradas (PIX e provedores externos). Leitura apenas.</p>
+            </div>
+            <button id="btn-refresh-payments" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5">
+              <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-indigo-400"></i>
+              <span>Atualizar</span>
+            </button>
+          </div>
+
+          <div class="glass-panel overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs">
+                <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
+                  <tr>
+                    <th class="px-5 py-3">ID</th>
+                    <th class="px-5 py-3">Pedido</th>
+                    <th class="px-5 py-3">Produto</th>
+                    <th class="px-5 py-3">Revendedor</th>
+                    <th class="px-5 py-3">Provedor</th>
+                    <th class="px-5 py-3">Valor</th>
+                    <th class="px-5 py-3">Status</th>
+                    <th class="px-5 py-3">Data</th>
+                  </tr>
+                </thead>
+                <tbody id="payments-body" class="divide-y divide-white/5">
                   <!-- JS Data -->
                 </tbody>
               </table>

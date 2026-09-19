@@ -570,6 +570,38 @@ app.get('/api/reseller/sales', resellerUserAuth, async (req, res) => {
   res.json({ success: true, data: sales });
 });
 
+
+
+// Lista de Clientes Agregados do Revendedor (compras, gasto total e lucro)
+app.get('/api/reseller/customers', resellerUserAuth, async (req, res) => {
+  const resellerId = req.reseller.id;
+
+  const customers = await dbHelpers.db.prepare(`
+    SELECT
+      customer_name,
+      customer_id,
+      customer_contact,
+      COUNT(*) as purchase_count,
+      COALESCE(SUM(sale_price), 0) as total_spent,
+      COALESCE(SUM(profit), 0) as total_profit,
+      MAX(created_at) as last_purchase
+    FROM sales
+    WHERE reseller_id = ? AND customer_name IS NOT NULL AND customer_name != ''
+    GROUP BY customer_name, customer_id, customer_contact
+    ORDER BY last_purchase DESC
+    LIMIT 200
+  `).all(resellerId);
+
+  res.json({
+    success: true,
+    data: customers.map((c) => ({
+      ...c,
+      purchase_count: Number(c.purchase_count),
+      total_spent: Number(c.total_spent).toFixed(2),
+      total_profit: Number(c.total_profit).toFixed(2)
+    }))
+  });
+});
 // Atualizar Configuração de Preço de Venda do Revendedor
 app.post('/api/reseller/settings', resellerUserAuth, async (req, res) => {
   const { sale_price, name, phone } = req.body;
@@ -1076,8 +1108,8 @@ app.post('/api/v1/orders', resellerBotAuth, async (req, res) => {
     await dbHelpers.db.prepare('UPDATE coupons SET used_count = used_count + 1 WHERE id = ?').run(couponRow.id);
   }
   const insert = await dbHelpers.db.prepare(`
-    INSERT INTO orders (order_code, reseller_id, product_id, product_name, customer_name, customer_id, customer_contact, unit_price, discount, total, coupon_code, status, payment_method, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?) RETURNING id
+    INSERT INTO orders (order_code, reseller_id, product_id, product_name, customer_name, customer_id, customer_contact, unit_price, discount, total, coupon_code, status, payment_method, token, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?) RETURNING id
   `).run(
     orderCode,
     reseller.id,
@@ -1091,6 +1123,7 @@ app.post('/api/v1/orders', resellerBotAuth, async (req, res) => {
     total,
     couponRow ? couponRow.code : null,
     method === 'NOWPAYMENTS' ? 'NOWPAYMENTS' : 'PIX',
+    null,
     now,
     now
   );
