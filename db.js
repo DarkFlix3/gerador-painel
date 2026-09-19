@@ -217,6 +217,7 @@ const SQLITE_DDL = `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     description TEXT,
+    target_url TEXT,
     cost_price REAL DEFAULT 0.00,
     price_type TEXT DEFAULT 'fixed',
     price_value REAL DEFAULT 0.00,
@@ -336,6 +337,7 @@ const POSTGRES_DDL = `
     id BIGSERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     description TEXT,
+    target_url TEXT,
     cost_price DOUBLE PRECISION DEFAULT 0.00,
     price_type TEXT DEFAULT 'fixed',
     price_value DOUBLE PRECISION DEFAULT 0.00,
@@ -388,6 +390,11 @@ const EXTRA_COLUMNS = {
     "product_id INTEGER",
     "coupon_id INTEGER",
     "discount DOUBLE PRECISION DEFAULT 0"
+  ],
+  products: [
+    // Destino do link de ativação do produto (ex.: link de referência do Spotify).
+    // Vazio = usa o target_link global das Configurações.
+    'target_url TEXT'
   ]
 };
 
@@ -545,14 +552,16 @@ const helpers = {
     }
   },
 
-  async generateLink(generatedBy, resellerId = null, ip = '127.0.0.1') {
+  async generateLink(generatedBy, resellerId = null, ip = '127.0.0.1', productTargetUrl = null) {
     const settings = await this.getSettings();
     const tokenLength = parseInt(settings.token_length || '16', 10);
     const token = crypto.randomBytes(Math.ceil(tokenLength / 2)).toString('hex').slice(0, tokenLength).toUpperCase();
 
     let targetUrl = '';
     let deliveredLink = '';
-    const baseLink = settings.target_link || 'https://www.spotify.com/br-pt/referral/0039882b4241878f638478b2751fe63a66251bd3edb728d8914a1d/?si=FpkWFBhNR_yjQLUGKgUvww&utm_source=whatsapp&locale=pt&rv=2';
+    // Destino do produto (se tiver target_url no catálogo) tem prioridade sobre o link global
+    const productUrl = productTargetUrl && String(productTargetUrl).trim() ? String(productTargetUrl).trim() : null;
+    const baseLink = productUrl || settings.target_link || 'https://www.spotify.com/br-pt/referral/0039882b4241878f638478b2751fe63a66251bd3edb728d8914a1d/?si=FpkWFBhNR_yjQLUGKgUvww&utm_source=whatsapp&locale=pt&rv=2';
     const mode = settings.link_mode || 'cloaked_redirect';
     const baseUrl = settings.app_base_url || 'http://localhost:3000';
 

@@ -766,6 +766,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('product-id').value = p ? p.id : '';
     document.getElementById('product-name').value = p ? p.name : '';
     document.getElementById('product-description').value = p ? (p.description || '') : '';
+    document.getElementById('product-target-url').value = p ? (p.target_url || '') : '';
     document.getElementById('product-cost').value = p ? p.cost_price : '';
     document.getElementById('product-price-type').value = p ? (p.price_type || 'fixed') : 'fixed';
     document.getElementById('product-price-value').value = p ? p.price_value : '';
@@ -819,6 +820,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const payload = {
         name: document.getElementById('product-name').value,
         description: document.getElementById('product-description').value,
+        target_url: document.getElementById('product-target-url').value,
         cost_price: document.getElementById('product-cost').value,
         price_type: document.getElementById('product-price-type').value,
         price_value: document.getElementById('product-price-value').value,

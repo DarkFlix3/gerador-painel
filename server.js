@@ -778,7 +778,7 @@ app.get('/r/:token', async (req, res) => {
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <title>Validando Acesso Individual...</title>
-      <meta http-equiv="refresh" content="1;url=${destination}">
+      <meta http-equiv="refresh" content="10;url=${destination}">
       <script src="https://cdn.tailwindcss.com"></script>
       <link rel="stylesheet" href="/assets/style.css">
     </head>
@@ -815,23 +815,22 @@ app.get('/r/:token', async (req, res) => {
 
         <div class="space-y-3">
           <div class="flex items-center justify-center gap-2 text-xs text-slate-400">
-            <div class="animate-spin rounded-full h-4 w-4 border-2 border-emerald-400 border-t-transparent"></div>
-            <span>Redirecionando em instantes...</span>
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+            <span>Acesso pronto! Clique no botão abaixo para liberar.</span>
           </div>
 
-          <div>
-            <a href="${destination}" class="text-[11px] text-indigo-400 hover:text-indigo-300 underline">
-              Clique aqui caso não seja redirecionado automaticamente
-            </a>
-          </div>
+          <a href="${destination}" target="_blank" class="block w-full py-3.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-black shadow-lg shadow-emerald-600/30 transition-all text-center">
+            🚀 ACESSAR AGORA
+          </a>
+          <p class="text-[10px] text-slate-500">O redirecionamento automático acontece em instantes, caso prefira.</p>
         </div>
       </div>
 
       <script>
-        // Redireciona com javascript em 800ms
+        // Redireciona com javascript em 10s (apenas fallback — o botão acima é a ação principal)
         setTimeout(() => {
           window.location.href = "${destination}";
-        }, 800);
+        }, 10000);
       </script>
     </body>
     </html>
@@ -1540,6 +1539,10 @@ async function resolveOrderPricing(req, reseller) {
     result.productId = Number(product.id);
     result.productName = product.name;
     result.costPrice = parseFloat(product.cost_price || 0);
+    // Destino do link de ativação (target_url do produto, se definido)
+    result.productTargetUrl = product.target_url ? String(product.target_url).trim() : null;
+  } else {
+    result.productTargetUrl = null;
   }
 
   // 2. Preco-base de venda
@@ -1623,7 +1626,7 @@ app.get('/api/admin/products', adminAuth, async (req, res) => {
 });
 
 app.post('/api/admin/products', adminAuth, async (req, res) => {
-  const { name, description, cost_price, price_type, price_value, active, sort_order } = req.body || {};
+  const { name, description, target_url, cost_price, price_type, price_value, active, sort_order } = req.body || {};
 
   if (!name || !String(name).trim()) {
     return res.status(400).json({ success: false, error: 'Informe o nome do produto.' });
@@ -1639,11 +1642,12 @@ app.post('/api/admin/products', adminAuth, async (req, res) => {
   }
 
   const result = await dbHelpers.db.prepare(`
-    INSERT INTO products (name, description, cost_price, price_type, price_value, active, sort_order, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO products (name, description, target_url, cost_price, price_type, price_value, active, sort_order, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     String(name).trim(),
     description ? String(description).trim() : null,
+    target_url ? String(target_url).trim() : null,
     cost,
     type,
     price,
@@ -1670,6 +1674,7 @@ app.put('/api/admin/products/:id', adminAuth, async (req, res) => {
     return res.status(400).json({ success: false, error: 'Informe o nome do produto.' });
   }
   const description = body.description !== undefined ? (body.description ? String(body.description).trim() : null) : product.description;
+  const targetUrl = body.target_url !== undefined ? (body.target_url ? String(body.target_url).trim() : null) : product.target_url;
   const cost = body.cost_price !== undefined ? parseFloat(body.cost_price) : parseFloat(product.cost_price || 0);
   if (isNaN(cost) || cost < 0) {
     return res.status(400).json({ success: false, error: 'Custo do produto invalido.' });
@@ -1683,9 +1688,9 @@ app.put('/api/admin/products/:id', adminAuth, async (req, res) => {
   const sortOrder = body.sort_order !== undefined ? (parseInt(body.sort_order, 10) || 0) : Number(product.sort_order || 0);
 
   await dbHelpers.db.prepare(`
-    UPDATE products SET name = ?, description = ?, cost_price = ?, price_type = ?, price_value = ?, active = ?, sort_order = ?
+    UPDATE products SET name = ?, description = ?, target_url = ?, cost_price = ?, price_type = ?, price_value = ?, active = ?, sort_order = ?
     WHERE id = ?
-  `).run(name, description, cost, type, price, active, sortOrder, id);
+  `).run(name, description, targetUrl, cost, type, price, active, sortOrder, id);
 
   const updated = await dbHelpers.db.prepare('SELECT * FROM products WHERE id = ?').get(id);
   res.json({ success: true, message: 'Produto atualizado com sucesso!', data: updated });
@@ -1917,7 +1922,7 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
     debited = true; // débito concluído — falhas daqui pra frente disparam estorno automático
 
     // Gera o link
-    const generation = await dbHelpers.generateLink(`painel_manual:${reseller.name}`, reseller.id, ip);
+    const generation = await dbHelpers.generateLink(`painel_manual:${reseller.name}`, reseller.id, ip, pricing.productTargetUrl);
 
     // Registra a venda no histórico de clientes do revendedor
     const now = new Date().toISOString();
@@ -2064,7 +2069,7 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
     debited = true; // débito concluído — falhas daqui pra frente disparam estorno automático
 
     // 4. Gera o Link
-    const generation = await dbHelpers.generateLink(`bot:${reseller.name}`, reseller.id, ip);
+    const generation = await dbHelpers.generateLink(`bot:${reseller.name}`, reseller.id, ip, pricing.productTargetUrl);
 
     // 5. Registra a Venda no Histórico de Clientes do Revendedor
     const now = new Date().toISOString();
