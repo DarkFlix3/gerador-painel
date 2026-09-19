@@ -616,9 +616,14 @@ bot.on('callback_query', async (query) => {
 // CATÁLOGO DE PRODUTOS (consome /api/v1/products)
 // ==========================================
 let productsCache = { at: 0, items: [] };
+// Estoque muda a cada venda: mantém o cache curto (15s) e o invalida
+// imediatamente após compra/esgotamento para nunca exibir valor desatualizado.
+function invalidateProductsCache() {
+  productsCache = { at: 0, items: [] };
+}
 async function fetchProducts() {
   const now = Date.now();
-  if (productsCache.items.length && now - productsCache.at < 60000) return productsCache.items;
+  if (productsCache.items.length && now - productsCache.at < 15000) return productsCache.items;
   const res = await fetch(`${API_BASE_URL}/api/v1/products`, {
     headers: { 'X-API-Key': RESELLER_API_KEY },
     signal: AbortSignal.timeout(8000)
@@ -843,8 +848,15 @@ async function handlePurchase(chatId, user, messageId, opts) {
     // Apaga a mensagem de carregando (quando foi enviada como mensagem nova)
     if (loadingMsg) bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
 
+    // Compra recusada por esgotamento -> recarrega o catálogo para refletir a realidade
+    if (!data.success && data.error && /esgotado/i.test(data.error)) {
+      invalidateProductsCache();
+    }
+
     if (response.status === 200 && data.success) {
       // SUCESSO! Link gerado e saldo debitado em R$ 2,99
+      // Estoque diminuiu -> o catálogo deve mostrar o novo saldo na próxima abertura
+      invalidateProductsCache();
       console.log('[venda] link gerado:', data.token, 'saldo restante:', data.balance_remaining);
       const productLabel = data.product || opts.productName || 'Spotify Premium';
       const discountInfo = (data.discount && data.discount > 0)
