@@ -249,29 +249,14 @@
         return mockResponse(200, {
           success: true,
           service_name: 'Quantum Access Generator',
-          public_enabled: true,
+          public_enabled: false,
           total_generated: 1482 + sales.length
         });
       }
 
-      // 2. GERAÇÃO PÚBLICA
+      // 2. GERAÇÃO PÚBLICA (desabilitada - links são gerados apenas pelos revendedores)
       if (cleanUrl.startsWith('/api/public/generate') && method === 'POST') {
-        const randBytes = new Uint8Array(8);
-        crypto.getRandomValues(randBytes);
-        const token = Array.from(randBytes).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
-        const basePath = window.location.pathname.replace(/\/index\.html$/, '').replace(/\/$/, '');
-        const originUrl = window.location.origin + basePath;
-        const targetUrl = `${originUrl}/r.html?token=${token}`;
-
-        return mockResponse(200, {
-          success: true,
-          data: {
-            token,
-            targetUrl,
-            createdAt: new Date().toISOString(),
-            expiresAt: new Date(Date.now() + 86400000).toISOString()
-          }
-        });
+        return mockResponse(403, { success: false, error: 'A geração pública está temporariamente desabilitada.' });
       }
 
       // 3. LOGIN ADMIN (admin / admin123 ou felipe / felipe123)

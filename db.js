@@ -437,7 +437,7 @@ const defaultSettings = [
   { key: 'service_name', value: 'Quantum Access Generator' },
   { key: 'token_length', value: '16' },
   { key: 'default_expiry_hours', value: '24' },
-  { key: 'public_generation_enabled', value: '1' },
+  { key: 'public_generation_enabled', value: '0' },
   { key: 'admin_cost_per_link', value: '2.99' },
   { key: 'min_recharge_amount', value: '15.00' }
 ];
