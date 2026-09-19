@@ -14,24 +14,7 @@ Sistema completo de geração de links camuflados, portal individual para revend
 
 ---
 
-### 2. 💼 Portal do Revendedor (`/revendedor.html`)
-- **Auto-Cadastro & Login:** Cada revendedor cria sua conta autônoma com Nome, E-mail, Senha e WhatsApp/Telegram.
-- **API Key Pessoal:** Geração instantânea de chaves exclusivas no formato `rev_key_...` com opção de regenerar.
-- **Saldo em Dinheiro Real (R$):**
-  - Cada link gerado debita exatamente **R$ 2,99** do saldo do revendedor.
-  - O revendedor recarrega **qualquer valor a partir de R$ 15,00** (ex: R$ 15,00, R$ 25,00, R$ 50,00, R$ 100,00).
-  - Tentativas com saldo inferior a R$ 2,99 são bloqueadas automaticamente.
-- **Simulador e Dashboard de Lucro Líquido:**
-  - O revendedor define por quanto vende cada link (ex: R$ 15,00).
-  - O painel calcula em tempo real o lucro por venda (`Preço de Venda - R$ 2,99`) e exibe gráficos de rendimento diário.
-- **Gerador Manual de Links (Modo de Backup):**
-  - Caso o bot do Telegram ou Discord caia, o revendedor pode gerar links diretamente pelo painel para atender clientes pelo WhatsApp, debitando os mesmos R$ 2,99 e registrando o histórico.
-- **Histórico Completo de Clientes:**
-  - Tabela com todos os compradores: Nome, ID/Username, Contato, Valor Pago, Lucro Obtido, Status de Entrega (**Entregue**) e Data/Hora.
-
----
-
-### 3. 🛡️ Painel Administrativo Master (`/admin.html`)
+### 2. 🛡️ Painel Administrativo Master (`/admin.html`)
 - **Gestão de Revendedores:** Tabela com todos os revendedores, saldo em R$, links vendidos e faturamento total gerado.
 - **Bloqueio Instantâneo:** Suspenda ou reative qualquer revendedor com 1 clique. Bots de revendedores bloqueados são suspensos imediatamente.
 - **Ajuste de Saldo:** O administrador pode adicionar ou alterar saldo em Reais para qualquer parceiro.
@@ -45,9 +28,7 @@ Sistema completo de geração de links camuflados, portal individual para revend
 | :--- | :--- | :--- | :--- |
 | **Admin Principal** | `admin` | `admin123` | Acesso Master |
 | **Admin Felipe** | `felipe` | `felipe123` | Acesso Master |
-| **Revendedor Demo** | `demo@revenda.com` | `123456` | Painel Revendedor |
-
-*(Novos revendedores podem criar suas próprias contas diretamente na tela de login)*
+*(Revendedores e suas chaves de API são gerenciados exclusivamente pelo administrador no Painel Admin)*
 
 ---
 
@@ -75,7 +56,6 @@ npm start
 
 4. Acesse no navegador:
 - **Gerador Público:** [http://localhost:3000](http://localhost:3000)
-- **Portal do Revendedor:** [http://localhost:3000/revendedor.html](http://localhost:3000/revendedor.html)
 - **Painel Administrativo:** [http://localhost:3000/admin.html](http://localhost:3000/admin.html)
 
 ---
@@ -104,7 +84,7 @@ O projeto já inclui um bot pronto tanto em **Node.js** (`bot.js`) quanto em **P
      DEFAULT_SALE_PRICE=15.00
      SUPPORT_USER=@seu_telegram
      ```
-   *(Sua `RESELLER_API_KEY` pode ser obtida acessando o painel de revendedor em [http://localhost:3000/revendedor.html](http://localhost:3000/revendedor.html))*.
+   *(Sua `RESELLER_API_KEY` pode ser obtida com o administrador da plataforma)*.
 
 3. **Inicie o Bot (Node.js):**
    ```bash
@@ -119,7 +99,7 @@ O projeto já inclui um bot pronto tanto em **Node.js** (`bot.js`) quanto em **P
 4. **Comandos disponíveis no Bot:**
    - `/start` - Apresentação, valores e teclado com botões interativos.
    - `🛒 Comprar Acesso` - Gera o link instantâneo para o cliente e registra no painel.
-   - `/saldo` ou `💳 Meu Saldo` - Consulta saldo restante, custo por link e total de vendas do revendedor.
+   - `/saldo` - Consulta saldo restante, custo por link e total de vendas do revendedor.
    - `ℹ️ Como Funciona` - Explicação didática sobre a ativação do Spotify.
 
 ---

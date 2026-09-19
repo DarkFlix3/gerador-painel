@@ -51,7 +51,6 @@ npm run migrate
 - API: `https://gerador-painel.onrender.com/health` → `{"status":"ok","backend":"postgres",...}`
 - Bot: mande `/start` para @DarkFlixSpotify_bot → deve responder e gerar link apontando para `https://gerador-painel.onrender.com/r/XXXX`
 - Painel admin: `https://gerador-painel.onrender.com/admin.html`
-- Portal revendedor: `https://gerador-painel.onrender.com/revendedor.html`
 
 ## Passo 5 — Desligar o PC local (só depois do Passo 4 OK)
 

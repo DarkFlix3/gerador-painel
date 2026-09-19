@@ -220,6 +220,21 @@ document.addEventListener('DOMContentLoaded', () => {
       const apiKeyInput = document.getElementById('my-api-key-input');
       if (apiKeyInput) apiKeyInput.value = currentReseller.api_key;
 
+      // Preenche o ID de perfil do Telegram (vínculo bot + site)
+      const tgInput = document.getElementById('tg-profile-id-input');
+      const tgStatus = document.getElementById('tg-link-status');
+      if (tgInput) tgInput.value = currentReseller.telegram_id || '';
+      if (tgStatus) {
+        if (currentReseller.telegram_id) {
+          tgStatus.className = 'text-xs p-2.5 rounded-lg border border-emerald-500/30 bg-emerald-950/40 text-emerald-300';
+          tgStatus.innerHTML = '✅ <b>Vinculado!</b> ID <code>' + escapeHtml(currentReseller.telegram_id) + '</code> — o /saldo do bot mostra o saldo desta conta.';
+        } else {
+          tgStatus.className = 'text-xs p-2.5 rounded-lg border border-amber-500/30 bg-amber-950/40 text-amber-300';
+          tgStatus.innerHTML = '⚠️ Ainda não vinculado. Envie <b>/me</b> no bot para copiar seu ID e cole acima.';
+        }
+        tgStatus.classList.remove('hidden');
+      }
+
       const codePreview = document.getElementById('bot-code-preview');
       if (codePreview) {
         codePreview.innerText = codePreview.innerText.replace(/API_KEY = ".*"/, `API_KEY = "${currentReseller.api_key}"`);
@@ -557,19 +572,75 @@ document.addEventListener('DOMContentLoaded', () => {
   // ==========================================
   // RECARGA DE SALDO (VALOR MÍNIMO R$ 15,00)
   // ==========================================
-  window.rechargeCredits = async function(credits, amount) {
+  // Método de pagamento atualmente selecionado no formulário de recarga (PIX | Binance Pay | Mercado Pago)
+  let selectedPaymentMethod = 'PIX';
+
+  const setRechargeMethod = (method) => {
+    selectedPaymentMethod = method;
+    document.querySelectorAll('.recharge-method-btn').forEach((btn) => {
+      const active = btn.dataset.method === method;
+      btn.classList.toggle('border-emerald-500/60', active);
+      btn.classList.toggle('border-white/10', !active);
+      const check = btn.querySelector('.method-check');
+      if (check) {
+        check.classList.toggle('border-emerald-400', active);
+        check.classList.toggle('bg-emerald-400', active);
+        check.classList.toggle('text-slate-950', active);
+        check.classList.toggle('border-white/20', !active);
+        check.classList.toggle('text-transparent', !active);
+      }
+    });
+    const btnRechargeLabel = document.getElementById('btn-recharge-label');
+    if (btnRechargeLabel) {
+      const m = String(method).toLowerCase();
+      btnRechargeLabel.textContent = m.includes('mercado')
+        ? 'GERAR LINK DE PAGAMENTO (MERCADO PAGO) 🟦'
+        : m.includes('binance')
+          ? 'CONFIRMAR RECARGA VIA BINANCE PAY 🟡'
+          : 'CONFIRMAR RECARGA VIA PIX';
+    }
+  };
+
+  document.querySelectorAll('.recharge-method-btn').forEach((btn) => {
+    btn.addEventListener('click', () => setRechargeMethod(btn.dataset.method));
+  });
+
+  window.rechargeCredits = async function(credits, amount, paymentMethod) {
+    const method = String(paymentMethod || selectedPaymentMethod || 'PIX').trim() || 'PIX';
+    const m = String(method).toLowerCase();
+    const methodLabel = m.includes('mercado') ? 'Mercado Pago 🟦' : m.includes('binance') ? 'Binance Pay 🟡' : 'PIX';
     const minRecharge = 15.00;
     if (amount < minRecharge) {
       showToast(`O valor mínimo para recarga de saldo é de R$ ${minRecharge.toFixed(2).replace('.', ',')}.`, 'error');
       return;
     }
 
-    if (!confirm(`Confirmar recarga de +${credits} créditos por R$ ${amount.toFixed(2).replace('.', ',')} via PIX?`)) return;
+    // ---- MERCADO PAGO: cria a preferência e abre o checkout (crédito automático no webhook) ----
+    if (m.includes('mercado')) {
+      try {
+        const res = await resellerFetch('/api/reseller/mp/create-preference', {
+          method: 'POST',
+          body: JSON.stringify({ amount })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao gerar o pagamento.');
+
+        const payUrl = data.sandbox_init_point || data.init_point;
+        if (payUrl) window.open(payUrl, '_blank');
+        showToast(`Pagamento de R$ ${amount.toFixed(2).replace('.', ',')} gerado! Finalize no Mercado Pago — o saldo entra automaticamente.`, 'success');
+        startMpPaymentPolling(data.external_reference);
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+      return;
+    }
+
+    if (!confirm(`Confirmar recarga de R$ ${amount.toFixed(2).replace('.', ',')} via ${methodLabel}?`)) return;
 
     try {
       const res = await resellerFetch('/api/reseller/recharge', {
         method: 'POST',
-        body: JSON.stringify({ credits, amount })
+        body: JSON.stringify({ credits, amount, payment_method: method })
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error);
@@ -583,6 +654,49 @@ document.addEventListener('DOMContentLoaded', () => {
       showToast(err.message, 'error');
     }
   };
+
+  // Polling: detecta quando o pagamento Mercado Pago foi aprovado e atualiza o painel
+  let mpPollTimer = null;
+  function startMpPaymentPolling(externalReference) {
+    if (mpPollTimer) clearInterval(mpPollTimer);
+    let attempts = 0;
+    const poll = async () => {
+      attempts++;
+      try {
+        const res = await resellerFetch('/api/reseller/mp/payments?limit=5');
+        const data = await res.json();
+        if (!data.success || !data.data || !data.data.length) return;
+        const match = data.data.find((p) => p.external_reference === externalReference);
+        if (match && (match.status === 'approved' || Number(match.processed) === 1)) {
+          clearInterval(mpPollTimer);
+          mpPollTimer = null;
+          showToast('✅ Pagamento aprovado! Saldo creditado com sucesso.', 'success');
+          loadResellerProfile();
+          loadResellerDashboard();
+          switchResellerTab('overview');
+        } else if (attempts >= 60) { // ~5 min de polling
+          clearInterval(mpPollTimer);
+          mpPollTimer = null;
+          showToast('Aguardando pagamento... O saldo será creditado automaticamente quando aprovado.', 'info');
+        }
+      } catch (err) {
+        // erros de rede durante o polling são ignorados
+      }
+    };
+    mpPollTimer = setInterval(poll, 5000);
+    poll();
+  }
+
+  // Volta do checkout do Mercado Pago (back_urls) — confirma o estado do pagamento
+  if (window.location.hash === '#mp_ok') {
+    showToast('Pagamento concluído! O saldo será creditado em instantes.', 'success');
+    loadResellerProfile();
+    loadResellerDashboard();
+  } else if (window.location.hash === '#mp_pending') {
+    showToast('Pagamento pendente. Assim que for aprovado, o saldo entra automaticamente.', 'info');
+  } else if (window.location.hash === '#mp_fail') {
+    showToast('O pagamento foi cancelado ou não pôde ser concluído. Tente novamente.', 'error');
+  }
 
   // Formulário de Recarga Personalizada (Qualquer Valor a partir de R$ 15,00)
   const formCustomRecharge = document.getElementById('form-custom-recharge');
@@ -622,7 +736,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      rechargeCredits(null, amount);
+      rechargeCredits(null, amount, selectedPaymentMethod);
     });
   }
 
@@ -635,6 +749,42 @@ document.addEventListener('DOMContentLoaded', () => {
       const input = document.getElementById('my-api-key-input');
       if (input && input.value) {
         copyToClipboard(input.value);
+      }
+    });
+  }
+
+  // ==========================================
+  // VÍNCULO DO ID DE PERFIL (bot + site)
+  // ==========================================
+  const btnLinkTelegram = document.getElementById('btn-link-telegram');
+  if (btnLinkTelegram) {
+    btnLinkTelegram.addEventListener('click', async () => {
+      const tgInput = document.getElementById('tg-profile-id-input');
+      const tgStatus = document.getElementById('tg-link-status');
+      const tgValue = (tgInput.value || '').replace(/[^0-9]/g, '').trim();
+
+      if (!tgValue) {
+        showToast('Cole seu ID de perfil (envie /me no bot para copiar).', 'error');
+        return;
+      }
+
+      try {
+        const res = await resellerFetch('/api/reseller/telegram-link', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ telegram_id: tgValue })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error);
+
+        tgInput.value = data.telegram_id;
+        tgStatus.className = 'text-xs p-2.5 rounded-lg border border-emerald-500/30 bg-emerald-950/40 text-emerald-300';
+        tgStatus.innerHTML = '✅ <b>Vinculado com sucesso!</b> ID <code>' + escapeHtml(data.telegram_id) + '</code>.';
+        tgStatus.classList.remove('hidden');
+        showToast(data.message, 'success');
+        loadResellerProfile();
+      } catch (err) {
+        showToast(err.message, 'error');
       }
     });
   }

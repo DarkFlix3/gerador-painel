@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('node:path');
+const fs = require('node:fs');
 const crypto = require('node:crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -11,6 +12,24 @@ const dbHelpers = require('./db');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_jwt_key_gerador_painel_2026';
+
+// ==========================================
+// BOT DE ALERTAS DE VENDAS (TELEGRAM)
+// Usa um SEGUNDO bot (criado no @BotFather) para notificar cada nova compra.
+// Se NOTIFIER_BOT_TOKEN estiver vazio, usa o token do bot principal.
+// ==========================================
+const NOTIFIER_BOT_TOKEN = process.env.NOTIFIER_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '';
+const NOTIFY_CHAT_ID = process.env.NOTIFY_CHAT_ID || '';
+
+// ==========================================
+// MERCADO PAGO (recarga automática de saldo)
+// ------------------------------------------
+// MERCADOPAGO_ACCESS_TOKEN: Access Token da aplicação (Desenvolvedores -> Apps)
+// MERCADOPAGO_WEBHOOK_SECRET: Secret do webhook (opcional, válida a assinatura X-Signature)
+// ==========================================
+const MERCADOPAGO_ACCESS_TOKEN = process.env.MERCADOPAGO_ACCESS_TOKEN || '';
+const MERCADOPAGO_WEBHOOK_SECRET = process.env.MERCADOPAGO_WEBHOOK_SECRET || '';
+const MP_API_BASE = 'https://api.mercadopago.com';
 
 app.use(cors());
 app.use(express.json());
@@ -33,6 +52,493 @@ app.use(express.static(path.join(__dirname, 'public')));
 const getClientIp = (req) => {
   return req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
 };
+
+// Helper: escapa HTML para uso com parse_mode HTML do Telegram
+const escHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
+
+// Helper: identifica o usuário que comprou — prioriza o @username (ex.: @edu_coffe);
+// fallback: nome do cliente; fallback final: ID (tel. do Telegram ou IP).
+const customerLabel = (name, id, contact) => {
+  const n = escHtml(name).trim();
+  const c = String(contact || '').trim();
+  if (c.startsWith('@')) return escHtml(c);
+  if (n) return n;
+  const i = escHtml(id).trim();
+  if (i) return i;
+  return '—';
+};
+
+const formatMoneyBr = (value) => {
+  const n = parseFloat(value || 0);
+  return 'R$ ' + n.toFixed(2).replace('.', ',');
+};
+
+// Mascara telefone/ID para a notificação (ex.: 7740000084 -> 774***84)
+const maskUserId = (value) => {
+  const s = String(value == null ? '' : value).replace(/\D/g, '');
+  if (s.length <= 5) return s || '—';
+  return s.slice(0, 3) + '***' + s.slice(-2);
+};
+
+// Custo do produto definido pelo ADMIN (settings.admin_cost_per_link) — com cache
+let _adminCostCache = null;
+async function getAdminCost() {
+  if (_adminCostCache != null) return _adminCostCache;
+  try {
+    const s = await dbHelpers.getSettings();
+    _adminCostCache = parseFloat(s.admin_cost_per_link || 2.99);
+  } catch (e) {
+    _adminCostCache = 2.99;
+  }
+  return _adminCostCache;
+}
+
+async function telegramGet(token, method) {
+  const r = await fetch(`https://api.telegram.org/bot${token}/${method}`);
+  return r.json();
+}
+
+async function telegramPost(token, method, body) {
+  const r = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  return r.json();
+}
+
+// Envia mensagem pelo bot de alertas e loga o resultado
+async function sendTelegramAlert(text, chatId, orderNumber) {
+  const resp = await fetch(`https://api.telegram.org/bot${NOTIFIER_BOT_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' })
+  });
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`Telegram sendMessage falhou (HTTP ${resp.status}): ${body.slice(0, 300)}`);
+  }
+  console.log(`🔔 Alerta enviado: pedido ${orderNumber || 'INIT'}`);
+}
+
+// Lê a logo da marca embutida no repositório (assets/bot-logo.jpg)
+function readLocalLogo() {
+  try {
+    const p = path.join(__dirname, 'assets', 'bot-logo.jpg');
+    if (fs.existsSync(p)) {
+      const buf = fs.readFileSync(p);
+      if (buf && buf.length > 1000) return buf;
+    }
+  } catch (e) { /* sem logo local */ }
+  return null;
+}
+
+// Aplica uma foto de perfil (InputProfilePhoto static) em um bot do Telegram
+async function setBotProfilePhoto(token, photoBuf) {
+  const form = new FormData();
+  form.append('photo', JSON.stringify({ type: 'static', photo: 'attach://bot_photo' }));
+  form.append('bot_photo', new Blob([photoBuf], { type: 'image/jpeg' }), 'bot_photo.jpg');
+  const r = await fetch(`https://api.telegram.org/bot${token}/setMyProfilePhoto`, { method: 'POST', body: form });
+  return r.json();
+}
+
+// Aplica a logo + copia bio do bot de vendas (TELEGRAM_BOT_TOKEN) nos dois bots
+async function syncTelegramProfile() {
+  const salesToken = process.env.TELEGRAM_BOT_TOKEN || '';
+  if (!NOTIFIER_BOT_TOKEN || !salesToken) return;
+  try {
+    const me = await telegramGet(salesToken, 'getMe');
+    const username = me.ok && me.result && me.result.username ? me.result.username : '';
+    const handle = username ? '@' + username : '';
+
+    // Bio do bot de vendas (curta e completa) → bot de alertas, incluindo o @ do bot de vendas
+    const sd = await telegramGet(salesToken, 'getMyShortDescription');
+    const shortOrig = sd.ok && sd.result && sd.result.short_description ? sd.result.short_description.trim() : '';
+    const shortBio = [shortOrig, handle].filter(Boolean).join(' · ') || handle;
+    await telegramPost(NOTIFIER_BOT_TOKEN, 'setMyShortDescription', { short_description: shortBio.slice(0, 120) });
+
+    const about = await telegramGet(salesToken, 'getMyDescription');
+    const aboutOrig = about.ok && about.result && about.result.description ? about.result.description.trim() : '';
+    if (aboutOrig) await telegramPost(NOTIFIER_BOT_TOKEN, 'setMyDescription', { description: aboutOrig.slice(0, 512) });
+
+    // Foto da MARCA → aplicada no bot de vendas E no bot de alertas
+    let photoBuf = readLocalLogo();
+    // 1) Fallback: endpoint público de userpic do bot de vendas (funciona para bots)
+    if (!photoBuf && username) {
+      try {
+        const upRes = await fetch(`https://t.me/i/userpic/320/${username}.jpg`);
+        if (upRes.ok) {
+          const buf = await upRes.arrayBuffer();
+          if (buf && buf.byteLength >= 2000) photoBuf = buf;
+        }
+      } catch (e) { /* tenta fallback */ }
+    }
+    // 2) Fallback: getUserProfilePhotos (só funciona para usuários, não bots)
+    if (!photoBuf) {
+      try {
+        const up = await telegramPost(salesToken, 'getUserProfilePhotos', { limit: 1 });
+        if (up.ok && up.result && up.result.photos && up.result.photos.length > 0) {
+          const largest = up.result.photos[0][up.result.photos[0].length - 1];
+          const f = await telegramPost(salesToken, 'getFile', { file_id: largest.file_id });
+          if (f.ok && f.result.file_path) {
+            photoBuf = await fetch(`https://api.telegram.org/file/bot${salesToken}/${f.result.file_path}`).then((r) => r.arrayBuffer());
+          }
+        }
+      } catch (e) { /* sem foto */ }
+    }
+    if (photoBuf) {
+      const targets = [];
+      if (salesToken) targets.push({ token: salesToken, label: 'bot de vendas' });
+      if (NOTIFIER_BOT_TOKEN && NOTIFIER_BOT_TOKEN !== salesToken) targets.push({ token: NOTIFIER_BOT_TOKEN, label: 'bot de alertas' });
+      for (const t of targets) {
+        try {
+          const setJson = await setBotProfilePhoto(t.token, photoBuf);
+          if (setJson.ok) console.log(`🖼️ Foto do ${t.label} atualizada com a logo da marca.`);
+          else console.warn(`⚠️ setMyProfilePhoto (${t.label}):`, setJson.description);
+        } catch (e) {
+          console.warn(`⚠️ setMyProfilePhoto (${t.label}) falhou:`, e.message);
+        }
+      }
+    }
+    console.log('🖼️ Foto e bio dos bots sincronizadas.');
+  } catch (err) {
+    console.error('syncTelegramProfile falhou:', err.message);
+  }
+}
+
+// Próximo número de pedido (usado nas mensagens de falha quando a venda
+// ainda não foi gravada — ex.: estorno automático após falha na entrega)
+async function nextOrderNumber() {
+  try {
+    const row = await dbHelpers.db.prepare('SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM sales').get();
+    return row && row.next_id ? Number(row.next_id) : 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+// Estorno automático: devolve o custo debitado ao saldo do revendedor quando
+// a entrega falha. Idempotente por construção (o chamador controla quem estorna).
+async function autoRefund(resellerId, amount, extra = {}) {
+  await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits + ? AS NUMERIC), 2) WHERE id = ?').run(amount, resellerId);
+  dbHelpers.logError({
+    endpoint: extra.endpoint || '/api/v1/generate',
+    method: extra.method || 'POST',
+    statusCode: extra.statusCode || 409,
+    errorType: extra.errorType || 'DeliveryFailedRefund',
+    message: extra.message || `Estorno automático de R$ ${Number(amount).toFixed(2)} para o revendedor #${resellerId}.`,
+    ip: extra.ip || '127.0.0.1',
+    source: extra.source || 'server',
+    details: extra.details ? { ...extra.details, refunded: true, refund_amount: amount } : { refunded: true, refund_amount: amount }
+  }).catch(() => {});
+}
+
+// Envia alerta de nova venda para o bot de notificações do dono
+// Notifica no bot de alertas quando um revendedor recarrega o saldo
+async function notifyRecharge({ reseller, amountPaid, method = 'PIX' }) {
+  if (!NOTIFIER_BOT_TOKEN || !NOTIFY_CHAT_ID) return;
+  if (typeof fetch !== 'function') return;
+
+  // Prioriza o ID do Telegram (identifica o revendedor no bot); phone é fallback
+  const userId = (reseller && reseller.telegram_id) || (reseller && reseller.phone) || '';
+  const userLabel = maskUserId(userId);
+  const methodLabel = `Depósito via ${escHtml(method)}${String(method).toLowerCase().includes('binance') ? ' 🟡' : ''}`;
+
+  const lines = [
+    '<b>Novos créditos adicionados!</b>',
+    '',
+    `👤 Usuário: ${userLabel}`,
+    `💵 Valor: ${formatMoneyBr(amountPaid)}`,
+    `💳 Método: ${methodLabel}`
+  ];
+
+  await sendTelegramAlert(lines.join('\n'), NOTIFY_CHAT_ID, 'RECHARGE-' + Date.now());
+}
+
+// ==========================================
+// MERCADO PAGO — HELPERS
+// ==========================================
+
+// Chama a API do Mercado Pago com o Access Token (fetch global do Node 22)
+async function mpFetch(path, { method = 'GET', body = null, idempotencyKey = null } = {}) {
+  if (!MERCADOPAGO_ACCESS_TOKEN) {
+    const err = new Error('MERCADOPAGO_ACCESS_TOKEN não configurado no .env');
+    err.mpNotConfigured = true;
+    throw err;
+  }
+  const headers = {
+    Authorization: `Bearer ${MERCADOPAGO_ACCESS_TOKEN}`
+  };
+  if (body) headers['Content-Type'] = 'application/json';
+  if (idempotencyKey) headers['X-Idempotency-Key'] = idempotencyKey;
+
+  const res = await fetch(`${MP_API_BASE}${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.message || `Mercado Pago API erro ${res.status}`);
+    err.status = res.status;
+    err.details = data;
+    throw err;
+  }
+  return data;
+}
+
+// Cria a preferência de pagamento (Checkout Pro) e registra no banco como pendente.
+// Retorna o link de pagamento (init_point) — em credenciais de teste, sandbox_init_point.
+async function mpCreatePreference({ resellerId, amount }) {
+  const externalReference = `mp_recharge_${resellerId}_${crypto.randomBytes(6).toString('hex')}`;
+  const baseUrl = (process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
+  const roundedAmount = Math.round(parseFloat(amount) * 100) / 100;
+
+  const pref = await mpFetch('/checkout/preferences', {
+    method: 'POST',
+    idempotencyKey: externalReference,
+    body: {
+      items: [{
+        title: 'Recarga de saldo — revendedor',
+        quantity: 1,
+        unit_price: roundedAmount,
+        currency_id: 'BRL'
+      }],
+      external_reference: externalReference,
+      notification_url: `${baseUrl}/api/v1/mp/webhook`,
+      back_urls: {
+        success: `${baseUrl}/#mp_ok`,
+        pending: `${baseUrl}/#mp_pending`,
+        failure: `${baseUrl}/#mp_fail`
+      },
+      auto_return: 'approved',
+      // Saldo é crédito à vista — sem parcelamento
+      payment_methods: { installments: 1 }
+    }
+  });
+
+  const now = new Date().toISOString();
+  await dbHelpers.db.prepare(`
+    INSERT INTO mp_payments (payment_id, preference_id, external_reference, reseller_id, amount, status, payment_method, processed, created_at, updated_at)
+    VALUES (NULL, ?, ?, ?, ?, 'pending', 'Mercado Pago', 0, ?, ?)
+  `).run(pref.id, externalReference, resellerId, roundedAmount, now, now);
+
+  return {
+    init_point: pref.init_point,
+    sandbox_init_point: pref.sandbox_init_point,
+    preference_id: pref.id,
+    external_reference: externalReference,
+    amount: roundedAmount
+  };
+}
+
+// Monta a data de expiração do PIX no formato ISO 8601 com offset do Brasil (-03:00)
+function mpPixExpiration(minutes) {
+  const ttl = Number.isFinite(minutes) && minutes > 0 ? minutes : 30;
+  // Converte para o horário de Brasília (UTC-3) e formata com offset explícito
+  const br = new Date(Date.now() + ttl * 60 * 1000 - 3 * 60 * 60 * 1000);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${br.getUTCFullYear()}-${p(br.getUTCMonth() + 1)}-${p(br.getUTCDate())}T${p(br.getUTCHours())}:${p(br.getUTCMinutes())}:${p(br.getUTCSeconds())}.000-03:00`;
+}
+
+// Cria uma cobrança PIX (pagamento imediato, sem redirecionamento) e registra no banco como pendente.
+// Retorna o QR Code (imagem base64 para o Telegram), o código copia-e-cola e o link do comprovante.
+// Usada pelo bot do Telegram (pagamento direto no chat) e pelo painel web.
+async function mpCreatePixPayment({ resellerId, amount, reseller }) {
+  const externalReference = `mp_recharge_${resellerId}_${crypto.randomBytes(6).toString('hex')}`;
+  const baseUrl = (process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
+  const roundedAmount = Math.round(parseFloat(amount) * 100) / 100;
+  const expirationMinutes = parseInt(process.env.MP_PIX_EXPIRATION_MINUTES || '30', 10);
+
+  const payment = await mpFetch('/v1/payments', {
+    method: 'POST',
+    idempotencyKey: externalReference,
+    body: {
+      transaction_amount: roundedAmount,
+      description: `Recarga de saldo - ${(reseller && reseller.name) || 'revendedor'}`,
+      payment_method_id: 'pix',
+      external_reference: externalReference,
+      notification_url: `${baseUrl}/api/v1/mp/webhook`,
+      date_of_expiration: mpPixExpiration(expirationMinutes),
+      payer: {
+        email: (reseller && reseller.email) || 'recarga@gerador-painel.local',
+        first_name: (reseller && reseller.name) || 'Revendedor'
+      }
+    }
+  });
+
+  const txData = (payment.point_of_interaction && payment.point_of_interaction.transaction_data) || {};
+
+  const now = new Date().toISOString();
+  await dbHelpers.db.prepare(`
+    INSERT INTO mp_payments (payment_id, preference_id, external_reference, reseller_id, amount, status, payment_method, processed, created_at, updated_at)
+    VALUES (?, NULL, ?, ?, ?, ?, 'PIX', 0, ?, ?)
+  `).run(String(payment.id), externalReference, resellerId, roundedAmount, payment.status || 'pending', now, now);
+
+  return {
+    payment_id: String(payment.id),
+    status: payment.status || 'pending',
+    external_reference: externalReference,
+    amount: roundedAmount,
+    expires_at: payment.date_of_expiration || null,
+    expiration_minutes: expirationMinutes,
+    qr_code: txData.qr_code || null,
+    qr_code_base64: txData.qr_code_base64 || null,
+    ticket_url: txData.ticket_url || null
+  };
+}
+
+// Valida a assinatura X-Signature do webhook (ativa apenas se MERCADOPAGO_WEBHOOK_SECRET estiver configurado)
+function verifyMpSignature(req) {
+  if (!MERCADOPAGO_WEBHOOK_SECRET) return true;
+  const xSig = req.headers['x-signature'] || '';
+  const xReqId = req.headers['x-request-id'] || '';
+  const ts = (xSig.match(/ts=(\d+)/) || [])[1];
+  const v1 = (xSig.match(/v1=([a-f0-9]+)/) || [])[1];
+  const dataId = req.body && req.body.data ? req.body.data.id : '';
+  if (!ts || !v1 || !dataId) return false;
+  const manifest = `id:${dataId};request-id:${xReqId};ts:${ts};`;
+  const hmac = crypto.createHmac('sha256', MERCADOPAGO_WEBHOOK_SECRET).update(manifest).digest('hex');
+  try {
+    return crypto.timingSafeEqual(Buffer.from(hmac, 'hex'), Buffer.from(v1, 'hex'));
+  } catch (e) {
+    return false;
+  }
+}
+
+// Processa um pagamento aprovado do Mercado Pago (fonte da verdade: consulta à API).
+// Idempotente: se o payment_id já foi processado, não credita de novo.
+async function mpProcessApprovedPayment(paymentId) {
+  const payment = await mpFetch(`/v1/payments/${paymentId}`);
+  const ref = String(payment.external_reference || '');
+
+  // Só aceita pagamentos aprovados com referência de recarga do sistema
+  if (payment.status !== 'approved') {
+    return { ok: false, reason: `pagamento não aprovado (${payment.status || 'unknown'})` };
+  }
+  if (!ref.startsWith('mp_recharge_')) {
+    return { ok: false, reason: 'external_reference inválida' };
+  }
+
+  // Idempotência por payment_id
+  const byPaymentId = await dbHelpers.db.prepare('SELECT * FROM mp_payments WHERE payment_id = ?').get(String(paymentId));
+  if (byPaymentId && Number(byPaymentId.processed) === 1) {
+    return { ok: true, alreadyProcessed: true };
+  }
+
+  const record = await dbHelpers.db.prepare('SELECT * FROM mp_payments WHERE external_reference = ?').get(ref);
+  if (!record) {
+    return { ok: false, reason: 'preferência de recarga não encontrada' };
+  }
+
+  // Valor pago deve bater com o valor da preferência (centavos)
+  const expected = Math.round(Number(record.amount) * 100);
+  const paid = Math.round(Number(payment.transaction_amount) * 100);
+  if (expected !== paid) {
+    return { ok: false, reason: `valor divergente (esperado ${expected}, pago ${paid})` };
+  }
+
+  const reseller = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE id = ?').get(record.reseller_id);
+  if (!reseller) {
+    return { ok: false, reason: 'revendedor não encontrado' };
+  }
+
+  const amount = Number(record.amount);
+  const now = new Date().toISOString();
+
+  // Rótulo do método: PIX (pagamento direto) ou Checkout Pro (link)
+  const isPix = String(payment.payment_method_id || '').toLowerCase() === 'pix';
+  const methodLabel = isPix ? 'Mercado Pago PIX' : 'Mercado Pago';
+
+  // Credita o saldo (R$) e registra a recarga como aprovada
+  await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits + ? AS NUMERIC), 2) WHERE id = ?')
+    .run(amount, record.reseller_id);
+  await dbHelpers.db.prepare(`
+    INSERT INTO recharges (reseller_id, credits, amount_paid, status, payment_method, created_at)
+    VALUES (?, ?, ?, 'approved', ?, ?)
+  `).run(record.reseller_id, Math.floor(amount / parseFloat(reseller.cost_per_link || 2.99)), amount, methodLabel, now);
+
+  // Marca como processado + grava o payment_id (idempotência definitiva)
+  await dbHelpers.db.prepare('UPDATE mp_payments SET payment_id = ?, status = ?, payment_method = ?, processed = 1, updated_at = ? WHERE id = ?')
+    .run(String(paymentId), 'approved', methodLabel, now, record.id);
+
+  // Alerta no bot do dono
+  notifyRecharge({ reseller, amountPaid: amount, method: methodLabel })
+    .catch((e) => console.error('notifyRecharge (MP) falhou:', e.message));
+
+  return { ok: true, alreadyProcessed: false, amount, reseller: reseller.name };
+}
+
+async function notifyNewSale(opts = {}) {
+  const {
+    service = 'Spotify Premium',
+    customerName,
+    customerId,
+    customerContact,
+    plan = '3 Meses (Acesso Individual)',
+    orderNumber,
+    qty = 1,
+    salePrice,
+    costPrice,
+    profit,
+    resellerName,
+    balanceRemaining,
+    startup = false
+  } = opts;
+
+  if (!NOTIFIER_BOT_TOKEN || !NOTIFY_CHAT_ID) return;
+  if (typeof fetch !== 'function') return; // Node < 18 sem fetch global
+
+  if (startup) {
+    const lines = [
+      '✅ <b>Sistema de Alertas de Vendas ativo!</b>',
+      '',
+      '🟢 Notificações de novas compras habilitadas.',
+      `🕒 ${new Date().toLocaleString('pt-BR')}`
+    ];
+    await sendTelegramAlert(lines.join('\n'), NOTIFY_CHAT_ID, 'INIT');
+    return;
+  }
+
+  // Custo exibido: SEMPRE o valor do produto definido pelo admin (nunca o do revendedor)
+  const adminCost = await getAdminCost();
+
+  // Mensagem pública: sem revendedor, sem lucro — o usuário que comprou é marcado pelo nome
+  const base = [
+    '🎉 Nova Compra!',
+    '',
+    `▪️ Serviço: ${escHtml(service)}`,
+    `👤 Cliente: ${customerLabel(customerName, customerId, customerContact)}`,
+    `🛍️ Plano: ${escHtml(plan)}`,
+    `🔖 Nº do Pedido: ${escHtml(orderNumber)}`,
+    `   Qtd.: ${qty}`,
+    `📈 Total da Compra: ${salePrice != null && salePrice > 0 ? formatMoneyBr(salePrice) : 'Grátis'}`,
+    `💸 Custo: ${formatMoneyBr(adminCost)}`
+  ];
+  const stamp = `🕒 ${new Date().toLocaleString('pt-BR')}`;
+  const publicLines = [...base, stamp];
+
+  // Versão do admin: inclui o revendedor (lucro NUNCA aparece)
+  const adminLines = [
+    ...base,
+    `🧑‍💼 Revendedor: ${escHtml(resellerName || '—')}`,
+    balanceRemaining != null ? `💰 Saldo Restante: ${formatMoneyBr(balanceRemaining)}` : null,
+    stamp
+  ].filter(Boolean);
+
+  const adminChatId = (process.env.NOTIFY_ADMIN_CHAT_ID || '').trim();
+  const hasSeparateAdminChat = !!adminChatId && adminChatId !== NOTIFY_CHAT_ID;
+
+  if (hasSeparateAdminChat) {
+    // Chat público/grupo: só a versão SEM revendedor
+    await sendTelegramAlert(publicLines.join('\n'), NOTIFY_CHAT_ID, orderNumber);
+    // Chat privado do admin: versão completa COM o revendedor
+    await sendTelegramAlert(adminLines.join('\n'), adminChatId, orderNumber);
+  } else {
+    // Sem chat separado, o dono é o único destinatário: envia a versão completa
+    await sendTelegramAlert(adminLines.join('\n'), NOTIFY_CHAT_ID, orderNumber);
+  }
+}
 
 // ==========================================
 // MIDDLEWARES DE AUTENTICAÇÃO
@@ -89,7 +595,13 @@ const resellerUserAuth = async (req, res, next) => {
 };
 
 // 3. Reseller Bot API Auth (Chave de API / Header)
-const resellerBotAuth = async (req, res, next) => {
+// -------------------------------------------------
+// botKeyAuth: valida SOMENTE a chave de API e carrega o revendedor dono da
+// chave. NÃO exige vínculo de Telegram — usado no "Minhas Compras" do bot,
+// onde o cliente final não possui conta de revendedor vinculada.
+// resellerBotAuth: botKeyAuth + vínculo opcional pelo header X-Telegram-Id.
+// -------------------------------------------------
+const botKeyAuth = async (req, res, next) => {
   const ip = getClientIp(req);
   let apiKey = req.headers['x-api-key'];
   
@@ -113,7 +625,7 @@ const resellerBotAuth = async (req, res, next) => {
     });
   }
 
-  const reseller = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE api_key = ?').get(apiKey);
+  let reseller = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE api_key = ?').get(apiKey);
 
   if (!reseller) {
     dbHelpers.logError({
@@ -128,16 +640,50 @@ const resellerBotAuth = async (req, res, next) => {
     return res.status(403).json({ success: false, error: 'Chave de API inválida.' });
   }
 
-  if (reseller.blocked === 1) {
+  req.reseller = reseller;
+  next();
+};
+
+const resellerBotAuth = async (req, res, next) => {
+  // 1) Valida apenas a chave de API (em caso de falha, botKeyAuth já respondeu)
+  let keyValid = false;
+  await botKeyAuth(req, res, () => { keyValid = true; });
+  if (!keyValid) return;
+
+  // ==========================================
+  // VÍNCULO POR ID DE PERFIL (Telegram)
+  // ------------------------------------------
+  // Se o bot enviar o header X-Telegram-Id, o saldo consultado/debitado é o
+  // do perfil vinculado àquele ID (site + bot juntos). Se o ID não estiver
+  // vinculado a nenhuma conta, responde com needs_link para o bot orientar
+  // a pessoa a cadastrar o ID no painel (aba Meu Perfil).
+  // ==========================================
+  const tgId = (req.headers['x-telegram-id'] || '').toString().trim();
+  if (tgId) {
+    const byTg = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE telegram_id = ?').get(tgId);
+    if (!byTg) {
+      return res.status(404).json({
+        success: false,
+        needs_link: true,
+        error: 'Seu perfil de Telegram ainda não está vinculado a uma conta no site do gerador. No bot, envie /me para copiar seu ID de perfil e cadastre-o no painel do revendedor (aba Meu Perfil).'
+      });
+    }
+    if (byTg.blocked === 1 || byTg.active !== 1) {
+      return res.status(403).json({ success: false, error: 'A conta vinculada a este perfil está bloqueada ou inativa.' });
+    }
+    req.reseller = byTg;
+  }
+
+  if (req.reseller.blocked === 1) {
     dbHelpers.logError({
       endpoint: req.originalUrl,
       method: req.method,
       statusCode: 403,
       errorType: 'ResellerBlocked',
-      message: `Bot bloqueado: Revendedor #${reseller.id} (${reseller.name}) foi bloqueado pelo administrador.`,
+      message: `Bot bloqueado: Revendedor #${req.reseller.id} (${req.reseller.name}) foi bloqueado pelo administrador.`,
       ip,
       source: 'bot_api',
-      details: { reseller_id: reseller.id, name: reseller.name }
+      details: { reseller_id: req.reseller.id, name: req.reseller.name }
     });
     return res.status(403).json({
       success: false,
@@ -145,20 +691,19 @@ const resellerBotAuth = async (req, res, next) => {
     });
   }
 
-  if (reseller.active !== 1) {
+  if (req.reseller.active !== 1) {
     dbHelpers.logError({
       endpoint: req.originalUrl,
       method: req.method,
       statusCode: 403,
       errorType: 'ResellerInactive',
-      message: `Bot pausado: Revendedor #${reseller.id} (${reseller.name}) está inativo.`,
+      message: `Bot pausado: Revendedor #${req.reseller.id} (${req.reseller.name}) está inativo.`,
       ip,
       source: 'bot_api'
     });
     return res.status(403).json({ success: false, error: 'Conta de revendedor inativa ou pausada.' });
   }
 
-  req.reseller = reseller;
   next();
 };
 
@@ -233,7 +778,7 @@ app.get('/r/:token', async (req, res) => {
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <title>Validando Acesso Individual...</title>
-      <meta http-equiv="refresh" content="1;url=${destination}">
+      <meta http-equiv="refresh" content="10;url=${destination}">
       <script src="https://cdn.tailwindcss.com"></script>
       <link rel="stylesheet" href="/assets/style.css">
     </head>
@@ -270,23 +815,22 @@ app.get('/r/:token', async (req, res) => {
 
         <div class="space-y-3">
           <div class="flex items-center justify-center gap-2 text-xs text-slate-400">
-            <div class="animate-spin rounded-full h-4 w-4 border-2 border-emerald-400 border-t-transparent"></div>
-            <span>Redirecionando em instantes...</span>
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+            <span>Acesso pronto! Clique no botão abaixo para liberar.</span>
           </div>
 
-          <div>
-            <a href="${destination}" class="text-[11px] text-indigo-400 hover:text-indigo-300 underline">
-              Clique aqui caso não seja redirecionado automaticamente
-            </a>
-          </div>
+          <a href="${destination}" target="_blank" class="block w-full py-3.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-black shadow-lg shadow-emerald-600/30 transition-all text-center">
+            🚀 ACESSAR AGORA
+          </a>
+          <p class="text-[10px] text-slate-500">O redirecionamento automático acontece em instantes, caso prefira.</p>
         </div>
       </div>
 
       <script>
-        // Redireciona com javascript em 800ms
+        // Redireciona com javascript em 10s (apenas fallback — o botão acima é a ação principal)
         setTimeout(() => {
           window.location.href = "${destination}";
-        }, 800);
+        }, 10000);
       </script>
     </body>
     </html>
@@ -325,6 +869,19 @@ app.post('/api/public/generate', async (req, res) => {
 
   try {
     const result = await dbHelpers.generateLink('public_web', null, ip);
+
+    // Alerta de geração via site público
+    notifyNewSale({
+      service: 'Spotify Premium',
+      customerName: 'Visitante (Site Gerador)',
+      customerId: ip,
+      plan: '3 Meses (Acesso Individual)',
+      orderNumber: result.token,
+      qty: 1,
+      salePrice: 0,
+      resellerName: null
+    }).catch((err) => console.error('notifyNewSale (public) falhou:', err.message));
+
     res.json({ success: true, data: result });
   } catch (err) {
     dbHelpers.logError({
@@ -482,10 +1039,29 @@ app.get('/api/reseller/me', resellerUserAuth, (req, res) => {
       balance: Number(r.credits || 0).toFixed(2),
       sale_price: r.sale_price || 15.00,
       cost_per_link: r.cost_per_link || 2.99,
+      telegram_id: r.telegram_id || null,
       blocked: r.blocked === 1,
       created_at: r.created_at
     }
   });
+});
+
+// Vincular/atualizar o ID de perfil do Telegram à conta de revendedor
+// (o mesmo ID usado no bot: /me mostra o ID; saldo do site e do bot ficam juntos)
+app.post('/api/reseller/telegram-link', resellerUserAuth, async (req, res) => {
+  const tg = (req.body && req.body.telegram_id ? String(req.body.telegram_id).trim() : '').replace(/[^0-9]/g, '');
+
+  if (tg.length < 4 || tg.length > 15) {
+    return res.status(400).json({ success: false, error: 'ID de Telegram inválido. Envie /me no bot para copiar seu ID de perfil (somente números).' });
+  }
+
+  const exists = await dbHelpers.db.prepare('SELECT id FROM resellers WHERE telegram_id = ?').get(tg);
+  if (exists && Number(exists.id) !== Number(req.reseller.id)) {
+    return res.status(409).json({ success: false, error: 'Este ID de Telegram já está vinculado a outra conta de revendedor.' });
+  }
+
+  await dbHelpers.db.prepare('UPDATE resellers SET telegram_id = ? WHERE id = ?').run(tg, req.reseller.id);
+  res.json({ success: true, message: 'Perfil do Telegram vinculado com sucesso! Seu saldo do site agora também aparece no bot via /saldo.', telegram_id: tg });
 });
 
 // Dashboard e Gráfico do Revendedor
@@ -570,38 +1146,6 @@ app.get('/api/reseller/sales', resellerUserAuth, async (req, res) => {
   res.json({ success: true, data: sales });
 });
 
-
-
-// Lista de Clientes Agregados do Revendedor (compras, gasto total e lucro)
-app.get('/api/reseller/customers', resellerUserAuth, async (req, res) => {
-  const resellerId = req.reseller.id;
-
-  const customers = await dbHelpers.db.prepare(`
-    SELECT
-      customer_name,
-      customer_id,
-      customer_contact,
-      COUNT(*) as purchase_count,
-      COALESCE(SUM(sale_price), 0) as total_spent,
-      COALESCE(SUM(profit), 0) as total_profit,
-      MAX(created_at) as last_purchase
-    FROM sales
-    WHERE reseller_id = ? AND customer_name IS NOT NULL AND customer_name != ''
-    GROUP BY customer_name, customer_id, customer_contact
-    ORDER BY last_purchase DESC
-    LIMIT 200
-  `).all(resellerId);
-
-  res.json({
-    success: true,
-    data: customers.map((c) => ({
-      ...c,
-      purchase_count: Number(c.purchase_count),
-      total_spent: Number(c.total_spent).toFixed(2),
-      total_profit: Number(c.total_profit).toFixed(2)
-    }))
-  });
-});
 // Atualizar Configuração de Preço de Venda do Revendedor
 app.post('/api/reseller/settings', resellerUserAuth, async (req, res) => {
   const { sale_price, name, phone } = req.body;
@@ -642,7 +1186,8 @@ app.post('/api/reseller/regenerate-key', resellerUserAuth, async (req, res) => {
 
 // Recarregar Saldo / Créditos pelo Revendedor (Valor Mínimo: R$ 15,00)
 app.post('/api/reseller/recharge', resellerUserAuth, async (req, res) => {
-  const { credits, amount } = req.body;
+  const { credits, amount, payment_method } = req.body;
+  const paymentMethod = String(payment_method || 'PIX').trim() || 'PIX';
   const settings = await dbHelpers.getSettings();
   const minAmount = parseFloat(settings.min_recharge_amount || '15.00');
   const costPerCredit = parseFloat(req.reseller.cost_per_link || 2.99);
@@ -668,8 +1213,12 @@ app.post('/api/reseller/recharge', resellerUserAuth, async (req, res) => {
   await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits + ? AS NUMERIC), 2) WHERE id = ?').run(amountPaid, req.reseller.id);
   await dbHelpers.db.prepare(`
     INSERT INTO recharges (reseller_id, credits, amount_paid, status, payment_method, created_at)
-    VALUES (?, ?, ?, 'approved', 'PIX', ?)
-  `).run(req.reseller.id, Math.floor(amountPaid / costPerCredit), amountPaid, now);
+    VALUES (?, ?, ?, 'approved', ?, ?)
+  `).run(req.reseller.id, Math.floor(amountPaid / costPerCredit), amountPaid, paymentMethod, now);
+
+  // Notifica a recarga no bot de alertas (formato: Novos créditos adicionados!)
+  notifyRecharge({ reseller: req.reseller, amountPaid, method: paymentMethod })
+    .catch((err) => console.error('notifyRecharge falhou:', err.message));
 
   const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(req.reseller.id);
 
@@ -682,52 +1231,945 @@ app.post('/api/reseller/recharge', resellerUserAuth, async (req, res) => {
   });
 });
 
-// Geração Manual de Link pelo Revendedor usando Saldo em Dinheiro (Desconta R$ 2,99)
-app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => {
-  const ip = getClientIp(req);
-  const reseller = req.reseller;
-  const costPrice = parseFloat(reseller.cost_per_link || 2.99);
-  const currentCredits = parseFloat(reseller.credits || 0);
+// ==========================================
+// MERCADO PAGO — ROTAS
+// ==========================================
 
-  // Checa se tem saldo suficiente para cobrir R$ 2,99
-  if (currentCredits < costPrice) {
-    return res.status(402).json({
+// Cria preferência de pagamento (Painel do Revendedor — sessão JWT)
+app.post('/api/reseller/mp/create-preference', resellerUserAuth, async (req, res) => {
+  const { amount } = req.body;
+  const settings = await dbHelpers.getSettings();
+  const minAmount = parseFloat(settings.min_recharge_amount || '15.00');
+  const amountValue = parseFloat(amount);
+
+  if (isNaN(amountValue) || amountValue < minAmount) {
+    return res.status(400).json({
       success: false,
-      error: `Saldo insuficiente. Cada link custa R$ ${costPrice.toFixed(2).replace('.', ',')} e seu saldo atual é de R$ ${currentCredits.toFixed(2).replace('.', ',')}. Recarregue seu saldo no painel.`
+      error: `O valor mínimo para recarga via Mercado Pago é de R$ ${minAmount.toFixed(2).replace('.', ',')}.`
     });
   }
 
-  const { customer_name, customer_contact, sale_price } = req.body;
-  const finalCustomerName = customer_name && customer_name.trim() ? customer_name.trim() : 'Cliente Manual (WhatsApp/Direto)';
-  const finalContact = customer_contact ? String(customer_contact).trim() : 'Manual';
-  const finalSalePrice = sale_price ? parseFloat(sale_price) : (reseller.sale_price || 15.00);
-  const profit = Math.max(0, finalSalePrice - costPrice);
+  try {
+    const pref = await mpCreatePreference({ resellerId: req.reseller.id, amount: amountValue });
+    res.json({ success: true, ...pref, message: 'Preferência de pagamento criada. Abra o link para pagar.' });
+  } catch (err) {
+    dbHelpers.logError({
+      endpoint: '/api/reseller/mp/create-preference',
+      method: 'POST',
+      statusCode: 500,
+      errorType: 'MpPreferenceError',
+      message: err.message || String(err),
+      ip: getClientIp(req),
+      source: 'server',
+      details: err.details || null
+    });
+    res.status(err.mpNotConfigured ? 503 : 502).json({
+      success: false,
+      error: err.mpNotConfigured
+        ? 'Mercado Pago não configurado. O administrador precisa definir MERCADOPAGO_ACCESS_TOKEN no servidor.'
+        : `Falha ao criar o pagamento no Mercado Pago: ${err.message}`
+    });
+  }
+});
+
+// Cria preferência de pagamento (Bot do Telegram — API key + X-Telegram-Id)
+app.post('/api/v1/mp/create-preference', resellerBotAuth, async (req, res) => {
+  const { amount } = req.body;
+  const settings = await dbHelpers.getSettings();
+  const minAmount = parseFloat(settings.min_recharge_amount || '15.00');
+  const amountValue = parseFloat(amount);
+
+  if (isNaN(amountValue) || amountValue < minAmount) {
+    return res.status(400).json({
+      success: false,
+      error: `O valor mínimo para recarga via Mercado Pago é de R$ ${minAmount.toFixed(2).replace('.', ',')}.`
+    });
+  }
 
   try {
+    const pref = await mpCreatePreference({ resellerId: req.reseller.id, amount: amountValue });
+    res.json({ success: true, ...pref, message: 'Preferência de pagamento criada. Abra o link para pagar.' });
+  } catch (err) {
+    res.status(err.mpNotConfigured ? 503 : 502).json({
+      success: false,
+      error: err.mpNotConfigured
+        ? 'Mercado Pago não configurado no servidor.'
+        : `Falha ao criar o pagamento no Mercado Pago: ${err.message}`
+    });
+  }
+});
+
+// ==========================================
+// MERCADO PAGO — PIX DIRETO (QR Code + copia-e-cola)
+// ------------------------------------------
+// Gera a cobrança PIX sem redirecionamento: o QR e o código copia-e-cola
+// são exibidos dentro do próprio bot do Telegram.
+// ==========================================
+
+// Valida o valor de recarga e devolve o número já arredondado (ou lança erro tratado)
+async function parseRechargeAmount(rawAmount) {
+  const settings = await dbHelpers.getSettings();
+  const minAmount = parseFloat(settings.min_recharge_amount || '15.00');
+  const amountValue = parseFloat(rawAmount);
+  if (isNaN(amountValue) || amountValue < minAmount) {
+    return { error: `O valor mínimo para recarga é de R$ ${minAmount.toFixed(2).replace('.', ',')}.` };
+  }
+  if (amountValue > 5000) {
+    return { error: 'O valor máximo para uma recarga é de R$ 5.000,00.' };
+  }
+  return { amount: Math.round(amountValue * 100) / 100 };
+}
+
+// PIX direto — Painel do Revendedor (sessão JWT)
+app.post('/api/reseller/mp/create-pix', resellerUserAuth, async (req, res) => {
+  const parsed = await parseRechargeAmount(req.body && req.body.amount);
+  if (parsed.error) {
+    return res.status(400).json({ success: false, error: parsed.error });
+  }
+  try {
+    const pix = await mpCreatePixPayment({ resellerId: req.reseller.id, amount: parsed.amount, reseller: req.reseller });
+    res.json({ success: true, ...pix });
+  } catch (err) {
+    dbHelpers.logError({
+      endpoint: '/api/reseller/mp/create-pix',
+      method: 'POST',
+      statusCode: 502,
+      errorType: 'MpPixError',
+      message: err.message || String(err),
+      ip: getClientIp(req),
+      source: 'server',
+      details: err.details || null
+    });
+    res.status(err.mpNotConfigured ? 503 : 502).json({
+      success: false,
+      error: err.mpNotConfigured
+        ? 'Mercado Pago não configurado. O administrador precisa definir MERCADOPAGO_ACCESS_TOKEN no servidor.'
+        : `Falha ao gerar o PIX: ${err.message}`
+    });
+  }
+});
+
+// PIX direto — Bot do Telegram (API Key + X-Telegram-Id)
+app.post('/api/v1/mp/create-pix', resellerBotAuth, async (req, res) => {
+  const parsed = await parseRechargeAmount(req.body && req.body.amount);
+  if (parsed.error) {
+    return res.status(400).json({ success: false, error: parsed.error });
+  }
+  try {
+    const pix = await mpCreatePixPayment({ resellerId: req.reseller.id, amount: parsed.amount, reseller: req.reseller });
+    res.json({ success: true, ...pix });
+  } catch (err) {
+    dbHelpers.logError({
+      endpoint: '/api/v1/mp/create-pix',
+      method: 'POST',
+      statusCode: 502,
+      errorType: 'MpPixError',
+      message: err.message || String(err),
+      ip: getClientIp(req),
+      source: 'server',
+      details: err.details || null
+    });
+    res.status(err.mpNotConfigured ? 503 : 502).json({
+      success: false,
+      error: err.mpNotConfigured
+        ? 'Mercado Pago não configurado no servidor.'
+        : `Falha ao gerar o PIX: ${err.message}`
+    });
+  }
+});
+
+// Consulta o status de um pagamento PIX pelo external_reference (polling do bot/painel).
+// Se o webhook já creditou, processed = 1 e o saldo atual é devolvido.
+app.get('/api/v1/mp/payment-status', resellerBotAuth, async (req, res) => {
+  const ref = String(req.query.external_reference || '').trim();
+  if (!ref) {
+    return res.status(400).json({ success: false, error: 'Informe external_reference.' });
+  }
+
+  const record = await dbHelpers.db.prepare('SELECT * FROM mp_payments WHERE external_reference = ? AND reseller_id = ?')
+    .get(ref, req.reseller.id);
+  if (!record) {
+    return res.status(404).json({ success: false, error: 'Cobrança não encontrada.' });
+  }
+
+  let status = record.status;
+  let processed = Number(record.processed) === 1;
+
+  // Se o webhook ainda não chegou, consulta o MP na hora (fonte da verdade).
+  // Isso cobre webhook atrasado/não configurado: o crédito acontece assim que o usuário checa.
+  if (!processed && MERCADOPAGO_ACCESS_TOKEN && record.payment_id) {
+    try {
+      const result = await mpProcessApprovedPayment(record.payment_id);
+      if (result.ok && !result.alreadyProcessed) {
+        processed = true;
+        status = 'approved';
+      } else if (!result.ok && result.reason && result.reason.includes('não aprovado')) {
+        const payment = await mpFetch(`/v1/payments/${record.payment_id}`);
+        status = payment.status || status;
+        await dbHelpers.db.prepare('UPDATE mp_payments SET status = ?, updated_at = ? WHERE id = ?')
+          .run(status, new Date().toISOString(), record.id);
+      }
+    } catch (e) {
+      console.error('[mp-status] verificação falhou:', e.message);
+    }
+  }
+
+  const reseller = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(req.reseller.id);
+  res.json({
+    success: true,
+    external_reference: ref,
+    status,
+    processed,
+    amount: Number(record.amount),
+    balance: reseller ? parseFloat(reseller.credits).toFixed(2) : null
+  });
+});
+
+// Webhook do Mercado Pago (público — o MP chama ao receber um pagamento)
+app.post('/api/v1/mp/webhook', async (req, res) => {
+  // Sempre responde 200 para o MP não reenviar em loop
+  try {
+    if (!verifyMpSignature(req)) {
+      return res.status(401).json({ success: false, error: 'Assinatura inválida.' });
+    }
+
+    // O Mercado Pago entrega o mesmo evento de formas diferentes:
+    //  - Webhook (JSON):   { type: 'payment', data: { id: '123' } }
+    //  - IPN (query):      ?topic=payment&id=123
+    //  - Alguns casos:     { action: 'payment.updated', data: { id: '123' } }
+    const body = req.body || {};
+    const type = body.type || body.topic || req.query.type || req.query.topic || '';
+    const data = body.data || {};
+    const paymentId = data.id
+      || req.query['data.id']
+      || req.query.id
+      || (body.resource ? String(body.resource).split('/').pop() : '');
+
+    // Ignora tópicos que não sejam de pagamento (ex.: merchant_order)
+    if (!paymentId || (type && type !== 'payment')) {
+      return res.json({ success: true, ignored: true });
+    }
+
+    const result = await mpProcessApprovedPayment(paymentId);
+    console.log(`[mp-webhook] payment ${paymentId}: ${result.ok ? 'processado' : 'ignorado'} (${result.reason || (result.alreadyProcessed ? 'já processado' : 'ok')})`);
+
+    if (!result.ok && result.reason) {
+      dbHelpers.logError({
+        endpoint: '/api/v1/mp/webhook',
+        method: 'POST',
+        statusCode: 200,
+        errorType: 'MpWebhookIgnored',
+        message: `Pagamento ${paymentId} ignorado: ${result.reason}`,
+        ip: getClientIp(req),
+        source: 'mercado_pago'
+      });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[mp-webhook] erro:', err.message);
+    dbHelpers.logError({
+      endpoint: '/api/v1/mp/webhook',
+      method: 'POST',
+      statusCode: 500,
+      errorType: 'MpWebhookError',
+      message: err.message || String(err),
+      ip: getClientIp(req),
+      source: 'mercado_pago'
+    });
+    res.json({ success: true, error: err.message }); // 200 mesmo assim (evita loop de reenvio)
+  }
+});
+
+// Lista os pagamentos Mercado Pago do revendedor (polling do painel enquanto espera o pagamento)
+app.get('/api/reseller/mp/payments', resellerUserAuth, async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit || '10', 10), 50);
+  const payments = await dbHelpers.db.prepare(`
+    SELECT id, external_reference, amount, status, payment_method, processed, created_at, updated_at
+    FROM mp_payments
+    WHERE reseller_id = ?
+    ORDER BY id DESC
+    LIMIT ?
+  `).all(req.reseller.id, limit);
+  res.json({ success: true, data: payments });
+});
+
+// Geração Manual de Link pelo Revendedor usando Saldo em Dinheiro (Desconta R$ 2,99)
+
+// ==========================================
+// CATALOGO DE PRODUTOS E CUPONS (portado do painel lovelygemi)
+// - Produtos: catalogo com custo e preco fixo ou margem % sobre o custo
+// - Cupons: percentual ou valor fixo, com limite de usos e validade
+// - Integrado nos fluxos: painel manual do revendedor e API de bots (/api/v1/generate)
+// ==========================================
+
+function roundMoney(v) {
+  return Math.round(v * 100) / 100;
+}
+
+// Resolve produto do catalogo + cupom + preco final para um pedido.
+// Body aceito: { product_id, coupon_code, sale_price }
+async function resolveOrderPricing(req, reseller) {
+  const body = (req && req.body) || {};
+  const result = {
+    error: null,
+    product: null,
+    productId: null,
+    productName: null,
+    coupon: null,
+    couponId: null,
+    couponCode: null,
+    costPrice: parseFloat(reseller.cost_per_link || 2.99),
+    baseSalePrice: null,
+    discount: 0,
+    finalSalePrice: null,
+    productStock: null,
+    productHasItems: false,
+    productItemCount: 0
+  };
+
+  // 1. Produto do catalogo (opcional)
+  if (body.product_id !== undefined && body.product_id !== null && String(body.product_id).trim() !== '') {
+    const pid = parseInt(body.product_id, 10);
+    if (isNaN(pid)) {
+      return { ...result, error: 'ID de produto invalido.' };
+    }
+    const product = await dbHelpers.db.prepare('SELECT * FROM products WHERE id = ?').get(pid);
+    if (!product || !Number(product.active)) {
+      return { ...result, error: 'Produto nao encontrado ou inativo.' };
+    }
+    result.product = product;
+    result.productId = Number(product.id);
+    result.productName = product.name;
+    result.costPrice = parseFloat(product.cost_price || 0);
+    // Destino do link de ativação (target_url do produto, se definido)
+    result.productTargetUrl = product.target_url ? String(product.target_url).trim() : null;
+    result.productStock = (product.stock === null || product.stock === undefined) ? null : Number(product.stock);
+    try {
+      const itemRow = await dbHelpers.db.prepare('SELECT COUNT(*) AS c FROM product_items WHERE product_id = ? AND status = \'available\'').get(result.productId);
+      result.productItemCount = Number(itemRow ? itemRow.c : 0);
+      result.productHasItems = result.productItemCount > 0;
+    } catch (itemErr) {
+      // Tabela product_items ainda nao existe (DB antigo) — segue sem itens
+      result.productItemCount = 0;
+      result.productHasItems = false;
+    }
+    if (result.productStock !== null && result.productStock <= 0 && !result.productHasItems) {
+      return { ...result, error: 'Produto esgotado no momento. Tente novamente mais tarde.' };
+    }
+  } else {
+    result.productTargetUrl = null;
+  }
+
+  // 2. Preco-base de venda
+  let baseSalePrice;
+  if (result.product) {
+    const priceType = result.product.price_type || 'fixed';
+    const priceValue = parseFloat(result.product.price_value || 0);
+    if (priceType === 'margin') {
+      baseSalePrice = roundMoney(result.costPrice * (1 + priceValue / 100));
+    } else {
+      baseSalePrice = roundMoney(priceValue);
+    }
+  } else {
+    const bodyPrice = (body.sale_price !== undefined && body.sale_price !== null && String(body.sale_price).trim() !== '')
+      ? parseFloat(body.sale_price)
+      : NaN;
+    baseSalePrice = (!isNaN(bodyPrice) && bodyPrice > 0)
+      ? roundMoney(bodyPrice)
+      : roundMoney(parseFloat(reseller.sale_price || 15.00));
+  }
+  result.baseSalePrice = baseSalePrice;
+
+  // 3. Cupom (opcional)
+  if (body.coupon_code !== undefined && body.coupon_code !== null && String(body.coupon_code).trim() !== '') {
+    const code = String(body.coupon_code).trim().toUpperCase();
+    const coupon = await dbHelpers.db.prepare('SELECT * FROM coupons WHERE code = ?').get(code);
+    if (!coupon || !Number(coupon.active)) {
+      return { ...result, error: 'Cupom "' + code + '" invalido ou inativo.' };
+    }
+    if (coupon.expires_at && new Date(coupon.expires_at).getTime() < Date.now()) {
+      return { ...result, error: 'Cupom "' + code + '" expirado.' };
+    }
+    const usedCount = Number(coupon.used_count || 0);
+    const maxUses = Number(coupon.max_uses || 0);
+    if (maxUses > 0 && usedCount >= maxUses) {
+      return { ...result, error: 'Cupom "' + code + '" atingiu o limite de usos.' };
+    }
+    const value = parseFloat(coupon.value || 0);
+    let discount = 0;
+    if ((coupon.type || 'percent') === 'percent') {
+      discount = roundMoney(baseSalePrice * (value / 100));
+    } else {
+      discount = roundMoney(value);
+    }
+    discount = Math.min(discount, baseSalePrice);
+    result.coupon = coupon;
+    result.couponId = coupon.id ? Number(coupon.id) : null;
+    result.couponCode = coupon.code;
+    result.discount = discount;
+  }
+
+  result.finalSalePrice = roundMoney(Math.max(0, result.baseSalePrice - result.discount));
+  return result;
+}
+
+// Incrementa o contador de usos do cupom (fire-and-forget, nunca quebra o fluxo)
+async function consumeCoupon(couponId) {
+  if (!couponId) return;
+  try {
+    await dbHelpers.db.prepare('UPDATE coupons SET used_count = used_count + 1 WHERE id = ?').run(couponId);
+  } catch (e) {
+    console.error('[consumeCoupon] falhou:', e.message);
+  }
+}
+
+// ---------- PRODUTOS: PAINEL ADMIN ----------
+
+app.get('/api/admin/products', adminAuth, async (req, res) => {
+  const products = await dbHelpers.db.prepare('SELECT * FROM products ORDER BY sort_order ASC, id ASC').all();
+  const itemsCount = new Map();
+  try {
+    const itemRows = await dbHelpers.db.prepare('SELECT product_id, COUNT(*) AS c FROM product_items WHERE status = \'available\' GROUP BY product_id').all();
+    for (const r of itemRows) {
+      itemsCount.set(Number(r.product_id), Number(r.c));
+    }
+  } catch (itemErr) { /* tabela product_items ausente — segue sem itens */ }
+  res.json({
+    success: true,
+    data: products.map((p) => ({
+      ...p,
+      id: Number(p.id),
+      cost_price: Number(p.cost_price || 0),
+      price_value: Number(p.price_value || 0),
+      active: Number(p.active || 0),
+      sort_order: Number(p.sort_order || 0),
+      stock: (p.stock === null || p.stock === undefined) ? null : Number(p.stock),
+      item_count: itemsCount.get(Number(p.id)) || 0
+    }))
+  });
+});
+
+app.post('/api/admin/products', adminAuth, async (req, res) => {
+  const { name, description, target_url, cost_price, price_type, price_value, active, sort_order, stock: stockInput } = req.body || {};
+
+  if (!name || !String(name).trim()) {
+    return res.status(400).json({ success: false, error: 'Informe o nome do produto.' });
+  }
+  const cost = parseFloat(cost_price);
+  if (isNaN(cost) || cost < 0) {
+    return res.status(400).json({ success: false, error: 'Custo do produto invalido.' });
+  }
+  const type = price_type === 'margin' ? 'margin' : 'fixed';
+  const price = parseFloat(price_value);
+  if (isNaN(price) || price < 0) {
+    return res.status(400).json({ success: false, error: type === 'margin' ? 'Margem invalida.' : 'Preco de venda invalido.' });
+  }
+
+  let stock = null;
+  if (stockInput !== undefined && stockInput !== null && String(stockInput).trim() !== '') {
+    stock = parseInt(stockInput, 10);
+    if (isNaN(stock) || stock < 0) {
+      return res.status(400).json({ success: false, error: 'Estoque invalido.' });
+    }
+  }
+
+  const result = await dbHelpers.db.prepare(`
+    INSERT INTO products (name, description, target_url, cost_price, price_type, price_value, active, sort_order, stock, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    String(name).trim(),
+    description ? String(description).trim() : null,
+    target_url ? String(target_url).trim() : null,
+    cost,
+    type,
+    price,
+    (active === 0 || active === '0' || active === false) ? 0 : 1,
+    parseInt(sort_order, 10) || 0,
+    stock,
+    new Date().toISOString()
+  );
+
+  const product = await dbHelpers.db.prepare('SELECT * FROM products WHERE id = ?').get(result.lastInsertRowid);
+  res.json({ success: true, message: 'Produto criado com sucesso!', data: product });
+});
+
+
+app.put('/api/admin/products/:id', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const product = await dbHelpers.db.prepare('SELECT * FROM products WHERE id = ?').get(id);
+  if (!product) {
+    return res.status(404).json({ success: false, error: 'Produto nao encontrado.' });
+  }
+
+  const body = req.body || {};
+  const name = body.name !== undefined ? String(body.name).trim() : product.name;
+  if (!name) {
+    return res.status(400).json({ success: false, error: 'Informe o nome do produto.' });
+  }
+  const description = body.description !== undefined ? (body.description ? String(body.description).trim() : null) : product.description;
+  const targetUrl = body.target_url !== undefined ? (body.target_url ? String(body.target_url).trim() : null) : product.target_url;
+  const cost = body.cost_price !== undefined ? parseFloat(body.cost_price) : parseFloat(product.cost_price || 0);
+  if (isNaN(cost) || cost < 0) {
+    return res.status(400).json({ success: false, error: 'Custo do produto invalido.' });
+  }
+  const type = body.price_type !== undefined ? (body.price_type === 'margin' ? 'margin' : 'fixed') : (product.price_type || 'fixed');
+  const price = body.price_value !== undefined ? parseFloat(body.price_value) : parseFloat(product.price_value || 0);
+  if (isNaN(price) || price < 0) {
+    return res.status(400).json({ success: false, error: type === 'margin' ? 'Margem invalida.' : 'Preco de venda invalido.' });
+  }
+  const active = body.active !== undefined ? ((body.active === 0 || body.active === '0' || body.active === false) ? 0 : 1) : Number(product.active || 0);
+  const sortOrder = body.sort_order !== undefined ? (parseInt(body.sort_order, 10) || 0) : Number(product.sort_order || 0);
+  let stock = (product.stock === null || product.stock === undefined) ? null : Number(product.stock);
+  if (body.stock !== undefined && body.stock !== null && String(body.stock).trim() !== '') {
+    stock = parseInt(body.stock, 10);
+    if (isNaN(stock) || stock < 0) {
+      return res.status(400).json({ success: false, error: 'Estoque invalido.' });
+    }
+  }
+
+  await dbHelpers.db.prepare(`
+    UPDATE products SET name = ?, description = ?, target_url = ?, cost_price = ?, price_type = ?, price_value = ?, active = ?, sort_order = ?, stock = ?
+    WHERE id = ?
+  `).run(name, description, targetUrl, cost, type, price, active, sortOrder, stock, id);
+
+  const updated = await dbHelpers.db.prepare('SELECT * FROM products WHERE id = ?').get(id);
+  res.json({ success: true, message: 'Produto atualizado com sucesso!', data: updated });
+});
+
+app.delete('/api/admin/products/:id', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const product = await dbHelpers.db.prepare('SELECT id, name FROM products WHERE id = ?').get(id);
+  if (!product) {
+    return res.status(404).json({ success: false, error: 'Produto nao encontrado.' });
+  }
+  await dbHelpers.db.prepare('DELETE FROM products WHERE id = ?').run(id);
+  try {
+    await dbHelpers.db.prepare('DELETE FROM product_items WHERE product_id = ?').run(id);
+  } catch (itemErr) { /* tabela product_items ausente */ }
+  res.json({ success: true, message: 'Produto "' + product.name + '" removido com sucesso! (historico de vendas preservado)' });
+});
+
+// ==========================================
+// ITENS DE ESTOQUE (contas / links do produto)
+// ------------------------------------------
+// Cada item equivale a 1 unidade vendável. Ao adicionar/remover itens,
+// o estoque do produto é sincronizado: stock = COUNT(itens disponíveis).
+// ==========================================
+
+// Lista os itens disponíveis de um produto
+app.get('/api/admin/products/:id/items', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const product = await dbHelpers.db.prepare('SELECT id, name FROM products WHERE id = ?').get(id);
+  if (!product) {
+    return res.status(404).json({ success: false, error: 'Produto nao encontrado.' });
+  }
+  const items = await dbHelpers.db.prepare('SELECT * FROM product_items WHERE product_id = ? AND status = \'available\' ORDER BY id ASC').all(id);
+  res.json({
+    success: true,
+    data: items.map((it) => ({
+      id: Number(it.id),
+      type: it.type || 'account',
+      login: it.login,
+      password: it.password,
+      content: it.content,
+      status: it.status,
+      created_at: it.created_at
+    }))
+  });
+});
+
+// Adiciona itens: contas ("login:senha" ou "login|senha", 1 por linha) e/ou links (1 por linha)
+app.post('/api/admin/products/:id/items', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const { type, lines } = req.body || {};
+  const product = await dbHelpers.db.prepare('SELECT id, name FROM products WHERE id = ?').get(id);
+  if (!product) {
+    return res.status(404).json({ success: false, error: 'Produto nao encontrado.' });
+  }
+  const itemType = type === 'link' ? 'link' : 'account';
+  const rawLines = Array.isArray(lines) ? lines : String(lines || '').split(/\r?\n/);
+  const parsed = [];
+  const errors = [];
+  let lineNo = 0;
+  for (const raw of rawLines) {
+    lineNo++;
+    const line = String(raw || '').trim();
+    if (!line) continue;
+    if (line.length > 4000) {
+      errors.push('Linha ' + lineNo + ': muito longa (max 4000 chars).');
+      continue;
+    }
+    if (itemType === 'link') {
+      parsed.push({ type: 'link', login: null, password: null, content: line });
+    } else {
+      let sepIdx = line.indexOf(':');
+      if (sepIdx === -1) sepIdx = line.indexOf('|');
+      if (sepIdx <= 0 || sepIdx === line.length - 1) {
+        errors.push('Linha ' + lineNo + ': formato invalido. Use login:senha (ou login|senha).');
+        continue;
+      }
+      parsed.push({
+        type: 'account',
+        login: line.slice(0, sepIdx).trim(),
+        password: line.slice(sepIdx + 1).trim(),
+        content: null
+      });
+    }
+  }
+  if (parsed.length === 0) {
+    return res.status(400).json({ success: false, error: 'Nenhum item valido para adicionar.' });
+  }
+  if (parsed.length > 1000) {
+    return res.status(400).json({ success: false, error: 'Maximo de 1000 itens por envio.' });
+  }
+  const now = new Date().toISOString();
+  const insert = dbHelpers.db.prepare('INSERT INTO product_items (product_id, type, login, password, content, status, created_at) VALUES (?, ?, ?, ?, ?, \'available\', ?)');
+  for (const it of parsed) {
+    await insert.run(id, it.type, it.login, it.password, it.content, now);
+  }
+  // Sincroniza estoque: stock = total de itens disponíveis
+  const countRow = await dbHelpers.db.prepare('SELECT COUNT(*) AS c FROM product_items WHERE product_id = ? AND status = \'available\'').get(id);
+  const stock = Number(countRow ? countRow.c : 0);
+  await dbHelpers.db.prepare('UPDATE products SET stock = ? WHERE id = ?').run(stock, id);
+  res.json({
+    success: true,
+    added: parsed.length,
+    errors,
+    stock,
+    message: parsed.length + ' item(ns) adicionado(s) ao estoque de "' + product.name + '". Estoque agora: ' + stock
+  });
+});
+
+// Remove um item disponível (conta/link) do estoque
+app.delete('/api/admin/products/:id/items/:itemId', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const itemId = parseInt(req.params.itemId, 10);
+  const product = await dbHelpers.db.prepare('SELECT id, name FROM products WHERE id = ?').get(id);
+  if (!product) {
+    return res.status(404).json({ success: false, error: 'Produto nao encontrado.' });
+  }
+  const item = await dbHelpers.db.prepare('SELECT id, status FROM product_items WHERE id = ? AND product_id = ?').get(itemId, id);
+  if (!item) {
+    return res.status(404).json({ success: false, error: 'Item nao encontrado.' });
+  }
+  if (item.status !== 'available') {
+    return res.status(400).json({ success: false, error: 'Este item ja foi vendido e nao pode ser removido.' });
+  }
+  await dbHelpers.db.prepare('DELETE FROM product_items WHERE id = ?').run(itemId);
+  // Recalcula o estoque após remover o item
+  const countRow = await dbHelpers.db.prepare('SELECT COUNT(*) AS c FROM product_items WHERE product_id = ? AND status = \'available\'').get(id);
+  const stock = Number(countRow ? countRow.c : 0);
+  await dbHelpers.db.prepare('UPDATE products SET stock = ? WHERE id = ?').run(stock, id);
+  res.json({ success: true, message: 'Item removido do estoque.', stock });
+});
+
+// ---------- CUPONS: PAINEL ADMIN ----------
+
+app.get('/api/admin/coupons', adminAuth, async (req, res) => {
+  const coupons = await dbHelpers.db.prepare('SELECT * FROM coupons ORDER BY id DESC').all();
+  res.json({
+    success: true,
+    data: coupons.map((c) => ({
+      ...c,
+      id: Number(c.id),
+      value: Number(c.value || 0),
+      max_uses: Number(c.max_uses || 0),
+      used_count: Number(c.used_count || 0),
+      active: Number(c.active || 0)
+    }))
+  });
+});
+
+app.post('/api/admin/coupons', adminAuth, async (req, res) => {
+  const { code, type, value, max_uses, expires_at, active } = req.body || {};
+
+  if (!code || !String(code).trim()) {
+    return res.status(400).json({ success: false, error: 'Informe o codigo do cupom.' });
+  }
+  const finalCode = String(code).trim().toUpperCase();
+  const couponType = type === 'fixed' ? 'fixed' : 'percent';
+  const couponValue = parseFloat(value);
+  if (isNaN(couponValue) || couponValue <= 0) {
+    return res.status(400).json({ success: false, error: 'Valor do cupom invalido.' });
+  }
+  if (couponType === 'percent' && couponValue > 100) {
+    return res.status(400).json({ success: false, error: 'Cupom percentual nao pode ser maior que 100%.' });
+  }
+  const maxUses = max_uses !== undefined && max_uses !== null && String(max_uses).trim() !== '' ? parseInt(max_uses, 10) : 0;
+  if (isNaN(maxUses) || maxUses < 0) {
+    return res.status(400).json({ success: false, error: 'Limite de usos invalido.' });
+  }
+  const existing = await dbHelpers.db.prepare('SELECT id FROM coupons WHERE code = ?').get(finalCode);
+  if (existing) {
+    return res.status(409).json({ success: false, error: 'Ja existe um cupom com o codigo "' + finalCode + '".' });
+  }
+
+  const result = await dbHelpers.db.prepare(`
+    INSERT INTO coupons (code, type, value, max_uses, used_count, expires_at, active, created_at)
+    VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+  `).run(
+    finalCode,
+    couponType,
+    couponValue,
+    maxUses,
+    expires_at ? String(expires_at).trim() : null,
+    (active === 0 || active === '0' || active === false) ? 0 : 1,
+    new Date().toISOString()
+  );
+
+  const coupon = await dbHelpers.db.prepare('SELECT * FROM coupons WHERE id = ?').get(result.lastInsertRowid);
+  res.json({ success: true, message: 'Cupom "' + finalCode + '" criado com sucesso!', data: coupon });
+});
+
+
+app.put('/api/admin/coupons/:id', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const coupon = await dbHelpers.db.prepare('SELECT * FROM coupons WHERE id = ?').get(id);
+  if (!coupon) {
+    return res.status(404).json({ success: false, error: 'Cupom nao encontrado.' });
+  }
+
+  const body = req.body || {};
+  const couponType = body.type !== undefined ? (body.type === 'fixed' ? 'fixed' : 'percent') : (coupon.type || 'percent');
+  const couponValue = body.value !== undefined ? parseFloat(body.value) : parseFloat(coupon.value || 0);
+  if (isNaN(couponValue) || couponValue <= 0) {
+    return res.status(400).json({ success: false, error: 'Valor do cupom invalido.' });
+  }
+  if (couponType === 'percent' && couponValue > 100) {
+    return res.status(400).json({ success: false, error: 'Cupom percentual nao pode ser maior que 100%.' });
+  }
+  const maxUses = body.max_uses !== undefined ? (parseInt(body.max_uses, 10) || 0) : Number(coupon.max_uses || 0);
+  const expiresAt = body.expires_at !== undefined ? (body.expires_at ? String(body.expires_at).trim() : null) : coupon.expires_at;
+  const active = body.active !== undefined ? ((body.active === 0 || body.active === '0' || body.active === false) ? 0 : 1) : Number(coupon.active || 0);
+
+  await dbHelpers.db.prepare(`
+    UPDATE coupons SET type = ?, value = ?, max_uses = ?, expires_at = ?, active = ?
+    WHERE id = ?
+  `).run(couponType, couponValue, maxUses, expiresAt, active, id);
+
+  const updated = await dbHelpers.db.prepare('SELECT * FROM coupons WHERE id = ?').get(id);
+  res.json({ success: true, message: 'Cupom atualizado com sucesso!', data: updated });
+});
+
+app.delete('/api/admin/coupons/:id', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const coupon = await dbHelpers.db.prepare('SELECT id, code FROM coupons WHERE id = ?').get(id);
+  if (!coupon) {
+    return res.status(404).json({ success: false, error: 'Cupom nao encontrado.' });
+  }
+  await dbHelpers.db.prepare('DELETE FROM coupons WHERE id = ?').run(id);
+  res.json({ success: true, message: 'Cupom "' + coupon.code + '" removido com sucesso! (historico de vendas preservado)' });
+});
+
+// ---------- CATALOGO: PORTAL DO REVENDEDOR ----------
+
+app.get('/api/reseller/products', resellerUserAuth, async (req, res) => {
+  const products = await dbHelpers.db.prepare('SELECT * FROM products WHERE active = 1 ORDER BY sort_order ASC, id ASC').all();
+  res.json({
+    success: true,
+    data: products.map((p) => {
+      const cost = Number(p.cost_price || 0);
+      const priceType = p.price_type || 'fixed';
+      const priceValue = Number(p.price_value || 0);
+      const salePrice = priceType === 'margin' ? roundMoney(cost * (1 + priceValue / 100)) : roundMoney(priceValue);
+      return {
+        id: Number(p.id),
+        name: p.name,
+        description: p.description,
+        price_type: priceType,
+        sale_price: salePrice,
+        stock: (p.stock === null || p.stock === undefined) ? null : Number(p.stock)
+      };
+    })
+  });
+});
+
+// Validar cupom sem gerar pedido (usado pelo painel e disponivel para bots)
+app.post('/api/reseller/validate-coupon', resellerUserAuth, async (req, res) => {
+  const body = req.body || {};
+  const fakeReq = { body: { ...body } };
+  const pricing = await resolveOrderPricing(fakeReq, req.reseller);
+  if (pricing.error) {
+    return res.status(400).json({ success: false, error: pricing.error });
+  }
+  res.json({
+    success: true,
+    data: {
+      product: pricing.productName,
+      base_price: pricing.baseSalePrice,
+      discount: pricing.discount,
+      final_price: pricing.finalSalePrice,
+      coupon_code: pricing.couponCode
+    }
+  });
+});
+
+// ---------- CATALOGO: API PARA BOTS ----------
+
+app.get('/api/v1/products', resellerBotAuth, async (req, res) => {
+  const products = await dbHelpers.db.prepare('SELECT * FROM products WHERE active = 1 ORDER BY sort_order ASC, id ASC').all();
+  res.json({
+    success: true,
+    data: products.map((p) => {
+      const cost = Number(p.cost_price || 0);
+      const priceType = p.price_type || 'fixed';
+      const priceValue = Number(p.price_value || 0);
+      const salePrice = priceType === 'margin' ? roundMoney(cost * (1 + priceValue / 100)) : roundMoney(priceValue);
+      return {
+        id: Number(p.id),
+        name: p.name,
+        description: p.description,
+        price_type: priceType,
+        sale_price: salePrice,
+        stock: (p.stock === null || p.stock === undefined) ? null : Number(p.stock)
+      };
+    })
+  });
+});
+
+// Validar cupom via API de bots (X-API-Key) sem gerar pedido
+app.post('/api/v1/validate-coupon', resellerBotAuth, async (req, res) => {
+  const body = req.body || {};
+  const fakeReq = { body: { ...body } };
+  const pricing = await resolveOrderPricing(fakeReq, req.reseller);
+  if (pricing.error) {
+    return res.status(400).json({ success: false, error: pricing.error });
+  }
+  res.json({
+    success: true,
+    data: {
+      product: pricing.productName,
+      product_id: pricing.productId,
+      base_price: pricing.baseSalePrice,
+      discount: pricing.discount,
+      final_price: pricing.finalSalePrice,
+      coupon_code: pricing.couponCode
+    }
+  });
+});
+
+app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => {
+  const ip = getClientIp(req);
+  const reseller = req.reseller;
+
+  // Resolve produto do catálogo + cupom antes de debitar o saldo
+  const pricing = await resolveOrderPricing(req, reseller);
+  if (pricing.error) {
+    return res.status(400).json({ success: false, error: pricing.error });
+  }
+  const costPrice = pricing.costPrice;
+  const currentCredits = parseFloat(reseller.credits || 0);
+
+  // Checa se tem saldo suficiente para cobrir o custo do produto
+  if (currentCredits < costPrice) {
+    return res.status(402).json({
+      success: false,
+      error: `Saldo insuficiente. Este produto custa R$ ${costPrice.toFixed(2).replace('.', ',')} e seu saldo atual é de R$ ${currentCredits.toFixed(2).replace('.', ',')}. Recarregue seu saldo no painel.`
+    });
+  }
+
+  const { customer_name, customer_contact } = req.body;
+  const finalCustomerName = customer_name && customer_name.trim() ? customer_name.trim() : 'Cliente Manual (WhatsApp/Direto)';
+  const finalContact = customer_contact ? String(customer_contact).trim() : 'Manual';
+  const finalSalePrice = pricing.finalSalePrice;
+  const profit = Math.max(0, finalSalePrice - costPrice);
+
+  let debited = false;
+  let stockDecremented = false;
+  let itemConsumed = null;
+  let deliveredItem = null;
+  let outOfStock = false;
+  let stockRemaining = null;
+  try {
+    // 0a. Consome 1 item do estoque (conta/link) de forma atomica, se o produto tiver itens
+    if (pricing.productHasItems && pricing.productId) {
+      // Retry loop: outra venda pode ter consumido o item entre o SELECT e o UPDATE
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const candidate = await dbHelpers.db.prepare('SELECT id, type, login, password, content FROM product_items WHERE product_id = ? AND status = \'available\' ORDER BY id ASC LIMIT 1').get(pricing.productId);
+        if (!candidate) break;
+        const consumeRes = await dbHelpers.db.prepare('UPDATE product_items SET status = \'sold\', sold_at = ? WHERE id = ? AND status = \'available\'').run(new Date().toISOString(), candidate.id);
+        if (Number(consumeRes.changes) === 1) {
+          itemConsumed = candidate;
+          break;
+        }
+      }
+      if (!itemConsumed) {
+        outOfStock = true;
+        throw Object.assign(new Error('Produto esgotado no momento. Tente novamente mais tarde.'), { code: 'OUT_OF_STOCK' });
+      }
+    }
+
+    // 0b. Decrementa o estoque do produto (apenas quando ha controle de estoque definido)
+    if (pricing.productStock !== null && pricing.productId) {
+      const stockRes = await dbHelpers.db.prepare('UPDATE products SET stock = stock - 1 WHERE id = ? AND stock > 0').run(pricing.productId);
+      if (Number(stockRes.changes) === 0) {
+        outOfStock = true;
+        throw Object.assign(new Error('Produto esgotado no momento. Tente novamente mais tarde.'), { code: 'OUT_OF_STOCK' });
+      }
+      stockDecremented = true;
+      stockRemaining = Math.max(0, Number(pricing.productStock) - 1);
+    }
+
     // Desconta exatamente R$ 2,99 do saldo do revendedor
     await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits - ? AS NUMERIC), 2) WHERE id = ?').run(costPrice, reseller.id);
+    debited = true; // débito concluído — falhas daqui pra frente disparam estorno automático
 
     // Gera o link
-    const generation = await dbHelpers.generateLink(`painel_manual:${reseller.name}`, reseller.id, ip);
+    const generation = await dbHelpers.generateLink(`painel_manual:${reseller.name}`, reseller.id, ip, pricing.productTargetUrl);
 
     // Registra a venda no histórico de clientes do revendedor
     const now = new Date().toISOString();
     const saleResult = await dbHelpers.db.prepare(`
-      INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_id, customer_contact, sale_price, cost_price, profit, delivery_status, created_at)
-      VALUES (?, ?, ?, ?, 'manual_web', ?, ?, ?, ?, 'Entregue (Manual)', ?) RETURNING id
+      INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_id, customer_contact, product, sale_price, cost_price, profit, delivery_status, product_id, coupon_id, discount, created_at)
+      VALUES (?, ?, ?, ?, 'manual_web', ?, ?, ?, ?, ?, 'Entregue (Manual)', ?, ?, ?, ?) RETURNING id
     `).run(
       reseller.id,
       generation.token,
       generation.targetUrl,
       finalCustomerName,
       finalContact,
+      pricing.productName || 'Spotify Premium',
       finalSalePrice,
       costPrice,
       profit,
+      pricing.productId,
+      pricing.couponId,
+      pricing.discount,
       now
     );
+    // Consome o cupom (incrementa o contador de usos)
+    await consumeCoupon(pricing.couponId);
+
+    // Vincula o item consumido a venda (historico/estorno) e monta a entrega
+    if (itemConsumed) {
+      await dbHelpers.db.prepare('UPDATE product_items SET sale_id = ? WHERE id = ?').run(saleResult.lastInsertRowid, itemConsumed.id);
+      deliveredItem = {
+        id: Number(itemConsumed.id),
+        type: itemConsumed.type === 'link' ? 'link' : 'account',
+        login: itemConsumed.login || null,
+        password: itemConsumed.password || null,
+        content: itemConsumed.content || null
+      };
+    }
 
     const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
+
+    // Alerta de venda manual (painel do revendedor)
+    notifyNewSale({
+      service: pricing.productName || 'Spotify Premium',
+      customerName: finalCustomerName,
+      customerId: reseller.name,
+      customerContact: finalContact,
+      plan: '3 Meses (Acesso Individual)',
+      orderNumber: generation.token,
+      qty: 1,
+      salePrice: finalSalePrice,
+      costPrice,
+      profit,
+      resellerName: reseller.name,
+      balanceRemaining: updated.credits
+    }).catch((err) => console.error('notifyNewSale (manual) falhou:', err.message));
 
     res.json({
       success: true,
@@ -738,10 +2180,60 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
       balance_remaining: Number(updated.credits).toFixed(2),
       cost_deducted: costPrice,
       profit_generated: profit,
-      sale_id: saleResult.lastInsertRowid
+      product: pricing.productName || 'Spotify Premium',
+      base_price: pricing.baseSalePrice,
+      discount: pricing.discount,
+      coupon_code: pricing.couponCode,
+      sale_id: saleResult.lastInsertRowid,
+      stock_remaining: stockRemaining,
+      delivered_item: deliveredItem
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: 'Erro ao gerar link manualmente: ' + err.message });
+    const orderNumber = await nextOrderNumber();
+    const reason = (err && err.message) || 'Falha na entrega do produto.';
+
+    // Restaura o estoque do produto se a venda falhou apos o decremento
+    if (stockDecremented) {
+      await dbHelpers.db.prepare('UPDATE products SET stock = stock + 1 WHERE id = ?').run(pricing.productId);
+    }
+
+    // Devolve o item consumido se a venda falhou apos o consumo
+    if (itemConsumed) {
+      try {
+        await dbHelpers.db.prepare('UPDATE product_items SET status = \'available\', sale_id = NULL, sold_at = NULL WHERE id = ? AND status = \'sold\'').run(itemConsumed.id);
+      } catch (itemRestoreErr) {
+        console.error('[generate-manual] restauracao do item falhou:', itemRestoreErr.message);
+      }
+    }
+
+    // ESTORNO AUTOMÁTICO: devolve o valor debitado ao saldo do revendedor
+    if (debited) {
+      try {
+        await autoRefund(reseller.id, costPrice, {
+          endpoint: '/api/reseller/generate-manual',
+          method: 'POST',
+          errorType: 'DeliveryFailedRefund',
+          message: `Falha na entrega manual (${reason}). Estorno automático de R$ ${costPrice.toFixed(2).replace('.', ',')} para o revendedor #${reseller.id} (pedido #${orderNumber}).`,
+          ip,
+          source: 'reseller_panel',
+          details: { reseller_id: reseller.id, order_number: orderNumber, product: pricing.productName || 'Spotify Premium', amount: finalSalePrice, error: reason }
+        });
+      } catch (refundErr) {
+        console.error('[generate-manual] estorno automático falhou:', refundErr.message);
+      }
+    }
+
+    res.status(debited || outOfStock ? 409 : 500).json({
+      success: false,
+      error: outOfStock ? reason : 'Erro ao gerar link manualmente: ' + reason,
+      refunded: debited,
+      refund_amount: debited ? Number(costPrice).toFixed(2) : '0.00',
+      order_number: orderNumber || null,
+      product: pricing.productName || 'Spotify Premium',
+      out_of_stock: outOfStock,
+      amount: Number(finalSalePrice).toFixed(2),
+      reason
+    });
   }
 });
 
@@ -753,10 +2245,16 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
 app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
   const ip = getClientIp(req);
   const reseller = req.reseller;
-  const costPrice = parseFloat(reseller.cost_per_link || 2.99);
+
+  // 0. Resolve produto do catálogo + cupom antes de debitar o saldo
+  const pricing = await resolveOrderPricing(req, reseller);
+  if (pricing.error) {
+    return res.status(400).json({ success: false, error: pricing.error });
+  }
+  const costPrice = pricing.costPrice;
   const currentCredits = parseFloat(reseller.credits || 0);
 
-  // 1. Checa se o Revendedor possui saldo suficiente (Mínimo R$ 2,99)
+  // 1. Checa se o Revendedor possui saldo suficiente (custo do produto)
   if (currentCredits < costPrice) {
     dbHelpers.logError({
       endpoint: '/api/v1/generate',
@@ -776,28 +2274,65 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
   }
 
   // 2. Extrai dados do Cliente enviados pelo Bot
-  const { customer_name, customer_id, customer_contact, sale_price } = req.body;
+  const { customer_name, customer_id, customer_contact } = req.body;
   
   const finalCustomerName = customer_name ? customer_name.trim() : 'Cliente Anônimo';
   const finalCustomerId = customer_id ? String(customer_id).trim() : null;
   const finalContact = customer_contact ? String(customer_contact).trim() : null;
+  const finalProduct = pricing.productName || (req.body && req.body.product ? String(req.body.product).trim() : '') || 'Spotify Premium';
 
-  // Preço de venda cobrado do cliente (ou usa o padrão do revendedor)
-  const finalSalePrice = sale_price ? parseFloat(sale_price) : (reseller.sale_price || 15.00);
+  // Preço de venda final (produto do catálogo + cupom aplicado, com fallback para o preço do revendedor)
+  const finalSalePrice = pricing.finalSalePrice;
   const profit = Math.max(0, finalSalePrice - costPrice);
 
+  let debited = false;
+  let stockDecremented = false;
+  let itemConsumed = null;
+  let deliveredItem = null;
+  let outOfStock = false;
+  let stockRemaining = null;
   try {
+    // 3a. Consome 1 item do estoque (conta/link) de forma atomica, se o produto tiver itens
+    if (pricing.productHasItems && pricing.productId) {
+      // Retry loop: outra venda pode ter consumido o item entre o SELECT e o UPDATE
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const candidate = await dbHelpers.db.prepare('SELECT id, type, login, password, content FROM product_items WHERE product_id = ? AND status = \'available\' ORDER BY id ASC LIMIT 1').get(pricing.productId);
+        if (!candidate) break;
+        const consumeRes = await dbHelpers.db.prepare('UPDATE product_items SET status = \'sold\', sold_at = ? WHERE id = ? AND status = \'available\'').run(new Date().toISOString(), candidate.id);
+        if (Number(consumeRes.changes) === 1) {
+          itemConsumed = candidate;
+          break;
+        }
+      }
+      if (!itemConsumed) {
+        outOfStock = true;
+        throw Object.assign(new Error('Produto esgotado no momento. Tente novamente mais tarde.'), { code: 'OUT_OF_STOCK' });
+      }
+    }
+
+    // 3b. Decrementa o estoque do produto (apenas quando ha controle de estoque definido)
+    if (pricing.productStock !== null && pricing.productId) {
+      const stockRes = await dbHelpers.db.prepare('UPDATE products SET stock = stock - 1 WHERE id = ? AND stock > 0').run(pricing.productId);
+      if (Number(stockRes.changes) === 0) {
+        outOfStock = true;
+        throw Object.assign(new Error('Produto esgotado no momento. Tente novamente mais tarde.'), { code: 'OUT_OF_STOCK' });
+      }
+      stockDecremented = true;
+      stockRemaining = Math.max(0, Number(pricing.productStock) - 1);
+    }
+
     // 3. Decrementa exatamente R$ 2,99 do Saldo do Revendedor
     await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits - ? AS NUMERIC), 2) WHERE id = ?').run(costPrice, reseller.id);
+    debited = true; // débito concluído — falhas daqui pra frente disparam estorno automático
 
     // 4. Gera o Link
-    const generation = await dbHelpers.generateLink(`bot:${reseller.name}`, reseller.id, ip);
+    const generation = await dbHelpers.generateLink(`bot:${reseller.name}`, reseller.id, ip, pricing.productTargetUrl);
 
     // 5. Registra a Venda no Histórico de Clientes do Revendedor
     const now = new Date().toISOString();
     const saleResult = await dbHelpers.db.prepare(`
-      INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_id, customer_contact, sale_price, cost_price, profit, delivery_status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Entregue', ?) RETURNING id
+      INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_id, customer_contact, product, sale_price, cost_price, profit, delivery_status, product_id, coupon_id, discount, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Entregue', ?, ?, ?, ?) RETURNING id
     `).run(
       reseller.id,
       generation.token,
@@ -805,13 +2340,47 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
       finalCustomerName,
       finalCustomerId,
       finalContact,
+      finalProduct,
       finalSalePrice,
       costPrice,
       profit,
+      pricing.productId,
+      pricing.couponId,
+      pricing.discount,
       now
     );
+    // Consome o cupom (incrementa o contador de usos)
+    await consumeCoupon(pricing.couponId);
+
+    // Vincula o item consumido a venda (historico/estorno) e monta a entrega
+    if (itemConsumed) {
+      await dbHelpers.db.prepare('UPDATE product_items SET sale_id = ? WHERE id = ?').run(saleResult.lastInsertRowid, itemConsumed.id);
+      deliveredItem = {
+        id: Number(itemConsumed.id),
+        type: itemConsumed.type === 'link' ? 'link' : 'account',
+        login: itemConsumed.login || null,
+        password: itemConsumed.password || null,
+        content: itemConsumed.content || null
+      };
+    }
 
     const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
+
+    // Alerta de venda via bot (principal fonte de compras)
+    notifyNewSale({
+      service: 'Spotify Premium',
+      customerName: finalCustomerName,
+      customerId: finalCustomerId,
+      customerContact: finalContact,
+      plan: String((req.body && (req.body.plan || req.body.product)) || '3 Meses (Acesso Individual)').trim(),
+      orderNumber: generation.token,
+      qty: 1,
+      salePrice: finalSalePrice,
+      costPrice,
+      profit,
+      resellerName: reseller.name,
+      balanceRemaining: updated.credits
+    }).catch((err) => console.error('notifyNewSale (v1) falhou:', err.message));
 
     // Resposta Completa para o Bot
     res.json({
@@ -828,25 +2397,141 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
       },
       profit_generated: profit,
       cost_deducted: costPrice,
+      product: finalProduct,
+      base_price: pricing.baseSalePrice,
+      discount: pricing.discount,
+      coupon_code: pricing.couponCode,
       balance_remaining: Number(updated.credits).toFixed(2),
+      stock_remaining: stockRemaining,
       sale_id: saleResult.lastInsertRowid,
       created_at: now,
-      expires_at: generation.expiresAt
+      expires_at: generation.expiresAt,
+      delivered_item: deliveredItem
     });
 
   } catch (err) {
+    const orderNumber = await nextOrderNumber();
+    const reason = (err && err.message) || 'Falha na entrega do produto.';
+
+    // Restaura o estoque do produto se a venda falhou apos o decremento
+    if (stockDecremented) {
+      await dbHelpers.db.prepare('UPDATE products SET stock = stock + 1 WHERE id = ?').run(pricing.productId);
+    }
+
+    // Devolve o item consumido se a venda falhou apos o consumo
+    if (itemConsumed) {
+      try {
+        await dbHelpers.db.prepare('UPDATE product_items SET status = \'available\', sale_id = NULL, sold_at = NULL WHERE id = ? AND status = \'sold\'').run(itemConsumed.id);
+      } catch (itemRestoreErr) {
+        console.error('[generate] restauracao do item falhou:', itemRestoreErr.message);
+      }
+    }
+
+    // ESTORNO AUTOMÁTICO: se o saldo já foi debitado e a entrega falhou,
+    // devolve o valor para o saldo do revendedor na hora.
+    if (debited) {
+      try {
+        await autoRefund(reseller.id, costPrice, {
+          endpoint: '/api/v1/generate',
+          method: 'POST',
+          errorType: 'DeliveryFailedRefund',
+          message: `Falha na entrega (${reason}). Estorno automático de R$ ${costPrice.toFixed(2).replace('.', ',')} para o revendedor #${reseller.id} (pedido #${orderNumber}).`,
+          ip,
+          source: 'bot_api',
+          details: { reseller_id: reseller.id, order_number: orderNumber, product: finalProduct, amount: finalSalePrice, error: reason }
+        });
+      } catch (refundErr) {
+        console.error('[generate] estorno automático falhou:', refundErr.message);
+      }
+    }
+
     dbHelpers.logError({
       endpoint: '/api/v1/generate',
       method: 'POST',
-      statusCode: 500,
+      statusCode: debited || outOfStock ? 409 : 500,
       errorType: 'BotGenerationError',
       message: err.message,
       ip,
       source: 'bot_api',
-      details: err.stack
+      details: { stack: err.stack, refunded: debited, order_number: orderNumber }
     });
-    res.status(500).json({ success: false, error: 'Falha no servidor ao gerar link para o bot.' });
+
+    res.status(debited || outOfStock ? 409 : 500).json({
+      success: false,
+      error: reason,
+      refunded: debited,                      // true: estorno já foi feito pelo servidor
+      refund_amount: debited ? Number(costPrice).toFixed(2) : '0.00',
+      order_number: orderNumber || null,
+      product: finalProduct,
+      out_of_stock: outOfStock,
+      amount: Number(finalSalePrice).toFixed(2),
+      reason
+    });
   }
+});
+
+// ==========================================
+// ESTORNO DE PEDIDO (falha de entrega reportada pelo bot/fornecedor)
+// - Devolve o custo debitado ao saldo do revendedor
+// - Idempotente: pedido já estornado não é estornado de novo
+// ==========================================
+app.post('/api/v1/refund', resellerBotAuth, async (req, res) => {
+  const ip = getClientIp(req);
+  const reseller = req.reseller;
+  const { token, reason } = req.body || {};
+
+  if (!token) {
+    return res.status(400).json({ success: false, error: 'O token do pedido é obrigatório para o estorno.' });
+  }
+
+  const sale = await dbHelpers.db.prepare('SELECT * FROM sales WHERE token = ?').get(String(token).trim());
+  if (!sale) {
+    return res.status(404).json({ success: false, error: 'Pedido não encontrado. Confira o token informado.' });
+  }
+
+  const alreadyFailed = String(sale.delivery_status || '').toLowerCase().includes('falhou');
+  const costPrice = parseFloat(sale.cost_price != null ? sale.cost_price : (reseller.cost_per_link || 2.99));
+  const failReason = (reason && String(reason).trim()) || 'Falha na entrega do produto.';
+  const newStatus = `Falhou (${failReason})`;
+
+  if (alreadyFailed) {
+    // Já estornado anteriormente — resposta idempotente (sem debitar nada de novo)
+    return res.json({
+      success: true,
+      already_refunded: true,
+      message: 'Este pedido já foi estornado anteriormente.',
+      order_number: sale.id,
+      product: sale.product || 'Spotify Premium',
+      amount: Number(sale.sale_price || 0).toFixed(2),
+      refund_amount: Number(costPrice).toFixed(2),
+      reason: failReason,
+      refunded: false
+    });
+  }
+
+  // Estorno: devolve o custo ao saldo do revendedor (autoRefund já credita e loga)
+  await autoRefund(reseller.id, costPrice, {
+    endpoint: '/api/v1/refund',
+    method: 'POST',
+    errorType: 'SaleRefunded',
+    message: `Estorno do pedido #${sale.id} (${sale.product || 'Spotify Premium'}) — R$ ${costPrice.toFixed(2).replace('.', ',')} devolvidos ao saldo do revendedor #${reseller.id}. Motivo: ${failReason}`,
+    ip,
+    source: 'bot_api',
+    details: { sale_id: sale.id, token: sale.token, reseller_id: reseller.id, refund_amount: costPrice, reason: failReason, delivery_status: newStatus }
+  });
+  await dbHelpers.db.prepare('UPDATE sales SET delivery_status = ? WHERE id = ?').run(newStatus, sale.id);
+
+  res.json({
+    success: true,
+    refunded: true,
+    message: 'Estorno concluído — o valor voltou para o saldo do revendedor.',
+    order_number: sale.id,
+    product: sale.product || 'Spotify Premium',
+    amount: Number(sale.sale_price || 0).toFixed(2),
+    refund_amount: Number(costPrice).toFixed(2),
+    reason: failReason,
+    delivery_status: newStatus
+  });
 });
 
 // Consulta de saldo do Revendedor
@@ -861,6 +2546,8 @@ app.get('/api/v1/balance', resellerBotAuth, async (req, res) => {
   res.json({
     success: true,
     reseller: reseller.name,
+    reseller_id: reseller.id,
+    telegram_id: reseller.telegram_id || null,
     credits: reseller.credits,
     active: reseller.active === 1 && reseller.blocked === 0,
     sale_price: reseller.sale_price,
@@ -870,581 +2557,122 @@ app.get('/api/v1/balance', resellerBotAuth, async (req, res) => {
 });
 
 // ==========================================
-// CATÁLOGO, CUPONS, PEDIDOS E PAGAMENTOS
-// (Portados do painel lovelygemi e integrados com o bot de vendas)
+// MINHAS COMPRAS (cliente final do bot)
+// ------------------------------------------
+// Consulta as compras do comprador final identificado pelo Telegram:
+// headers X-Telegram-Id (id numérico) e/ou X-Telegram-Username (@usuario).
+// Agrupa por produto e devolve os itens entregues para o bot gerar o .txt.
+// ==========================================
+app.get('/api/v1/my-purchases', botKeyAuth, async (req, res) => {
+  try {
+    const tgId = (req.headers['x-telegram-id'] || '').toString().trim();
+    const tgUsername = (req.headers['x-telegram-username'] || '').toString().trim().replace(/^@/, '').toLowerCase();
+
+    if (!tgId && !tgUsername) {
+      return res.status(400).json({ success: false, error: 'Identificação do cliente não fornecida. Envie o header X-Telegram-Id e/ou X-Telegram-Username.' });
+    }
+
+    const clauses = [];
+    const params = [];
+    if (tgId) {
+      clauses.push('customer_id = ?');
+      params.push('tg_' + tgId);
+      clauses.push('customer_id = ?');
+      params.push(tgId);
+    }
+    if (tgUsername) {
+      clauses.push('LOWER(customer_contact) = LOWER(?)');
+      params.push('@' + tgUsername);
+    }
+
+    const where = clauses.map((c) => `(${c})`).join(' OR ');
+    const rows = await dbHelpers.db.prepare(`
+      SELECT s.id, s.token, s.target_url, s.product, s.sale_price, s.delivery_status, s.created_at,
+             pi.type AS item_type, pi.login AS account_login, pi.password AS account_password, pi.content AS item_content
+      FROM sales s
+      LEFT JOIN product_items pi ON pi.sale_id = s.id
+      WHERE ${where}
+      ORDER BY s.created_at DESC
+    `).all(...params);
+
+    // Agrupa por produto (coluna product com fallback para o produto padrão)
+    const byProduct = {};
+    for (const row of rows) {
+      const product = (row.product && String(row.product).trim()) || 'Spotify Premium';
+      if (!byProduct[product]) byProduct[product] = [];
+      byProduct[product].push({
+        id: row.id,
+        token: row.token,
+        link: row.target_url,
+        sale_price: row.sale_price,
+        delivery_status: row.delivery_status,
+        created_at: row.created_at,
+        item_type: row.item_type || null,
+        account_login: row.account_login || null,
+        account_password: row.account_password || null,
+        item_content: row.item_content || null
+      });
+    }
+
+    const purchases = Object.entries(byProduct)
+      .map(([product, items]) => ({ product, total: items.length, items }))
+      .sort((a, b) => b.total - a.total);
+
+    res.json({
+      success: true,
+      customer_id: tgId ? 'tg_' + tgId : null,
+      customer_contact: tgUsername ? '@' + tgUsername : null,
+      purchases
+    });
+  } catch (err) {
+    dbHelpers.logError({
+      endpoint: '/api/v1/my-purchases',
+      method: 'GET',
+      statusCode: 500,
+      errorType: 'QueryError',
+      message: err.message,
+      source: 'bot_api',
+      details: err.stack
+    });
+    res.status(500).json({ success: false, error: 'Erro interno ao consultar suas compras.' });
+  }
+});
+
+// ==========================================
+// API KEY PRÓPRIA DO REVENDEDOR (para bots próprios)
+// ------------------------------------------
+// Cada revendedor tem a PRÓPRIA api_key. Estes endpoints entregam a chave
+// da conta vinculada ao Telegram ID (menu "Minha API" no bot principal),
+// para o revendedor criar o próprio bot e entregar o produto automaticamente
+// via POST /api/v1/generate com o header X-API-Key: <chave dele>.
 // ==========================================
 
-// Gera um código de pedido curto e único (ex: ORD-7K2XQ9P)
-function generateOrderCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let code = '';
-  for (let i = 0; i < 7; i += 1) code += chars[Math.floor(Math.random() * chars.length)];
-  return 'ORD-' + code;
-}
-
-// Valida um cupom e calcula o desconto sobre um preço
-async function validateCouponDb(code, price) {
-  if (!code) return null;
-  const coupon = await dbHelpers.db.prepare('SELECT * FROM coupons WHERE code = ?').get(String(code).trim().toUpperCase());
-  if (!coupon) return { error: 'Cupom não encontrado.' };
-  if (coupon.active !== 1) return { error: 'Este cupom está desativado.' };
-  if (coupon.max_uses > 0 && Number(coupon.used_count || 0) >= Number(coupon.max_uses)) {
-    return { error: 'Este cupom já atingiu o limite de usos.' };
-  }
-  if (coupon.valid_until && new Date(coupon.valid_until).getTime() < Date.now()) {
-    return { error: 'Este cupom expirou.' };
-  }
-  const basePrice = parseFloat(price || 0);
-  let discount = 0;
-  if (coupon.discount_type === 'percent') {
-    discount = Math.min(basePrice, basePrice * (parseFloat(coupon.discount_value) / 100));
-  } else {
-    discount = Math.min(basePrice, parseFloat(coupon.discount_value));
-  }
-  discount = Math.round(discount * 100) / 100;
-  return { coupon, discount, total: Math.max(0, Math.round((basePrice - discount) * 100) / 100) };
-}
-
-// Entrega um pedido pago: debita o custo do revendedor, gera o link e registra a venda
-async function deliverOrder(orderId) {
-  const order = await dbHelpers.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
-  if (!order) return { success: false, reason: 'pedido_inexistente' };
-  if (order.status === 'delivered' && order.token) return { success: true, order, alreadyDelivered: true };
-
-  const reseller = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE id = ?').get(order.reseller_id);
-  if (!reseller) return { success: false, reason: 'revendedor_inexistente' };
-  if (reseller.blocked === 1 || reseller.active !== 1) return { success: false, reason: 'revendedor_bloqueado' };
-
-  let costPrice = parseFloat(reseller.cost_per_link || 2.99);
-  if (order.product_id) {
-    const prodRow = await dbHelpers.db.prepare('SELECT cost_price FROM products WHERE id = ?').get(order.product_id);
-    if (prodRow && prodRow.cost_price > 0) costPrice = parseFloat(prodRow.cost_price);
-  }
-  const currentCredits = parseFloat(reseller.credits || 0);
-  if (currentCredits < costPrice) {
-    return { success: false, reason: 'saldo_insuficiente', costPrice };
-  }
-
-  const ip = '127.0.0.1';
-  await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits - ? AS NUMERIC), 2) WHERE id = ?').run(costPrice, reseller.id);
-  const generation = await dbHelpers.generateLink(`order:${order.order_code}`, reseller.id, ip);
-
-  await dbHelpers.db.prepare(`
-    INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_id, customer_contact, sale_price, cost_price, profit, delivery_status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Entregue (Pedido)', ?)
-  `).run(
-    reseller.id,
-    generation.token,
-    generation.targetUrl,
-    order.customer_name || 'Cliente Bot',
-    order.customer_id || 'bot',
-    order.customer_contact || 'Via Bot',
-    order.total,
-    costPrice,
-    Math.max(0, Math.round((order.total - costPrice) * 100) / 100),
-    new Date().toISOString()
-  );
-
-  await dbHelpers.db.prepare("UPDATE orders SET status = 'delivered', token = ?, updated_at = ? WHERE id = ?")
-    .run(generation.token, new Date().toISOString(), order.id);
-
-  return {
-    success: true,
-    order: {
-      ...order,
-      status: 'delivered',
-      token: generation.token,
-      link: generation.targetUrl
-    },
-    costPrice
-  };
-}
-
-// Lista produtos ativos (catálogo do bot)
-app.get('/api/v1/products', resellerBotAuth, async (req, res) => {
-  const products = await dbHelpers.db.prepare(`
-    SELECT id, name, description, price, emoji, sort_order
-    FROM products WHERE active = 1 ORDER BY sort_order ASC, id ASC
-  `).all();
-  res.json({
-    success: true,
-    data: products.map((p) => ({
-      ...p,
-      id: Number(p.id),
-      price: parseFloat(p.price || 0)
-    }))
-  });
-});
-
-// Valida um cupom de desconto
-app.get('/api/v1/coupons/:code', resellerBotAuth, async (req, res) => {
-  const price = parseFloat(req.query.price || '0');
-  const result = await validateCouponDb(req.params.code, price);
-  if (!result || result.error) {
-    return res.status(400).json({ success: false, error: (result && result.error) || 'Cupom inválido.' });
-  }
-  res.json({
-    success: true,
-    code: result.coupon.code,
-    discount_type: result.coupon.discount_type,
-    discount_value: parseFloat(result.coupon.discount_value),
-    discount: result.discount,
-    total: result.total,
-    valid_until: result.coupon.valid_until
-  });
-});
-
-// Cria um pedido (checkout do bot). Método BALANCE = entrega instantânea.
-app.post('/api/v1/orders', resellerBotAuth, async (req, res) => {
+// Consulta a própria chave de API + endereço da API
+app.get('/api/v1/my-api', resellerBotAuth, async (req, res) => {
   const reseller = req.reseller;
-  const ip = getClientIp(req);
-  const { product_id, coupon_code, customer_name, customer_id, customer_contact, payment_method } = req.body;
-
-  let product = null;
-  if (product_id) {
-    product = await dbHelpers.db.prepare('SELECT * FROM products WHERE id = ?').get(parseInt(product_id, 10));
-    if (!product || product.active !== 1) {
-      return res.status(404).json({ success: false, error: 'Produto não encontrado ou indisponível.' });
-    }
-  }
-
-  const unitPrice = product ? parseFloat(product.price) : parseFloat(reseller.sale_price || 15.00);
-  const costPrice = product ? parseFloat(product.cost_price) : parseFloat(reseller.cost_per_link || 2.99);
-
-  // Aplica cupom, se informado
-  let discount = 0;
-  let couponRow = null;
-  if (coupon_code && String(coupon_code).trim()) {
-    const v = await validateCouponDb(coupon_code, unitPrice);
-    if (!v || v.error) {
-      return res.status(400).json({ success: false, error: (v && v.error) || 'Cupom inválido.' });
-    }
-    discount = v.discount;
-    couponRow = v.coupon;
-  }
-  const total = Math.max(0, Math.round((unitPrice - discount) * 100) / 100);
-
-  const method = (payment_method || 'BALANCE').toUpperCase();
-  const now = new Date().toISOString();
-  const orderCode = generateOrderCode();
-
-  // Fluxo instantâneo (saldo do revendedor)
-  if (method === 'BALANCE') {
-    if (parseFloat(reseller.credits || 0) < costPrice) {
-      return res.status(402).json({
-        success: false,
-        error: `Saldo insuficiente para gerar o link. Custo: R$ ${costPrice.toFixed(2).replace('.', ',')}.`,
-        code: 'NO_BALANCE'
-      });
-    }
-    await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits - ? AS NUMERIC), 2) WHERE id = ?').run(costPrice, reseller.id);
-
-    const generation = await dbHelpers.generateLink(`order:${orderCode}`, reseller.id, ip);
-    if (couponRow) {
-      await dbHelpers.db.prepare('UPDATE coupons SET used_count = used_count + 1 WHERE id = ?').run(couponRow.id);
-    }
-
-    const insert = await dbHelpers.db.prepare(`
-      INSERT INTO orders (order_code, reseller_id, product_id, product_name, customer_name, customer_id, customer_contact, unit_price, discount, total, coupon_code, status, payment_method, token, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'delivered', 'BALANCE', ?, ?, ?) RETURNING id
-    `).run(
-      orderCode,
-      reseller.id,
-      product ? product.id : null,
-      product ? product.name : 'Spotify Premium 3 Meses',
-      customer_name || null,
-      customer_id || null,
-      customer_contact || null,
-      unitPrice,
-      discount,
-      total,
-      couponRow ? couponRow.code : null,
-      generation.token,
-      now,
-      now
-    );
-    const orderId = insert.lastInsertRowid;
-
-    await dbHelpers.db.prepare(`
-      INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_id, customer_contact, sale_price, cost_price, profit, delivery_status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Entregue (Pedido)', ?)
-    `).run(
-      reseller.id,
-      generation.token,
-      generation.targetUrl,
-      customer_name || 'Cliente Bot',
-      customer_id || 'bot',
-      customer_contact || 'Via Bot',
-      total,
-      costPrice,
-      Math.max(0, Math.round((total - costPrice) * 100) / 100),
-      now
-    );
-
-    await dbHelpers.db.prepare(`
-      INSERT INTO payments (order_id, reseller_id, provider, external_id, amount, currency, status, metadata, created_at, updated_at)
-      VALUES (?, ?, 'BALANCE', ?, ?, 'BRL', 'confirmed', ?, ?, ?)
-    `).run(orderId, reseller.id, orderCode, total, JSON.stringify({ method: 'instant' }), now, now);
-
-    const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
-    return res.json({
-      success: true,
-      order_code: orderCode,
-      order_id: orderId ? Number(orderId) : null,
-      product: product ? product.name : 'Spotify Premium 3 Meses',
-      unit_price: unitPrice,
-      discount,
-      total,
-      coupon_code: couponRow ? couponRow.code : null,
-      status: 'delivered',
-      token: generation.token,
-      link: generation.targetUrl,
-      balance_remaining: parseFloat(updated.credits)
-    });
-  }
-
-  // Fluxo com pagamento externo (PIX manual via painel ou cripto NOWPayments)
-  if (couponRow) {
-    await dbHelpers.db.prepare('UPDATE coupons SET used_count = used_count + 1 WHERE id = ?').run(couponRow.id);
-  }
-  const insert = await dbHelpers.db.prepare(`
-    INSERT INTO orders (order_code, reseller_id, product_id, product_name, customer_name, customer_id, customer_contact, unit_price, discount, total, coupon_code, status, payment_method, token, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?) RETURNING id
-  `).run(
-    orderCode,
-    reseller.id,
-    product ? product.id : null,
-    product ? product.name : 'Spotify Premium 3 Meses',
-    customer_name || null,
-    customer_id || null,
-    customer_contact || null,
-    unitPrice,
-    discount,
-    total,
-    couponRow ? couponRow.code : null,
-    method === 'NOWPAYMENTS' ? 'NOWPAYMENTS' : 'PIX',
-    null,
-    now,
-    now
-  );
-  const orderId = insert.lastInsertRowid;
-
-  if (method === 'NOWPAYMENTS') {
-    const npKey = process.env.NOWPAYMENTS_API_KEY;
-    let invoice = null;
-    if (npKey) {
-      try {
-        const resp = await fetch('https://api.nowpayments.io/v1/invoice', {
-          method: 'POST',
-          headers: { 'x-api-key': npKey, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            price_amount: total,
-            price_currency: 'BRL',
-            order_id: orderCode,
-            order_description: `Pedido ${orderCode}`
-          })
-        });
-        invoice = await resp.json();
-      } catch (e) {
-        console.error('[nowpayments create invoice]', e && e.message ? e.message : e);
-      }
-    }
-    const externalId = (invoice && invoice.id) ? invoice.id : null;
-    const meta = JSON.stringify({ mock: !externalId, invoice: invoice || null });
-    await dbHelpers.db.prepare(`
-      INSERT INTO payments (order_id, reseller_id, provider, external_id, amount, currency, status, metadata, created_at, updated_at)
-      VALUES (?, ?, 'NOWPAYMENTS', ?, ?, ?, 'pending', ?, ?, ?)
-    `).run(orderId, reseller.id, externalId, total, 'BRL', meta, now, now);
-
-    return res.json({
-      success: true,
-      order_id: Number(orderId),
-      order_code: orderCode,
-      total,
-      status: 'pending',
-      payment: {
-        provider: 'NOWPAYMENTS',
-        payment_url: (invoice && invoice.invoice_url) ? invoice.invoice_url : null,
-        invoice_id: externalId,
-        mock: !externalId
-      }
-    });
-  }
-
-  // PIX: instruções de pagamento (recarga manual no painel do revendedor)
-  await dbHelpers.db.prepare(`
-    INSERT INTO payments (order_id, reseller_id, provider, external_id, amount, currency, status, metadata, created_at, updated_at)
-    VALUES (?, ?, 'PIX', ?, ?, 'BRL', 'pending', ?, ?, ?)
-  `).run(orderId, reseller.id, null, total, JSON.stringify({ instructions: 'Pagar via PIX no painel do revendedor ou recarregar saldo' }), now, now);
-
+  const apiBase = (process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '');
   res.json({
     success: true,
-    order_id: Number(orderId),
-    order_code: orderCode,
-    total,
-    status: 'pending',
-    payment: {
-      provider: 'PIX',
-      mock: true,
-      instructions: 'Faça a recarga via PIX no painel do revendedor; o admin confirma e o pedido é entregue automaticamente.'
-    }
+    reseller: reseller.name,
+    reseller_id: reseller.id,
+    api_key: reseller.api_key,
+    api_base_url: apiBase,
+    generate_endpoint: `${apiBase}/api/v1/generate`,
+    sale_price: reseller.sale_price,
+    cost_per_link: reseller.cost_per_link
   });
 });
 
-// Consulta o status de um pedido pelo código
-app.get('/api/v1/orders/:order_code', resellerBotAuth, async (req, res) => {
-  const order = await dbHelpers.db.prepare('SELECT * FROM orders WHERE order_code = ? AND reseller_id = ?')
-    .get(String(req.params.order_code).toUpperCase(), req.reseller.id);
-  if (!order) return res.status(404).json({ success: false, error: 'Pedido não encontrado.' });
+// Renova a própria chave de API (a chave antiga é invalidada imediatamente)
+app.post('/api/v1/my-api/rotate', resellerBotAuth, async (req, res) => {
+  const reseller = req.reseller;
+  const newKey = 'rev_key_' + crypto.randomBytes(16).toString('hex');
+  await dbHelpers.db.prepare('UPDATE resellers SET api_key = ? WHERE id = ?').run(newKey, reseller.id);
   res.json({
     success: true,
-    order: {
-      id: Number(order.id),
-      order_code: order.order_code,
-      product_name: order.product_name,
-      total: parseFloat(order.total),
-      discount: parseFloat(order.discount),
-      coupon_code: order.coupon_code,
-      status: order.status,
-      token: order.token,
-      created_at: order.created_at
-    }
+    message: 'Chave de API renovada com sucesso! A chave antiga foi invalidada e os bots que a usavam precisam ser atualizados.',
+    api_key: newKey
   });
-});
-
-// Webhook do NOWPayments (confirma pagamento cripto e entrega o pedido)
-app.post('/api/webhooks/nowpayments', async (req, res) => {
-  const body = req.body || {};
-  const status = String(body.payment_status || body.status || '').toLowerCase();
-  const orderCode = String(body.order_id || body.orderCode || (body.metadata && body.metadata.order_code) || '').toUpperCase();
-
-  // Protocolo de verificação de IPN (v2): responder com o hash do payment_id
-  if (req.headers['x-nowpayments-sig'] && body.payment_id) {
-    return res.json({ status: 1 });
-  }
-
-  if (!orderCode || !['confirmed', 'finished'].includes(status)) {
-    return res.json({ status: 0 });
-  }
-
-  try {
-    const order = await dbHelpers.db.prepare('SELECT * FROM orders WHERE order_code = ?').get(orderCode);
-    if (!order) return res.status(404).json({ success: false, error: 'Pedido não encontrado.' });
-
-    await dbHelpers.db.prepare(`
-      UPDATE payments SET status = 'confirmed', external_id = ?, updated_at = ?
-      WHERE order_id = ? AND provider = 'NOWPAYMENTS'
-    `).run(body.payment_id ? String(body.payment_id) : null, new Date().toISOString(), order.id);
-
-    await dbHelpers.db.prepare("UPDATE orders SET status = 'paid', updated_at = ? WHERE id = ?")
-      .run(new Date().toISOString(), order.id);
-
-    const delivery = await deliverOrder(order.id);
-    return res.json({
-      status: 1,
-      success: true,
-      order_code: orderCode,
-      delivered: delivery.success,
-      reason: delivery.reason || null
-    });
-  } catch (e) {
-    dbHelpers.logError({ endpoint: '/api/webhooks/nowpayments', method: 'POST', statusCode: 500, errorType: 'WebhookError', message: e && e.message ? e.message : String(e), source: 'webhook' });
-    return res.status(500).json({ status: 0, success: false });
-  }
-});
-
-// ---------- ADMIN: PRODUTOS ----------
-app.get('/api/admin/products', adminAuth, async (req, res) => {
-  const products = await dbHelpers.db.prepare('SELECT * FROM products ORDER BY sort_order ASC, id ASC').all();
-  res.json({ success: true, data: products.map((p) => ({ ...p, id: Number(p.id), price: parseFloat(p.price || 0), cost_price: parseFloat(p.cost_price || 0) })) });
-});
-
-app.post('/api/admin/products', adminAuth, async (req, res) => {
-  const { name, description, price, cost_price, emoji, active, sort_order } = req.body;
-  if (!name || !name.trim()) return res.status(400).json({ success: false, error: 'Informe o nome do produto.' });
-  const cleanPrice = Math.max(0, parseFloat(price) || 0);
-  const cleanCost = Math.max(0, parseFloat(cost_price));
-  const now = new Date().toISOString();
-  const r = await dbHelpers.db.prepare(`
-    INSERT INTO products (name, description, price, cost_price, emoji, active, sort_order, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
-  `).run(
-    name.trim(),
-    description ? String(description).trim() : null,
-    cleanPrice,
-    cleanCost,
-    emoji || '🎁',
-    active === false || active === 0 ? 0 : 1,
-    parseInt(sort_order || '0', 10),
-    now
-  );
-  res.json({ success: true, message: 'Produto criado com sucesso!', id: Number(r.lastInsertRowid) });
-});
-
-app.put('/api/admin/products/:id', adminAuth, async (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  const existing = await dbHelpers.db.prepare('SELECT id FROM products WHERE id = ?').get(id);
-  if (!existing) return res.status(404).json({ success: false, error: 'Produto não encontrado.' });
-  const { name, description, price, cost_price, emoji, active, sort_order } = req.body;
-  await dbHelpers.db.prepare(`
-    UPDATE products SET name = ?, description = ?, price = ?, cost_price = ?, emoji = ?, active = ?, sort_order = ? WHERE id = ?
-  `).run(
-    name !== undefined ? String(name).trim() : existing.name,
-    description !== undefined ? String(description).trim() : existing.description,
-    price !== undefined ? Math.max(0, parseFloat(price) || 0) : existing.price,
-    cost_price !== undefined ? Math.max(0, parseFloat(cost_price) || 0) : existing.cost_price,
-    emoji !== undefined ? (emoji || '🎁') : existing.emoji,
-    active !== undefined ? (active === false || active === 0 ? 0 : 1) : existing.active,
-    sort_order !== undefined ? parseInt(sort_order || '0', 10) : existing.sort_order
-  );
-  res.json({ success: true, message: 'Produto atualizado com sucesso!' });
-});
-
-app.delete('/api/admin/products/:id', adminAuth, async (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  await dbHelpers.db.prepare('UPDATE products SET active = 0 WHERE id = ?').run(id);
-  res.json({ success: true, message: 'Produto desativado com sucesso.' });
-});
-
-// ---------- ADMIN: CUPONS ----------
-app.get('/api/admin/coupons', adminAuth, async (req, res) => {
-  const coupons = await dbHelpers.db.prepare('SELECT * FROM coupons ORDER BY id DESC').all();
-  res.json({ success: true, data: coupons.map((c) => ({ ...c, id: Number(c.id) })) });
-});
-
-app.post('/api/admin/coupons', adminAuth, async (req, res) => {
-  const { code, discount_type, discount_value, max_uses, valid_until, active } = req.body;
-  const cleanCode = code ? String(code).trim().toUpperCase().replace(/\s+/g, '') : '';
-  if (!cleanCode) return res.status(400).json({ success: false, error: 'Informe o código do cupom.' });
-  const value = parseFloat(discount_value);
-  if (isNaN(value) || value <= 0) return res.status(400).json({ success: false, error: 'Valor de desconto inválido.' });
-  if (discount_type === 'percent' && value > 100) return res.status(400).json({ success: false, error: 'Desconto percentual não pode passar de 100%.' });
-  const dup = await dbHelpers.db.prepare('SELECT id FROM coupons WHERE code = ?').get(cleanCode);
-  if (dup) return res.status(400).json({ success: false, error: 'Já existe um cupom com este código.' });
-  const now = new Date().toISOString();
-  const r = await dbHelpers.db.prepare(`
-    INSERT INTO coupons (code, discount_type, discount_value, max_uses, used_count, valid_until, active, created_at)
-    VALUES (?, ?, ?, ?, 0, ?, ?, ?) RETURNING id
-  `).run(
-    cleanCode,
-    discount_type === 'fixed' ? 'fixed' : 'percent',
-    value,
-    Math.max(0, parseInt(max_uses || '0', 10)),
-    valid_until ? new Date(valid_until).toISOString() : null,
-    active === false || active === 0 ? 0 : 1,
-    now
-  );
-  res.json({ success: true, message: `Cupom ${cleanCode} criado com sucesso!`, id: Number(r.lastInsertRowid) });
-});
-
-app.put('/api/admin/coupons/:id', adminAuth, async (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  const existing = await dbHelpers.db.prepare('SELECT * FROM coupons WHERE id = ?').get(id);
-  if (!existing) return res.status(404).json({ success: false, error: 'Cupom não encontrado.' });
-  const { code, discount_type, discount_value, max_uses, valid_until, active } = req.body;
-  let cleanCode = existing.code;
-  if (code !== undefined) {
-    cleanCode = String(code).trim().toUpperCase().replace(/\s+/g, '');
-    if (!cleanCode) return res.status(400).json({ success: false, error: 'Código inválido.' });
-    const dup = await dbHelpers.db.prepare('SELECT id FROM coupons WHERE code = ? AND id != ?').get(cleanCode, id);
-    if (dup) return res.status(400).json({ success: false, error: 'Código já em uso por outro cupom.' });
-  }
-  const value = discount_value !== undefined ? parseFloat(discount_value) : existing.discount_value;
-  if (isNaN(value) || value <= 0) return res.status(400).json({ success: false, error: 'Valor de desconto inválido.' });
-  await dbHelpers.db.prepare(`
-    UPDATE coupons SET code = ?, discount_type = ?, discount_value = ?, max_uses = ?, valid_until = ?, active = ? WHERE id = ?
-  `).run(
-    cleanCode,
-    discount_type !== undefined ? (discount_type === 'fixed' ? 'fixed' : 'percent') : existing.discount_type,
-    value,
-    max_uses !== undefined ? Math.max(0, parseInt(max_uses || '0', 10)) : existing.max_uses,
-    valid_until !== undefined ? (valid_until ? new Date(valid_until).toISOString() : null) : existing.valid_until,
-    active !== undefined ? (active === false || active === 0 ? 0 : 1) : existing.active
-  );
-  res.json({ success: true, message: 'Cupom atualizado com sucesso!' });
-});
-
-app.delete('/api/admin/coupons/:id', adminAuth, async (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  await dbHelpers.db.prepare('UPDATE coupons SET active = 0 WHERE id = ?').run(id);
-  res.json({ success: true, message: 'Cupom desativado.' });
-});
-
-// ---------- ADMIN: PEDIDOS E PAGAMENTOS (FINANCEIRO) ----------
-app.get('/api/admin/orders', adminAuth, async (req, res) => {
-  const status = req.query.status;
-  const limit = Math.min(parseInt(req.query.limit || '100', 10), 300);
-  let query = `
-    SELECT o.*, r.name as reseller_name
-    FROM orders o
-    LEFT JOIN resellers r ON r.id = o.reseller_id
-  `;
-  const params = [];
-  if (status) {
-    query += ' WHERE o.status = ?';
-    params.push(status);
-  }
-  query += ' ORDER BY o.id DESC LIMIT ?';
-  params.push(limit);
-  const orders = await dbHelpers.db.prepare(query).all(...params);
-  res.json({ success: true, data: orders.map((o) => ({ ...o, id: Number(o.id), total: parseFloat(o.total), unit_price: parseFloat(o.unit_price), discount: parseFloat(o.discount) })) });
-});
-
-app.post('/api/admin/orders/:id/status', adminAuth, async (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  const { status } = req.body;
-  const allowed = ['pending', 'paid', 'delivered', 'cancelled'];
-  if (!allowed.includes(status)) return res.status(400).json({ success: false, error: 'Status inválido.' });
-  const order = await dbHelpers.db.prepare('SELECT * FROM orders WHERE id = ?').get(id);
-  if (!order) return res.status(404).json({ success: false, error: 'Pedido não encontrado.' });
-
-  await dbHelpers.db.prepare('UPDATE orders SET status = ?, updated_at = ? WHERE id = ?')
-    .run(status, new Date().toISOString(), id);
-
-  // Ao marcar como entregue sem token, tenta gerar o link automaticamente
-  if (status === 'delivered' && !order.token) {
-    const delivery = await deliverOrder(id);
-    if (!delivery.success) {
-      return res.json({
-        success: true,
-        message: `Pedido marcado como ${status}. Entrega automática falhou: ${delivery.reason === 'saldo_insuficiente' ? 'saldo insuficiente do revendedor' : delivery.reason}.`,
-        delivery: delivery.reason
-      });
-    }
-    return res.json({ success: true, message: 'Pedido marcado como entregue e link gerado automaticamente!', delivered: true });
-  }
-
-  res.json({ success: true, message: `Pedido #${order.order_code} atualizado para ${status}.` });
-});
-
-app.get('/api/admin/payments', adminAuth, async (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit || '100', 10), 300);
-  const payments = await dbHelpers.db.prepare(`
-    SELECT p.*, o.order_code, o.product_name, r.name as reseller_name
-    FROM payments p
-    JOIN orders o ON o.id = p.order_id
-    LEFT JOIN resellers r ON r.id = p.reseller_id
-    ORDER BY p.id DESC LIMIT ?
-  `).all(limit);
-  res.json({ success: true, data: payments.map((p) => ({ ...p, id: Number(p.id), amount: parseFloat(p.amount) })) });
-});
-
-// ---------- REVENDEDOR: PEDIDOS ----------
-app.get('/api/reseller/orders', resellerUserAuth, async (req, res) => {
-  const orders = await dbHelpers.db.prepare(`
-    SELECT * FROM orders WHERE reseller_id = ? ORDER BY id DESC LIMIT 100
-  `).all(req.reseller.id);
-  res.json({ success: true, data: orders.map((o) => ({ ...o, id: Number(o.id), total: parseFloat(o.total), unit_price: parseFloat(o.unit_price), discount: parseFloat(o.discount) })) });
-});
-
-app.post('/api/reseller/orders/:id/cancel', resellerUserAuth, async (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  const order = await dbHelpers.db.prepare('SELECT * FROM orders WHERE id = ? AND reseller_id = ?').get(id, req.reseller.id);
-  if (!order) return res.status(404).json({ success: false, error: 'Pedido não encontrado.' });
-  if (order.status !== 'pending') return res.status(400).json({ success: false, error: 'Apenas pedidos pendentes podem ser cancelados.' });
-  await dbHelpers.db.prepare("UPDATE orders SET status = 'cancelled', updated_at = ? WHERE id = ?")
-    .run(new Date().toISOString(), id);
-  res.json({ success: true, message: `Pedido #${order.order_code} cancelado.` });
 });
 
 // ==========================================
@@ -1675,70 +2903,22 @@ app.delete('/api/admin/resellers/:id', adminAuth, async (req, res) => {
 // Relatório Global de Vendas de Todos os Revendedores
 app.get('/api/admin/all-sales', adminAuth, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || '100', 10), 200);
-  const q = (req.query.q || '').toString().trim();
 
-  let sql = `
+  const sales = await dbHelpers.db.prepare(`
     SELECT 
       s.id, s.token, s.target_url, s.customer_name, s.customer_id, s.customer_contact, 
+      s.product, s.product_id, s.coupon_id, s.discount,
       s.sale_price, s.cost_price, s.profit, s.delivery_status, s.created_at,
-      r.name as reseller_name, r.email as reseller_email
+      r.name as reseller_name, r.email as reseller_email,
+      pi.type AS delivered_type, pi.login AS delivered_login, pi.password AS delivered_password, pi.content AS delivered_content
     FROM sales s
     JOIN resellers r ON s.reseller_id = r.id
-  `;
-  const params = [];
-  if (q) {
-    // Escapa metas LIKE (% _ !) e usa ESCAPE '!' (compatível com SQLite e PostgreSQL)
-    const term = q.replace(/([%_!])/g, '!$1');
-    const like = `%${term}%`;
-    sql += ` WHERE LOWER(s.token) LIKE LOWER(?) ESCAPE '!'
-        OR LOWER(s.customer_name) LIKE LOWER(?) ESCAPE '!'
-        OR LOWER(s.customer_id) LIKE LOWER(?) ESCAPE '!'
-        OR LOWER(s.customer_contact) LIKE LOWER(?) ESCAPE '!'
-        OR LOWER(r.name) LIKE LOWER(?) ESCAPE '!'
-        OR LOWER(r.email) LIKE LOWER(?) ESCAPE '!'`;
-    params.push(like, like, like, like, like, like);
-  }
-  sql += ` ORDER BY s.id DESC
-    LIMIT ?`;
-  params.push(limit);
-
-  const sales = await dbHelpers.db.prepare(sql).all(...params);
+    LEFT JOIN product_items pi ON pi.sale_id = s.id
+    ORDER BY s.id DESC
+    LIMIT ?
+  `).all(limit);
 
   res.json({ success: true, data: sales });
-});
-
-// Clientes Globais (agrupados a partir das vendas) com busca por ID, nome ou contato
-app.get('/api/admin/customers', adminAuth, async (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit || '100', 10), 200);
-  const q = (req.query.q || '').toString().trim();
-
-  let sql = `
-    SELECT
-      s.customer_id,
-      s.customer_name,
-      s.customer_contact,
-      COUNT(*) AS purchase_count,
-      SUM(COALESCE(s.sale_price, 0)) AS total_spent,
-      MAX(s.created_at) AS last_purchase
-    FROM sales s
-  `;
-  const params = [];
-  if (q) {
-    const term = q.replace(/([%_!])/g, '!$1');
-    const like = `%${term}%`;
-    sql += ` WHERE LOWER(s.customer_name) LIKE LOWER(?) ESCAPE '!'
-        OR LOWER(s.customer_id) LIKE LOWER(?) ESCAPE '!'
-        OR LOWER(s.customer_contact) LIKE LOWER(?) ESCAPE '!'`;
-    params.push(like, like, like);
-  }
-  sql += ` GROUP BY s.customer_id, s.customer_name, s.customer_contact
-    ORDER BY last_purchase DESC
-    LIMIT ?`;
-  params.push(limit);
-
-  const customers = await dbHelpers.db.prepare(sql).all(...params);
-
-  res.json({ success: true, data: customers });
 });
 
 // Logs de Erros
@@ -1843,9 +3023,18 @@ dbHelpers.initDb()
     }
     app.listen(PORT, () => {
       console.log(`===================================================`);
+
+      // Copia foto + bio do bot de vendas para o bot de alertas (uma vez por boot)
+      syncTelegramProfile();
+
+      // Ping de ativação do sistema de alertas (assim que o servidor subir)
+      if (NOTIFIER_BOT_TOKEN && NOTIFY_CHAT_ID) {
+        notifyNewSale({ startup: true }).catch((err) => console.error('Ping de ativação de alertas falhou:', err.message));
+      } else {
+        console.log('🔕 Alertas de venda desativados — defina NOTIFIER_BOT_TOKEN e NOTIFY_CHAT_ID.');
+      }
       console.log(`🚀 Quantum Link Generator rodando na porta ${PORT}`);
       console.log(`🔗 Gerador Público:       http://localhost:${PORT}`);
-      console.log(`💼 Portal do Revendedor:  http://localhost:${PORT}/revendedor.html`);
       console.log(`🛡️  Painel Admin:           http://localhost:${PORT}/admin.html`);
       console.log(`🤖 API para Bots:          http://localhost:${PORT}/api/v1/generate`);
       console.log(`🗄️  Banco de dados:         ${dbHelpers.getBackend()}`);

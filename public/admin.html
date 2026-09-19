@@ -83,19 +83,11 @@
           </button>
           <button data-tab="products" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
             <i data-lucide="package" class="w-4 h-4 text-amber-400"></i>
-            <span>Produtos</span>
+            <span>Catálogo de Produtos</span>
           </button>
           <button data-tab="coupons" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
-            <i data-lucide="badge-percent" class="w-4 h-4 text-fuchsia-400"></i>
+            <i data-lucide="ticket-percent" class="w-4 h-4 text-pink-400"></i>
             <span>Cupons de Desconto</span>
-          </button>
-          <button data-tab="orders" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
-            <i data-lucide="clipboard-list" class="w-4 h-4 text-sky-400"></i>
-            <span>Pedidos</span>
-          </button>
-          <button data-tab="payments" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
-            <i data-lucide="credit-card" class="w-4 h-4 text-teal-400"></i>
-            <span>Pagamentos</span>
           </button>
           <button data-tab="error-logs" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
             <i data-lucide="alert-triangle" class="w-4 h-4 text-rose-400"></i>
@@ -114,10 +106,6 @@
 
       <!-- Bottom Profile / Logout -->
       <div class="p-4 border-t border-white/5 space-y-2">
-        <a href="./revendedor.html" target="_blank" class="flex items-center justify-center gap-2 w-full py-2 bg-indigo-950/50 hover:bg-indigo-900/60 text-indigo-300 text-xs font-semibold rounded-lg border border-indigo-500/20 transition-colors">
-          <i data-lucide="user-check" class="w-3.5 h-3.5"></i>
-          <span>Portal do Revendedor</span>
-        </a>
         <a href="./" target="_blank" class="flex items-center justify-center gap-2 w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg border border-white/10 transition-colors">
           <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
           <span>Gerador Público</span>
@@ -278,47 +266,32 @@
           </div>
         </div>
 
-<!-- ============================================== -->
-        <!-- TAB 3: VENDAS & CLIENTES (GLOBAL) — sub-abas + lupa -->
+        <!-- ============================================== -->
+        <!-- TAB 3: TODAS AS VENDAS & CLIENTES (GLOBAL) -->
         <!-- ============================================== -->
         <div id="tab-all-sales" class="tab-content hidden space-y-6">
           <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div>
-              <h2 class="text-xl font-black text-white">Vendas & Clientes Globais</h2>
-              <p class="text-xs text-slate-400">Histórico de vendas realizadas pelos bots e lista de clientes finais, com busca por código, ID ou nome.</p>
+              <h2 class="text-xl font-black text-white">Histórico Geral de Vendas para Clientes</h2>
+              <p class="text-xs text-slate-400">Visualização de todos os clientes finais que compraram links em qualquer bot de revenda.</p>
             </div>
             <button id="btn-refresh-all-sales" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5">
               <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-indigo-400"></i>
-              <span>Atualizar</span>
+              <span>Atualizar Vendas</span>
             </button>
           </div>
 
-          <div class="glass-panel !p-3 flex flex-col sm:flex-row sm:items-center gap-3">
-            <div class="flex items-center gap-1 bg-slate-900/80 rounded-xl p-1 border border-white/10 w-fit">
-              <button id="btn-section-sales" data-section="sales" class="section-btn text-white bg-indigo-600/30 border border-indigo-500/40 px-4 py-1.5 rounded-lg text-xs font-bold transition-all">
-                <i data-lucide="shopping-cart" class="w-3.5 h-3.5 inline -mt-0.5 mr-1"></i>Vendas
-              </button>
-              <button id="btn-section-customers" data-section="customers" class="section-btn text-slate-400 px-4 py-1.5 rounded-lg text-xs font-bold transition-all">
-                <i data-lucide="users" class="w-3.5 h-3.5 inline -mt-0.5 mr-1"></i>Clientes
-              </button>
-            </div>
-            <div class="relative flex-1 min-w-[220px]">
-              <i data-lucide="search" class="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"></i>
-              <input id="input-section-search" type="text" placeholder="Buscar venda por código, cliente ou revendedor..."
-                class="w-full bg-slate-900/80 text-xs text-slate-200 placeholder-slate-500 pl-9 pr-3 py-2 rounded-xl border border-white/10 focus:border-indigo-500/50 focus:outline-none" />
-            </div>
-          </div>
-
-          <div id="section-sales" class="glass-panel overflow-hidden">
+          <div class="glass-panel overflow-hidden">
             <div class="overflow-x-auto">
               <table class="w-full text-left text-xs">
                 <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
                   <tr>
-                    <th class="px-5 py-3">Código / Token</th>
                     <th class="px-5 py-3">Revendedor / Bot</th>
                     <th class="px-5 py-3">Cliente Final</th>
                     <th class="px-5 py-3">Link Entregue</th>
+                    <th class="px-5 py-3">Produto</th>
                     <th class="px-5 py-3">Valor Pago</th>
+                    <th class="px-5 py-3">Desconto</th>
                     <th class="px-5 py-3">Lucro Revenda</th>
                     <th class="px-5 py-3">Entrega</th>
                     <th class="px-5 py-3">Data e Hora</th>
@@ -330,45 +303,90 @@
               </table>
             </div>
           </div>
-
-          <div id="section-customers" class="glass-panel overflow-hidden hidden">
-            <div class="overflow-x-auto">
-              <table class="w-full text-left text-xs">
-                <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
-                  <tr>
-                    <th class="px-5 py-3">Cliente</th>
-                    <th class="px-5 py-3">ID / Contato</th>
-                    <th class="px-5 py-3">Compras</th>
-                    <th class="px-5 py-3">Total Gasto</th>
-                    <th class="px-5 py-3">Última Compra</th>
-                  </tr>
-                </thead>
-                <tbody id="customers-table-body" class="divide-y divide-white/5">
-                  <!-- JS Data -->
-                </tbody>
-              </table>
-            </div>
-          </div>
         </div>
 
         <!-- ============================================== -->
-        <!-- TAB 4.5: PRODUTOS -->
+        <!-- TAB: CATALOGO DE PRODUTOS -->
         <!-- ============================================== -->
         <div id="tab-products" class="tab-content hidden space-y-6">
           <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div>
-              <h2 class="text-xl font-black text-white">Produtos da Loja</h2>
-              <p class="text-xs text-slate-400">Produtos vendidos pelos bots dos revendedores. O lucro de cada revendedor é calculado sobre o preço de custo.</p>
+              <h2 class="text-xl font-black text-white">Catálogo de Produtos</h2>
+              <p class="text-xs text-slate-400">Produtos vendidos pelos revendedores. O custo define o débito do saldo; o preço pode ser fixo ou margem sobre o custo.</p>
             </div>
-            <div class="flex items-center gap-2">
-              <button id="btn-refresh-products" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5">
-                <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-indigo-400"></i>
-                <span>Atualizar</span>
-              </button>
-              <button id="btn-new-product" class="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow flex items-center gap-1.5">
-                <i data-lucide="plus" class="w-3.5 h-3.5"></i>
-                <span>Novo Produto</span>
-              </button>
+            <button id="btn-new-product" class="px-3.5 py-2 bg-amber-600 hover:bg-amber-500 text-xs font-bold text-white rounded-xl border border-amber-400/30 flex items-center gap-1.5">
+              <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+              <span>Novo Produto</span>
+            </button>
+          </div>
+
+          <div id="product-form-card" class="glass-panel p-5 hidden space-y-4 border border-amber-500/30">
+            <h3 class="text-sm font-black text-amber-300 uppercase tracking-wider" id="product-form-title">Novo Produto</h3>
+            <input type="hidden" id="product-id">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Nome *</label>
+                <input type="text" id="product-name" required placeholder="Ex: Spotify Premium" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500">
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Descrição</label>
+                <input type="text" id="product-description" placeholder="Ex: 1 mês de assinatura" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500">
+              </div>
+              <div class="sm:col-span-2">
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Link de Destino (opcional)</label>
+                <input type="url" id="product-target-url" placeholder="Ex: https://www.spotify.com/br-pt/referral/..." class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500">
+                <p class="text-[10px] text-slate-500 mt-1">Para onde o cliente é redirecionado após a ativação. Vazio = usa o link padrão das Configurações.</p>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Custo (R$) *</label>
+                <input type="number" step="0.01" id="product-cost" required placeholder="Ex: 2.99" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500">
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Tipo de Preço *</label>
+                <select id="product-price-type" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500">
+                  <option value="fixed">Preço fixo de venda</option>
+                  <option value="margin">Margem (%) sobre o custo</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Preço de Venda (R$) ou Margem (%) *</label>
+                <input type="number" step="0.01" id="product-price-value" required placeholder="Ex: 15.00 ou 400" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500">
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Estoque (opcional)</label>
+                <input type="number" min="0" step="1" id="product-stock" placeholder="Vazio = ilimitado. 0 = esgotado." class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500">
+                <p class="text-[10px] text-slate-500 mt-1">Quantas unidades podem ser vendidas. Deixe vazio para estoque ilimitado.</p>
+                <p class="text-[10px] text-emerald-400/80 mt-1" id="product-stock-hint"></p>
+              </div>
+              <div class="sm:col-span-2">
+                <div class="flex items-center gap-2">
+                  <label class="block text-xs font-semibold text-emerald-300 uppercase tracking-wider">📦 Itens do Estoque (Contas / Links)</label>
+                </div>
+                <p class="text-[10px] text-slate-500 mt-1">Cada item vale 1 unidade vendável. <b class="text-emerald-400">Contas:</b> escreva <code class="text-amber-300">login:senha</code> (ou <code class="text-amber-300">login|senha</code>) — 1 por linha. <b class="text-emerald-400">Links:</b> 1 link por linha. O estoque do produto é atualizado automaticamente com a quantidade de itens.</p>
+                <div class="flex flex-col sm:flex-row gap-2 mt-2">
+                  <select id="product-items-type" class="px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-emerald-500 w-full sm:w-40">
+                    <option value="account">Contas (login:senha)</option>
+                    <option value="link">Links</option>
+                  </select>
+                  <input type="hidden" id="product-items-product-id">
+                  <textarea id="product-items-lines" rows="4" placeholder="Contas:&#10;exemplo@gmail.com:senha123&#10;outro@email.com|outrasenha&#10;&#10;ou Links:&#10;https://exemplo.com/acesso/1&#10;https://exemplo.com/acesso/2" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-emerald-500 font-mono"></textarea>
+                </div>
+                <div class="flex items-center gap-2 mt-2">
+                  <button id="btn-add-product-items" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white rounded-xl">➕ ADICIONAR ITENS</button>
+                  <span id="product-items-status" class="text-[11px] text-slate-400"></span>
+                </div>
+                <div id="product-items-list" class="mt-3 space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                  <!-- Itens carregados via JS -->
+                </div>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Ordem de Exibição</label>
+                <input type="number" id="product-sort-order" value="0" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500">
+              </div>
+            </div>
+            <div class="flex items-center gap-2 pt-1">
+              <button id="btn-save-product" class="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-xs font-bold text-white rounded-xl">SALVAR PRODUTO</button>
+              <button id="btn-cancel-product" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10">CANCELAR</button>
             </div>
           </div>
 
@@ -378,15 +396,16 @@
                 <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
                   <tr>
                     <th class="px-5 py-3">Produto</th>
-                    <th class="px-5 py-3">Preço Venda</th>
                     <th class="px-5 py-3">Custo</th>
-                    <th class="px-5 py-3">Lucro</th>
+                    <th class="px-5 py-3">Preço de Venda</th>
+                    <th class="px-5 py-3">Margem</th>
+                    <th class="px-5 py-3">Estoque</th>
+                    <th class="px-5 py-3">Itens</th>
                     <th class="px-5 py-3">Status</th>
-                    <th class="px-5 py-3">Criado em</th>
                     <th class="px-5 py-3">Ações</th>
                   </tr>
                 </thead>
-                <tbody id="products-body" class="divide-y divide-white/5">
+                <tbody id="products-table-body" class="divide-y divide-white/5">
                   <!-- JS Data -->
                 </tbody>
               </table>
@@ -395,23 +414,57 @@
         </div>
 
         <!-- ============================================== -->
-        <!-- TAB 4.6: CUPONS DE DESCONTO -->
+        <!-- TAB: CUPONS DE DESCONTO -->
         <!-- ============================================== -->
         <div id="tab-coupons" class="tab-content hidden space-y-6">
           <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div>
               <h2 class="text-xl font-black text-white">Cupons de Desconto</h2>
-              <p class="text-xs text-slate-400">Cupons aplicados nos pedidos dos bots. Percentuais ou valores fixos em Reais.</p>
+              <p class="text-xs text-slate-400">Cupons aplicados automaticamente nas vendas (bot e painel) quando o cliente informa o código.</p>
             </div>
-            <div class="flex items-center gap-2">
-              <button id="btn-refresh-coupons" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5">
-                <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-indigo-400"></i>
-                <span>Atualizar</span>
-              </button>
-              <button id="btn-new-coupon" class="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow flex items-center gap-1.5">
-                <i data-lucide="plus" class="w-3.5 h-3.5"></i>
-                <span>Novo Cupom</span>
-              </button>
+            <button id="btn-new-coupon" class="px-3.5 py-2 bg-pink-600 hover:bg-pink-500 text-xs font-bold text-white rounded-xl border border-pink-400/30 flex items-center gap-1.5">
+              <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+              <span>Novo Cupom</span>
+            </button>
+          </div>
+
+          <div id="coupon-form-card" class="glass-panel p-5 hidden space-y-4 border border-pink-500/30">
+            <h3 class="text-sm font-black text-pink-300 uppercase tracking-wider" id="coupon-form-title">Novo Cupom</h3>
+            <input type="hidden" id="coupon-id">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Código *</label>
+                <input type="text" id="coupon-code" required placeholder="Ex: BEMVINDO10" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-pink-500 uppercase">
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Tipo *</label>
+                <select id="coupon-type" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-pink-500">
+                  <option value="percent">Percentual (%)</option>
+                  <option value="fixed">Valor fixo (R$)</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Valor *</label>
+                <input type="number" step="0.01" id="coupon-value" required placeholder="Ex: 10 ou 5.00" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-pink-500">
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Limite de Usos (0 = ilimitado)</label>
+                <input type="number" id="coupon-max-uses" value="0" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-pink-500">
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Expira em (opcional)</label>
+                <input type="date" id="coupon-expires-at" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-pink-500">
+              </div>
+              <div class="flex items-end pb-2">
+                <label class="flex items-center gap-2 text-xs font-semibold text-slate-300 cursor-pointer">
+                  <input type="checkbox" id="coupon-active" checked class="w-4 h-4 accent-pink-500">
+                  Cupom ativo
+                </label>
+              </div>
+            </div>
+            <div class="flex items-center gap-2 pt-1">
+              <button id="btn-save-coupon" class="px-4 py-2 bg-pink-600 hover:bg-pink-500 text-xs font-bold text-white rounded-xl">SALVAR CUPOM</button>
+              <button id="btn-cancel-coupon" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10">CANCELAR</button>
             </div>
           </div>
 
@@ -421,7 +474,6 @@
                 <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
                   <tr>
                     <th class="px-5 py-3">Código</th>
-                    <th class="px-5 py-3">Tipo</th>
                     <th class="px-5 py-3">Desconto</th>
                     <th class="px-5 py-3">Usos</th>
                     <th class="px-5 py-3">Expira</th>
@@ -429,84 +481,7 @@
                     <th class="px-5 py-3">Ações</th>
                   </tr>
                 </thead>
-                <tbody id="coupons-body" class="divide-y divide-white/5">
-                  <!-- JS Data -->
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-
-        <!-- ============================================== -->
-        <!-- TAB 4.7: PEDIDOS -->
-        <!-- ============================================== -->
-        <div id="tab-orders" class="tab-content hidden space-y-6">
-          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-            <div>
-              <h2 class="text-xl font-black text-white">Pedidos</h2>
-              <p class="text-xs text-slate-400">Todos os pedidos gerados pelos bot. Altere o status e a entrega automática do link acontece quando marcado como entregue.</p>
-            </div>
-            <button id="btn-refresh-orders-admin" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5">
-              <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-indigo-400"></i>
-              <span>Atualizar</span>
-            </button>
-          </div>
-
-          <div class="glass-panel overflow-hidden">
-            <div class="overflow-x-auto">
-              <table class="w-full text-left text-xs">
-                <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
-                  <tr>
-                    <th class="px-5 py-3">Pedido</th>
-                    <th class="px-5 py-3">Produto</th>
-                    <th class="px-5 py-3">Cliente</th>
-                    <th class="px-5 py-3">Revendedor</th>
-                    <th class="px-5 py-3">Total</th>
-                    <th class="px-5 py-3">Pagamento</th>
-                    <th class="px-5 py-3">Status</th>
-                    <th class="px-5 py-3">Data</th>
-                    <th class="px-5 py-3">Entrega</th>
-                  </tr>
-                </thead>
-                <tbody id="orders-body" class="divide-y divide-white/5">
-                  <!-- JS Data -->
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-
-        <!-- ============================================== -->
-        <!-- TAB 4.8: PAGAMENTOS -->
-        <!-- ============================================== -->
-        <div id="tab-payments" class="tab-content hidden space-y-6">
-          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-            <div>
-              <h2 class="text-xl font-black text-white">Pagamentos</h2>
-              <p class="text-xs text-slate-400">Transações de pagamento registradas (PIX e provedores externos). Leitura apenas.</p>
-            </div>
-            <button id="btn-refresh-payments" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5">
-              <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-indigo-400"></i>
-              <span>Atualizar</span>
-            </button>
-          </div>
-
-          <div class="glass-panel overflow-hidden">
-            <div class="overflow-x-auto">
-              <table class="w-full text-left text-xs">
-                <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
-                  <tr>
-                    <th class="px-5 py-3">ID</th>
-                    <th class="px-5 py-3">Pedido</th>
-                    <th class="px-5 py-3">Produto</th>
-                    <th class="px-5 py-3">Revendedor</th>
-                    <th class="px-5 py-3">Provedor</th>
-                    <th class="px-5 py-3">Valor</th>
-                    <th class="px-5 py-3">Status</th>
-                    <th class="px-5 py-3">Data</th>
-                  </tr>
-                </thead>
-                <tbody id="payments-body" class="divide-y divide-white/5">
+                <tbody id="coupons-table-body" class="divide-y divide-white/5">
                   <!-- JS Data -->
                 </tbody>
               </table>

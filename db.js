@@ -169,6 +169,7 @@ const SQLITE_DDL = `
     customer_name TEXT,
     customer_id TEXT,
     customer_contact TEXT,
+    product TEXT DEFAULT 'Spotify Premium',
     sale_price REAL DEFAULT 15.00,
     cost_price REAL DEFAULT 2.99,
     profit REAL DEFAULT 12.01,
@@ -186,6 +187,20 @@ const SQLITE_DDL = `
     created_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS mp_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    payment_id TEXT UNIQUE,
+    preference_id TEXT,
+    external_reference TEXT UNIQUE,
+    reseller_id INTEGER NOT NULL,
+    amount REAL NOT NULL,
+    status TEXT DEFAULT 'pending',
+    payment_method TEXT DEFAULT 'Mercado Pago',
+    processed INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS generations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     token TEXT UNIQUE NOT NULL,
@@ -196,6 +211,46 @@ const SQLITE_DDL = `
     created_at TEXT NOT NULL,
     expires_at TEXT,
     status TEXT DEFAULT 'active'
+  );
+
+  CREATE TABLE IF NOT EXISTS products (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    target_url TEXT,
+    cost_price REAL DEFAULT 0.00,
+    price_type TEXT DEFAULT 'fixed',
+    price_value REAL DEFAULT 0.00,
+    active INTEGER DEFAULT 1,
+    sort_order INTEGER DEFAULT 0,
+    stock INTEGER,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS product_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id INTEGER NOT NULL,
+    type TEXT NOT NULL DEFAULT 'account',
+    login TEXT,
+    password TEXT,
+    content TEXT,
+    status TEXT NOT NULL DEFAULT 'available',
+    sale_id INTEGER,
+    sold_at TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_product_items_product ON product_items(product_id, status);
+
+  CREATE TABLE IF NOT EXISTS coupons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT UNIQUE NOT NULL,
+    type TEXT DEFAULT 'percent',
+    value REAL NOT NULL,
+    max_uses INTEGER DEFAULT 0,
+    used_count INTEGER DEFAULT 0,
+    expires_at TEXT,
+    active INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS error_logs (
@@ -308,6 +363,7 @@ const POSTGRES_DDL = `
     customer_name TEXT,
     customer_id TEXT,
     customer_contact TEXT,
+    product TEXT DEFAULT 'Spotify Premium',
     sale_price DOUBLE PRECISION DEFAULT 15.00,
     cost_price DOUBLE PRECISION DEFAULT 2.99,
     profit DOUBLE PRECISION DEFAULT 12.01,
@@ -325,6 +381,20 @@ const POSTGRES_DDL = `
     created_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS mp_payments (
+    id BIGSERIAL PRIMARY KEY,
+    payment_id TEXT UNIQUE,
+    preference_id TEXT,
+    external_reference TEXT UNIQUE,
+    reseller_id INTEGER NOT NULL,
+    amount DOUBLE PRECISION NOT NULL,
+    status TEXT DEFAULT 'pending',
+    payment_method TEXT DEFAULT 'Mercado Pago',
+    processed INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS generations (
     id BIGSERIAL PRIMARY KEY,
     token TEXT UNIQUE NOT NULL,
@@ -335,6 +405,46 @@ const POSTGRES_DDL = `
     created_at TEXT NOT NULL,
     expires_at TEXT,
     status TEXT DEFAULT 'active'
+  );
+
+  CREATE TABLE IF NOT EXISTS products (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    target_url TEXT,
+    cost_price DOUBLE PRECISION DEFAULT 0.00,
+    price_type TEXT DEFAULT 'fixed',
+    price_value DOUBLE PRECISION DEFAULT 0.00,
+    active INTEGER DEFAULT 1,
+    sort_order INTEGER DEFAULT 0,
+    stock INTEGER,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS product_items (
+    id BIGSERIAL PRIMARY KEY,
+    product_id BIGINT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'account',
+    login TEXT,
+    password TEXT,
+    content TEXT,
+    status TEXT NOT NULL DEFAULT 'available',
+    sale_id BIGINT,
+    sold_at TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_product_items_product ON product_items(product_id, status);
+
+  CREATE TABLE IF NOT EXISTS coupons (
+    id BIGSERIAL PRIMARY KEY,
+    code TEXT UNIQUE NOT NULL,
+    type TEXT DEFAULT 'percent',
+    value DOUBLE PRECISION NOT NULL,
+    max_uses INTEGER DEFAULT 0,
+    used_count INTEGER DEFAULT 0,
+    expires_at TEXT,
+    active INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS error_logs (
@@ -418,7 +528,23 @@ const EXTRA_COLUMNS = {
     'phone TEXT',
     'blocked INTEGER DEFAULT 0',
     'sale_price DOUBLE PRECISION DEFAULT 15.00',
-    'cost_per_link DOUBLE PRECISION DEFAULT 2.99'
+    'cost_per_link DOUBLE PRECISION DEFAULT 2.99',
+    // ID de perfil do Telegram: une a conta do site com o bot (saldo único)
+    'telegram_id TEXT'
+  ],
+  sales: [
+    // Produto vendido (ex.: Spotify Premium) — usado no menu Minhas Compras do bot
+    "product TEXT DEFAULT 'Spotify Premium'",
+    "product_id INTEGER",
+    "coupon_id INTEGER",
+    "discount DOUBLE PRECISION DEFAULT 0"
+  ],
+  products: [
+    // Destino do link de ativação do produto (ex.: link de referência do Spotify).
+    // Vazio = usa o target_link global das Configurações.
+    'target_url TEXT',
+    // Estoque do produto. NULL = ilimitado, 0 = esgotado. Decrementado a cada venda.
+    'stock INTEGER'
   ]
 };
 
@@ -595,14 +721,16 @@ const helpers = {
     }
   },
 
-  async generateLink(generatedBy, resellerId = null, ip = '127.0.0.1') {
+  async generateLink(generatedBy, resellerId = null, ip = '127.0.0.1', productTargetUrl = null) {
     const settings = await this.getSettings();
     const tokenLength = parseInt(settings.token_length || '16', 10);
     const token = crypto.randomBytes(Math.ceil(tokenLength / 2)).toString('hex').slice(0, tokenLength).toUpperCase();
 
     let targetUrl = '';
     let deliveredLink = '';
-    const baseLink = settings.target_link || 'https://www.spotify.com/br-pt/referral/0039882b4241878f638478b2751fe63a66251bd3edb728d8914a1d/?si=FpkWFBhNR_yjQLUGKgUvww&utm_source=whatsapp&locale=pt&rv=2';
+    // Destino do produto (se tiver target_url no catálogo) tem prioridade sobre o link global
+    const productUrl = productTargetUrl && String(productTargetUrl).trim() ? String(productTargetUrl).trim() : null;
+    const baseLink = productUrl || settings.target_link || 'https://www.spotify.com/br-pt/referral/0039882b4241878f638478b2751fe63a66251bd3edb728d8914a1d/?si=FpkWFBhNR_yjQLUGKgUvww&utm_source=whatsapp&locale=pt&rv=2';
     const mode = settings.link_mode || 'cloaked_redirect';
     const baseUrl = settings.app_base_url || 'http://localhost:3000';
 

@@ -222,6 +222,21 @@ document.addEventListener('DOMContentLoaded', () => {
       const apiKeyInput = document.getElementById('my-api-key-input');
       if (apiKeyInput) apiKeyInput.value = currentReseller.api_key;
 
+      // Preenche o ID de perfil do Telegram (vínculo bot + site)
+      const tgInput = document.getElementById('tg-profile-id-input');
+      const tgStatus = document.getElementById('tg-link-status');
+      if (tgInput) tgInput.value = currentReseller.telegram_id || '';
+      if (tgStatus) {
+        if (currentReseller.telegram_id) {
+          tgStatus.className = 'text-xs p-2.5 rounded-lg border border-emerald-500/30 bg-emerald-950/40 text-emerald-300';
+          tgStatus.innerHTML = '✅ <b>Vinculado!</b> ID <code>' + escapeHtml(currentReseller.telegram_id) + '</code> — o /saldo do bot mostra o saldo desta conta.';
+        } else {
+          tgStatus.className = 'text-xs p-2.5 rounded-lg border border-amber-500/30 bg-amber-950/40 text-amber-300';
+          tgStatus.innerHTML = '⚠️ Ainda não vinculado. Envie <b>/me</b> no bot para copiar seu ID e cole acima.';
+        }
+        tgStatus.classList.remove('hidden');
+      }
+
       const codePreview = document.getElementById('bot-code-preview');
       if (codePreview) {
         codePreview.innerText = codePreview.innerText.replace(/API_KEY = ".*"/, `API_KEY = "${currentReseller.api_key}"`);
@@ -584,6 +599,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const customer_name = document.getElementById('manual-customer-name')?.value;
       const customer_contact = document.getElementById('manual-customer-contact')?.value;
       const sale_price = document.getElementById('manual-sale-price')?.value;
+      const product_id = document.getElementById('manual-product-id')?.value || '';
+      const coupon_code = document.getElementById('manual-coupon-code')?.value || '';
 
       btnSubmitManualGen.disabled = true;
       btnManualSpinner.classList.remove('hidden');
@@ -592,15 +609,29 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         const res = await resellerFetch('/api/reseller/generate-manual', {
           method: 'POST',
-          body: JSON.stringify({ customer_name, customer_contact, sale_price })
+          body: JSON.stringify({ customer_name, customer_contact, sale_price, product_id, coupon_code })
         });
         const data = await res.json();
         if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao gerar link.');
 
-        // Preenche dados do link gerado
-        manualGeneratedLink.value = data.link;
-        manualTokenPreview.innerText = data.token;
-        if (btnOpenManualLink) btnOpenManualLink.href = data.link;
+        // Preenche dados da entrega (item do estoque ou link de ativacao)
+        let generatedText = data.link;
+        let tokenPreview = data.token;
+        let openHref = data.link;
+        if (data.delivered_item) {
+          const it = data.delivered_item;
+          if (it.type === 'link') {
+            generatedText = it.content;
+            tokenPreview = 'Link do estoque';
+            openHref = it.content;
+          } else {
+            generatedText = 'Login: ' + it.login + '\nSenha: ' + it.password;
+            tokenPreview = 'Conta entregue';
+          }
+        }
+        manualGeneratedLink.value = generatedText;
+        manualTokenPreview.innerText = tokenPreview;
+        if (btnOpenManualLink) btnOpenManualLink.href = openHref;
 
         // Atualiza saldo na tela
         const formattedBal = 'R$ ' + Number(data.balance_remaining || 0).toFixed(2).replace('.', ',');
@@ -688,19 +719,75 @@ document.addEventListener('DOMContentLoaded', () => {
   // ==========================================
   // RECARGA DE SALDO (VALOR MÍNIMO R$ 15,00)
   // ==========================================
-  window.rechargeCredits = async function(credits, amount) {
+  // Método de pagamento atualmente selecionado no formulário de recarga (PIX | Binance Pay | Mercado Pago)
+  let selectedPaymentMethod = 'PIX';
+
+  const setRechargeMethod = (method) => {
+    selectedPaymentMethod = method;
+    document.querySelectorAll('.recharge-method-btn').forEach((btn) => {
+      const active = btn.dataset.method === method;
+      btn.classList.toggle('border-emerald-500/60', active);
+      btn.classList.toggle('border-white/10', !active);
+      const check = btn.querySelector('.method-check');
+      if (check) {
+        check.classList.toggle('border-emerald-400', active);
+        check.classList.toggle('bg-emerald-400', active);
+        check.classList.toggle('text-slate-950', active);
+        check.classList.toggle('border-white/20', !active);
+        check.classList.toggle('text-transparent', !active);
+      }
+    });
+    const btnRechargeLabel = document.getElementById('btn-recharge-label');
+    if (btnRechargeLabel) {
+      const m = String(method).toLowerCase();
+      btnRechargeLabel.textContent = m.includes('mercado')
+        ? 'GERAR LINK DE PAGAMENTO (MERCADO PAGO) 🟦'
+        : m.includes('binance')
+          ? 'CONFIRMAR RECARGA VIA BINANCE PAY 🟡'
+          : 'CONFIRMAR RECARGA VIA PIX';
+    }
+  };
+
+  document.querySelectorAll('.recharge-method-btn').forEach((btn) => {
+    btn.addEventListener('click', () => setRechargeMethod(btn.dataset.method));
+  });
+
+  window.rechargeCredits = async function(credits, amount, paymentMethod) {
+    const method = String(paymentMethod || selectedPaymentMethod || 'PIX').trim() || 'PIX';
+    const m = String(method).toLowerCase();
+    const methodLabel = m.includes('mercado') ? 'Mercado Pago 🟦' : m.includes('binance') ? 'Binance Pay 🟡' : 'PIX';
     const minRecharge = 15.00;
     if (amount < minRecharge) {
       showToast(`O valor mínimo para recarga de saldo é de R$ ${minRecharge.toFixed(2).replace('.', ',')}.`, 'error');
       return;
     }
 
-    if (!confirm(`Confirmar recarga de +${credits} créditos por R$ ${amount.toFixed(2).replace('.', ',')} via PIX?`)) return;
+    // ---- MERCADO PAGO: cria a preferência e abre o checkout (crédito automático no webhook) ----
+    if (m.includes('mercado')) {
+      try {
+        const res = await resellerFetch('/api/reseller/mp/create-preference', {
+          method: 'POST',
+          body: JSON.stringify({ amount })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao gerar o pagamento.');
+
+        const payUrl = data.sandbox_init_point || data.init_point;
+        if (payUrl) window.open(payUrl, '_blank');
+        showToast(`Pagamento de R$ ${amount.toFixed(2).replace('.', ',')} gerado! Finalize no Mercado Pago — o saldo entra automaticamente.`, 'success');
+        startMpPaymentPolling(data.external_reference);
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+      return;
+    }
+
+    if (!confirm(`Confirmar recarga de R$ ${amount.toFixed(2).replace('.', ',')} via ${methodLabel}?`)) return;
 
     try {
       const res = await resellerFetch('/api/reseller/recharge', {
         method: 'POST',
-        body: JSON.stringify({ credits, amount })
+        body: JSON.stringify({ credits, amount, payment_method: method })
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error);
@@ -714,6 +801,49 @@ document.addEventListener('DOMContentLoaded', () => {
       showToast(err.message, 'error');
     }
   };
+
+  // Polling: detecta quando o pagamento Mercado Pago foi aprovado e atualiza o painel
+  let mpPollTimer = null;
+  function startMpPaymentPolling(externalReference) {
+    if (mpPollTimer) clearInterval(mpPollTimer);
+    let attempts = 0;
+    const poll = async () => {
+      attempts++;
+      try {
+        const res = await resellerFetch('/api/reseller/mp/payments?limit=5');
+        const data = await res.json();
+        if (!data.success || !data.data || !data.data.length) return;
+        const match = data.data.find((p) => p.external_reference === externalReference);
+        if (match && (match.status === 'approved' || Number(match.processed) === 1)) {
+          clearInterval(mpPollTimer);
+          mpPollTimer = null;
+          showToast('✅ Pagamento aprovado! Saldo creditado com sucesso.', 'success');
+          loadResellerProfile();
+          loadResellerDashboard();
+          switchResellerTab('overview');
+        } else if (attempts >= 60) { // ~5 min de polling
+          clearInterval(mpPollTimer);
+          mpPollTimer = null;
+          showToast('Aguardando pagamento... O saldo será creditado automaticamente quando aprovado.', 'info');
+        }
+      } catch (err) {
+        // erros de rede durante o polling são ignorados
+      }
+    };
+    mpPollTimer = setInterval(poll, 5000);
+    poll();
+  }
+
+  // Volta do checkout do Mercado Pago (back_urls) — confirma o estado do pagamento
+  if (window.location.hash === '#mp_ok') {
+    showToast('Pagamento concluído! O saldo será creditado em instantes.', 'success');
+    loadResellerProfile();
+    loadResellerDashboard();
+  } else if (window.location.hash === '#mp_pending') {
+    showToast('Pagamento pendente. Assim que for aprovado, o saldo entra automaticamente.', 'info');
+  } else if (window.location.hash === '#mp_fail') {
+    showToast('O pagamento foi cancelado ou não pôde ser concluído. Tente novamente.', 'error');
+  }
 
   // Formulário de Recarga Personalizada (Qualquer Valor a partir de R$ 15,00)
   const formCustomRecharge = document.getElementById('form-custom-recharge');
@@ -753,7 +883,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      rechargeCredits(null, amount);
+      rechargeCredits(null, amount, selectedPaymentMethod);
     });
   }
 
@@ -766,6 +896,42 @@ document.addEventListener('DOMContentLoaded', () => {
       const input = document.getElementById('my-api-key-input');
       if (input && input.value) {
         copyToClipboard(input.value);
+      }
+    });
+  }
+
+  // ==========================================
+  // VÍNCULO DO ID DE PERFIL (bot + site)
+  // ==========================================
+  const btnLinkTelegram = document.getElementById('btn-link-telegram');
+  if (btnLinkTelegram) {
+    btnLinkTelegram.addEventListener('click', async () => {
+      const tgInput = document.getElementById('tg-profile-id-input');
+      const tgStatus = document.getElementById('tg-link-status');
+      const tgValue = (tgInput.value || '').replace(/[^0-9]/g, '').trim();
+
+      if (!tgValue) {
+        showToast('Cole seu ID de perfil (envie /me no bot para copiar).', 'error');
+        return;
+      }
+
+      try {
+        const res = await resellerFetch('/api/reseller/telegram-link', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ telegram_id: tgValue })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error);
+
+        tgInput.value = data.telegram_id;
+        tgStatus.className = 'text-xs p-2.5 rounded-lg border border-emerald-500/30 bg-emerald-950/40 text-emerald-300';
+        tgStatus.innerHTML = '✅ <b>Vinculado com sucesso!</b> ID <code>' + escapeHtml(data.telegram_id) + '</code>.';
+        tgStatus.classList.remove('hidden');
+        showToast(data.message, 'success');
+        loadResellerProfile();
+      } catch (err) {
+        showToast(err.message, 'error');
       }
     });
   }
@@ -830,11 +996,68 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!res.ok) throw new Error();
         hideAuthModal();
         loadAllResellerData();
+        loadResellerProducts();
       })
       .catch(() => {
         showAuthModal();
       });
   } else {
     showAuthModal();
+  }
+
+  // ==============================================
+  // CATALOGO DE PRODUTOS + CUPOM no gerador manual
+  // ==============================================
+  async function loadResellerProducts() {
+    const select = document.getElementById('manual-product-id');
+    if (!select) return;
+    try {
+      const res = await resellerFetch('/api/reseller/products');
+      const data = await res.json();
+      if (!data.success || !data.data.length) return;
+      select.innerHTML = '<option value="">— Produto padrão —</option>' + data.data.map(p => {
+        const soldOut = p.stock !== null && p.stock !== undefined && Number(p.stock) <= 0;
+        const qty = (!soldOut && p.stock !== null && p.stock !== undefined) ? ' (' + Number(p.stock) + ')' : '';
+        return '<option value="' + p.id + '"' + (soldOut ? ' disabled' : '') + '>' + escapeHtml(p.name) + ' — R$ ' + Number(p.sale_price).toFixed(2).replace('.', ',') + qty + (soldOut ? ' (ESGOTADO)' : '') + '</option>';
+      }).join('');
+    } catch (e) {
+      console.warn('Erro ao carregar produtos:', e);
+    }
+  }
+
+  const btnValidateCoupon = document.getElementById('btn-validate-coupon');
+  if (btnValidateCoupon) {
+    btnValidateCoupon.addEventListener('click', async () => {
+      const code = document.getElementById('manual-coupon-code')?.value.trim();
+      const product_id = document.getElementById('manual-product-id')?.value || '';
+      const feedback = document.getElementById('coupon-feedback');
+      if (!feedback) return;
+      if (!code) {
+        feedback.innerText = 'Digite o código do cupom acima.';
+        feedback.className = 'text-[11px] mt-1 block text-rose-400';
+        return;
+      }
+      try {
+        const res = await resellerFetch('/api/reseller/validate-coupon', {
+          method: 'POST',
+          body: JSON.stringify({ coupon_code: code, product_id })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          feedback.innerText = data.error || 'Cupom inválido.';
+          feedback.className = 'text-[11px] mt-1 block text-rose-400';
+          return;
+        }
+        const d = data.data;
+        const fmt = (v) => 'R$ ' + Number(v).toFixed(2).replace('.', ',');
+        feedback.innerText = (d.final_price < d.base_price)
+          ? '✔ ' + escapeHtml(d.product) + ': de ' + fmt(d.base_price) + ' por ' + fmt(d.final_price) + ' (desconto de ' + fmt(d.discount) + ').'
+          : 'Cupom informado, mas sem desconto para este produto (' + fmt(d.final_price) + ').';
+        feedback.className = (d.final_price < d.base_price) ? 'text-[11px] mt-1 block text-emerald-400' : 'text-[11px] mt-1 block text-slate-400';
+      } catch (err) {
+        feedback.innerText = err.message || 'Erro ao validar cupom.';
+        feedback.className = 'text-[11px] mt-1 block text-rose-400';
+      }
+    });
   }
 });
