@@ -1522,7 +1522,8 @@ async function resolveOrderPricing(req, reseller) {
     costPrice: parseFloat(reseller.cost_per_link || 2.99),
     baseSalePrice: null,
     discount: 0,
-    finalSalePrice: null
+    finalSalePrice: null,
+    productStock: null
   };
 
   // 1. Produto do catalogo (opcional)
@@ -1541,6 +1542,10 @@ async function resolveOrderPricing(req, reseller) {
     result.costPrice = parseFloat(product.cost_price || 0);
     // Destino do link de ativação (target_url do produto, se definido)
     result.productTargetUrl = product.target_url ? String(product.target_url).trim() : null;
+    result.productStock = (product.stock === null || product.stock === undefined) ? null : Number(product.stock);
+    if (result.productStock !== null && result.productStock <= 0) {
+      return { ...result, error: 'Produto esgotado no momento. Tente novamente mais tarde.' };
+    }
   } else {
     result.productTargetUrl = null;
   }
@@ -1620,13 +1625,14 @@ app.get('/api/admin/products', adminAuth, async (req, res) => {
       cost_price: Number(p.cost_price || 0),
       price_value: Number(p.price_value || 0),
       active: Number(p.active || 0),
-      sort_order: Number(p.sort_order || 0)
+      sort_order: Number(p.sort_order || 0),
+      stock: (p.stock === null || p.stock === undefined) ? null : Number(p.stock)
     }))
   });
 });
 
 app.post('/api/admin/products', adminAuth, async (req, res) => {
-  const { name, description, target_url, cost_price, price_type, price_value, active, sort_order } = req.body || {};
+  const { name, description, target_url, cost_price, price_type, price_value, active, sort_order, stock: stockInput } = req.body || {};
 
   if (!name || !String(name).trim()) {
     return res.status(400).json({ success: false, error: 'Informe o nome do produto.' });
@@ -1641,9 +1647,17 @@ app.post('/api/admin/products', adminAuth, async (req, res) => {
     return res.status(400).json({ success: false, error: type === 'margin' ? 'Margem invalida.' : 'Preco de venda invalido.' });
   }
 
+  let stock = null;
+  if (stockInput !== undefined && stockInput !== null && String(stockInput).trim() !== '') {
+    stock = parseInt(stockInput, 10);
+    if (isNaN(stock) || stock < 0) {
+      return res.status(400).json({ success: false, error: 'Estoque invalido.' });
+    }
+  }
+
   const result = await dbHelpers.db.prepare(`
-    INSERT INTO products (name, description, target_url, cost_price, price_type, price_value, active, sort_order, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO products (name, description, target_url, cost_price, price_type, price_value, active, sort_order, stock, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     String(name).trim(),
     description ? String(description).trim() : null,
@@ -1653,6 +1667,7 @@ app.post('/api/admin/products', adminAuth, async (req, res) => {
     price,
     (active === 0 || active === '0' || active === false) ? 0 : 1,
     parseInt(sort_order, 10) || 0,
+    stock,
     new Date().toISOString()
   );
 
@@ -1686,11 +1701,18 @@ app.put('/api/admin/products/:id', adminAuth, async (req, res) => {
   }
   const active = body.active !== undefined ? ((body.active === 0 || body.active === '0' || body.active === false) ? 0 : 1) : Number(product.active || 0);
   const sortOrder = body.sort_order !== undefined ? (parseInt(body.sort_order, 10) || 0) : Number(product.sort_order || 0);
+  let stock = (product.stock === null || product.stock === undefined) ? null : Number(product.stock);
+  if (body.stock !== undefined && body.stock !== null && String(body.stock).trim() !== '') {
+    stock = parseInt(body.stock, 10);
+    if (isNaN(stock) || stock < 0) {
+      return res.status(400).json({ success: false, error: 'Estoque invalido.' });
+    }
+  }
 
   await dbHelpers.db.prepare(`
-    UPDATE products SET name = ?, description = ?, target_url = ?, cost_price = ?, price_type = ?, price_value = ?, active = ?, sort_order = ?
+    UPDATE products SET name = ?, description = ?, target_url = ?, cost_price = ?, price_type = ?, price_value = ?, active = ?, sort_order = ?, stock = ?
     WHERE id = ?
-  `).run(name, description, targetUrl, cost, type, price, active, sortOrder, id);
+  `).run(name, description, targetUrl, cost, type, price, active, sortOrder, stock, id);
 
   const updated = await dbHelpers.db.prepare('SELECT * FROM products WHERE id = ?').get(id);
   res.json({ success: true, message: 'Produto atualizado com sucesso!', data: updated });
@@ -1820,7 +1842,8 @@ app.get('/api/reseller/products', resellerUserAuth, async (req, res) => {
         name: p.name,
         description: p.description,
         price_type: priceType,
-        sale_price: salePrice
+        sale_price: salePrice,
+        stock: (p.stock === null || p.stock === undefined) ? null : Number(p.stock)
       };
     })
   });
@@ -1862,7 +1885,8 @@ app.get('/api/v1/products', resellerBotAuth, async (req, res) => {
         name: p.name,
         description: p.description,
         price_type: priceType,
-        sale_price: salePrice
+        sale_price: salePrice,
+        stock: (p.stock === null || p.stock === undefined) ? null : Number(p.stock)
       };
     })
   });
@@ -1916,7 +1940,21 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
   const profit = Math.max(0, finalSalePrice - costPrice);
 
   let debited = false;
+  let stockDecremented = false;
+  let outOfStock = false;
+  let stockRemaining = null;
   try {
+    // 0a. Decrementa o estoque do produto (apenas quando ha controle de estoque definido)
+    if (pricing.productStock !== null && pricing.productId) {
+      const stockRes = await dbHelpers.db.prepare('UPDATE products SET stock = stock - 1 WHERE id = ? AND stock > 0').run(pricing.productId);
+      if (Number(stockRes.changes) === 0) {
+        outOfStock = true;
+        throw Object.assign(new Error('Produto esgotado no momento. Tente novamente mais tarde.'), { code: 'OUT_OF_STOCK' });
+      }
+      stockDecremented = true;
+      stockRemaining = Math.max(0, Number(pricing.productStock) - 1);
+    }
+
     // Desconta exatamente R$ 2,99 do saldo do revendedor
     await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits - ? AS NUMERIC), 2) WHERE id = ?').run(costPrice, reseller.id);
     debited = true; // débito concluído — falhas daqui pra frente disparam estorno automático
@@ -1978,11 +2016,17 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
       base_price: pricing.baseSalePrice,
       discount: pricing.discount,
       coupon_code: pricing.couponCode,
-      sale_id: saleResult.lastInsertRowid
+      sale_id: saleResult.lastInsertRowid,
+      stock_remaining: stockRemaining
     });
   } catch (err) {
     const orderNumber = await nextOrderNumber();
     const reason = (err && err.message) || 'Falha na entrega do produto.';
+
+    // Restaura o estoque do produto se a venda falhou apos o decremento
+    if (stockDecremented) {
+      await dbHelpers.db.prepare('UPDATE products SET stock = stock + 1 WHERE id = ?').run(pricing.productId);
+    }
 
     // ESTORNO AUTOMÁTICO: devolve o valor debitado ao saldo do revendedor
     if (debited) {
@@ -2003,11 +2047,12 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
 
     res.status(debited ? 409 : 500).json({
       success: false,
-      error: 'Erro ao gerar link manualmente: ' + reason,
+      error: outOfStock ? reason : 'Erro ao gerar link manualmente: ' + reason,
       refunded: debited,
       refund_amount: debited ? Number(costPrice).toFixed(2) : '0.00',
       order_number: orderNumber || null,
       product: pricing.productName || 'Spotify Premium',
+      out_of_stock: outOfStock,
       amount: Number(finalSalePrice).toFixed(2),
       reason
     });
@@ -2063,7 +2108,21 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
   const profit = Math.max(0, finalSalePrice - costPrice);
 
   let debited = false;
+  let stockDecremented = false;
+  let outOfStock = false;
+  let stockRemaining = null;
   try {
+    // 3a. Decrementa o estoque do produto (apenas quando ha controle de estoque definido)
+    if (pricing.productStock !== null && pricing.productId) {
+      const stockRes = await dbHelpers.db.prepare('UPDATE products SET stock = stock - 1 WHERE id = ? AND stock > 0').run(pricing.productId);
+      if (Number(stockRes.changes) === 0) {
+        outOfStock = true;
+        throw Object.assign(new Error('Produto esgotado no momento. Tente novamente mais tarde.'), { code: 'OUT_OF_STOCK' });
+      }
+      stockDecremented = true;
+      stockRemaining = Math.max(0, Number(pricing.productStock) - 1);
+    }
+
     // 3. Decrementa exatamente R$ 2,99 do Saldo do Revendedor
     await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits - ? AS NUMERIC), 2) WHERE id = ?').run(costPrice, reseller.id);
     debited = true; // débito concluído — falhas daqui pra frente disparam estorno automático
@@ -2133,6 +2192,7 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
       discount: pricing.discount,
       coupon_code: pricing.couponCode,
       balance_remaining: Number(updated.credits).toFixed(2),
+      stock_remaining: stockRemaining,
       sale_id: saleResult.lastInsertRowid,
       created_at: now,
       expires_at: generation.expiresAt
@@ -2141,6 +2201,11 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
   } catch (err) {
     const orderNumber = await nextOrderNumber();
     const reason = (err && err.message) || 'Falha na entrega do produto.';
+
+    // Restaura o estoque do produto se a venda falhou apos o decremento
+    if (stockDecremented) {
+      await dbHelpers.db.prepare('UPDATE products SET stock = stock + 1 WHERE id = ?').run(pricing.productId);
+    }
 
     // ESTORNO AUTOMÁTICO: se o saldo já foi debitado e a entrega falhou,
     // devolve o valor para o saldo do revendedor na hora.
@@ -2163,7 +2228,7 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
     dbHelpers.logError({
       endpoint: '/api/v1/generate',
       method: 'POST',
-      statusCode: debited ? 409 : 500,
+      statusCode: debited || outOfStock ? 409 : 500,
       errorType: 'BotGenerationError',
       message: err.message,
       ip,
@@ -2171,13 +2236,14 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
       details: { stack: err.stack, refunded: debited, order_number: orderNumber }
     });
 
-    res.status(debited ? 409 : 500).json({
+    res.status(debited || outOfStock ? 409 : 500).json({
       success: false,
       error: reason,
       refunded: debited,                      // true: estorno já foi feito pelo servidor
       refund_amount: debited ? Number(costPrice).toFixed(2) : '0.00',
       order_number: orderNumber || null,
       product: finalProduct,
+      out_of_stock: outOfStock,
       amount: Number(finalSalePrice).toFixed(2),
       reason
     });

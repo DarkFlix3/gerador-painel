@@ -644,7 +644,7 @@ async function showCatalog(chatId, messageId) {
       keyboard = { reply_markup: { inline_keyboard: [[{ text: '🏠 Menu Principal', callback_data: 'back_to_menu' }]] } };
     } else {
       text = '🛒 <b>PRODUTOS</b>\n\nEscolha o produto desejado:';
-      const rows = products.map((p) => [{ text: `${productIcon(p.name)} ${p.name} — ${brl(p.sale_price)}`, callback_data: `prod_${p.id}` }]);
+      const rows = products.map((p) => [{ text: `${productIcon(p.name)} ${p.name} — ${brl(p.sale_price)}${isSoldOut(p) ? ' — ❌ ESGOTADO' : ''}`, callback_data: `prod_${p.id}` }]);
       rows.push([{ text: '🏠 Menu Principal', callback_data: 'back_to_menu' }]);
       keyboard = { reply_markup: { inline_keyboard: rows } };
     }
@@ -666,14 +666,19 @@ async function showProductDetail(chatId, messageId, pid) {
     }
     if (!p) throw new Error('Produto não encontrado ou inativo.');
     const desc = p.description && String(p.description).trim() ? `\n${escapeHtml(p.description)}` : '';
+    const stockLine = (p.stock === null || p.stock === undefined) ? '' : `📦 <b>Estoque:</b> ${isSoldOut(p) ? 'Esgotado ❌' : Number(p.stock) + ' restante(s)'}\n`;
     const text =
       `🛒 <b>${escapeHtml(p.name)}</b>${desc}\n\n` +
+      `${stockLine}` +
       `💵 <b>Preço:</b> ${brl(p.sale_price)}\n` +
       `⚡ Entrega automática e imediata após a confirmação.`;
+    const buyButton = isSoldOut(p)
+      ? [{ text: '🔙 Voltar ao catálogo', callback_data: 'catalog' }]
+      : [{ text: `✅ Comprar agora — ${brl(p.sale_price)}`, callback_data: `buy_prod_${p.id}` }];
     const keyboard = {
       reply_markup: {
         inline_keyboard: [
-          [{ text: `✅ Comprar agora — ${brl(p.sale_price)}`, callback_data: `buy_prod_${p.id}` }],
+          buyButton,
           [{ text: '🎟 Tenho cupom de desconto', callback_data: `coupon_prod_${p.id}` }],
           [{ text: '🏠 Menu Principal', callback_data: 'back_to_menu' }]
         ]
@@ -874,9 +879,17 @@ async function handlePurchase(chatId, user, messageId, opts) {
       // Saldo Insuficiente (custo do produto)
       const outOfBalanceMsg = (data && data.error) || 'O saldo do revendedor na central está abaixo do custo do produto.';
       sendOrEdit(chatId, messageId, 
-        `⚠️ <b>Estoque Temporariamente Esgotado!</b>\n\n` +
+        `⚠️ <b>Saldo Insuficiente!</b>\n\n` +
         `${escapeHtml(outOfBalanceMsg)}\n\n` +
         `💼 <b>Acesse para recarregar:</b> ${PUBLIC_BASE_URL}/revendedor.html`,
+        { parse_mode: 'HTML', ...backToMenuKeyboard() }
+      );
+    } else if (response.status === 409) {
+      // Produto esgotado ou conflito de estoque (venda simultanea)
+      const outOfStockMsg = (data && data.error) || 'Produto esgotado no momento. Tente novamente mais tarde.';
+      sendOrEdit(chatId, messageId,
+        `⚠️ <b>Estoque Esgotado!</b>\n\n` +
+        `${escapeHtml(outOfStockMsg)}`,
         { parse_mode: 'HTML', ...backToMenuKeyboard() }
       );
     } else if (response.status === 403) {
@@ -887,10 +900,19 @@ async function handlePurchase(chatId, user, messageId, opts) {
       );
     } else {
       // Outro Erro
-      sendOrEdit(chatId, messageId, 
-        `❌ <b>Falha ao gerar link:</b> ${data.error || 'Erro interno no servidor. Tente novamente em instantes.'}`,
-        { parse_mode: 'HTML', ...backToMenuKeyboard() }
-      );
+      const otherErrMsg = data.error || 'Erro interno no servidor. Tente novamente em instantes.';
+      if (/esgot/i.test(otherErrMsg)) {
+        sendOrEdit(chatId, messageId,
+          `⚠️ <b>Estoque Esgotado!</b>\n\n` +
+          `${escapeHtml(otherErrMsg)}`,
+          { parse_mode: 'HTML', ...backToMenuKeyboard() }
+        );
+      } else {
+        sendOrEdit(chatId, messageId, 
+          `❌ <b>Falha ao gerar link:</b> ${otherErrMsg}`,
+          { parse_mode: 'HTML', ...backToMenuKeyboard() }
+        );
+      }
     }
 
   } catch (err) {
@@ -1083,6 +1105,10 @@ async function fetchMyPurchases(user) {
 }
 
 // Ícone sugestivo por produto (fallback genérico)
+function isSoldOut(p) {
+  return p && p.stock !== null && p.stock !== undefined && Number(p.stock) <= 0;
+}
+
 function productIcon(product) {
   const p = String(product || '').toLowerCase();
   if (p.includes('spotify')) return '🎧';

@@ -223,6 +223,7 @@ const SQLITE_DDL = `
     price_value REAL DEFAULT 0.00,
     active INTEGER DEFAULT 1,
     sort_order INTEGER DEFAULT 0,
+    stock INTEGER,
     created_at TEXT NOT NULL
   );
 
@@ -343,6 +344,7 @@ const POSTGRES_DDL = `
     price_value DOUBLE PRECISION DEFAULT 0.00,
     active INTEGER DEFAULT 1,
     sort_order INTEGER DEFAULT 0,
+    stock INTEGER,
     created_at TEXT NOT NULL
   );
 
@@ -394,7 +396,9 @@ const EXTRA_COLUMNS = {
   products: [
     // Destino do link de ativação do produto (ex.: link de referência do Spotify).
     // Vazio = usa o target_link global das Configurações.
-    'target_url TEXT'
+    'target_url TEXT',
+    // Estoque do produto. NULL = ilimitado, 0 = esgotado. Decrementado a cada venda.
+    'stock INTEGER'
   ]
 };
 

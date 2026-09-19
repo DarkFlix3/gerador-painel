@@ -870,9 +870,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const res = await resellerFetch('/api/reseller/products');
       const data = await res.json();
       if (!data.success || !data.data.length) return;
-      select.innerHTML = '<option value="">— Produto padrão —</option>' + data.data.map(p =>
-        '<option value="' + p.id + '">' + escapeHtml(p.name) + ' — R$ ' + Number(p.sale_price).toFixed(2).replace('.', ',') + '</option>'
-      ).join('');
+      select.innerHTML = '<option value="">— Produto padrão —</option>' + data.data.map(p => {
+        const soldOut = p.stock !== null && p.stock !== undefined && Number(p.stock) <= 0;
+        return '<option value="' + p.id + '"' + (soldOut ? ' disabled' : '') + '>' + escapeHtml(p.name) + ' — R$ ' + Number(p.sale_price).toFixed(2).replace('.', ',') + (soldOut ? ' (ESGOTADO)' : '') + '</option>';
+      }).join('');
     } catch (e) {
       console.warn('Erro ao carregar produtos:', e);
     }

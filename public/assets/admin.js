@@ -724,12 +724,18 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!data.success) return;
       __adminProducts = data.data || [];
       if (__adminProducts.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="px-5 py-8 text-center text-slate-500">Nenhum produto cadastrado ainda.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="px-5 py-8 text-center text-slate-500">Nenhum produto cadastrado ainda.</td></tr>';
         return;
       }
       tbody.innerHTML = __adminProducts.map(p => {
         const salePrice = p.price_type === 'margin' ? (Number(p.cost_price) * (1 + Number(p.price_value) / 100)) : Number(p.price_value);
         const margin = Number(p.cost_price) > 0 ? ((salePrice - Number(p.cost_price)) / Number(p.cost_price) * 100) : 0;
+        const pStock = (p.stock === null || p.stock === undefined) ? null : Number(p.stock);
+        const stockBadge = pStock === null
+          ? '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-sky-950/60 text-sky-400 border border-sky-500/30">ILIMITADO</span>'
+          : (pStock <= 0
+            ? '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-950/60 text-rose-400 border border-rose-500/30">ESGOTADO</span>'
+            : `<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950/60 text-emerald-400 border border-emerald-500/30">${pStock} DISPONÍVEL</span>`);
         return `<tr class="hover:bg-white/[0.02] transition-colors">
             <td class="px-5 py-3.5">
               <span class="font-bold text-white block text-xs">${escapeHtml(p.name)}</span>
@@ -738,6 +744,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <td class="px-5 py-3.5 font-mono font-bold text-slate-300">R$ ${Number(p.cost_price).toFixed(2).replace('.', ',')}</td>
             <td class="px-5 py-3.5 font-mono font-bold text-emerald-400">R$ ${salePrice.toFixed(2).replace('.', ',')}</td>
             <td class="px-5 py-3.5 font-mono text-[11px] text-slate-400">${margin.toFixed(0)}%</td>
+            <td class="px-5 py-3.5">${stockBadge}</td>
             <td class="px-5 py-3.5">
               <button onclick="toggleProduct(${p.id})" class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${Number(p.active) ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-500/30' : 'bg-rose-950/60 text-rose-400 border border-rose-500/30'}">
                 <span class="w-1.5 h-1.5 rounded-full ${Number(p.active) ? 'bg-emerald-400' : 'bg-rose-400'}"></span>
@@ -771,6 +778,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('product-price-type').value = p ? (p.price_type || 'fixed') : 'fixed';
     document.getElementById('product-price-value').value = p ? p.price_value : '';
     document.getElementById('product-sort-order').value = p ? (p.sort_order || 0) : 0;
+    document.getElementById('product-stock').value = p ? ((p.stock === null || p.stock === undefined) ? '' : p.stock) : '';
     document.getElementById('product-form-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
   window.editProduct = (id) => {
@@ -824,7 +832,8 @@ document.addEventListener('DOMContentLoaded', () => {
         cost_price: document.getElementById('product-cost').value,
         price_type: document.getElementById('product-price-type').value,
         price_value: document.getElementById('product-price-value').value,
-        sort_order: document.getElementById('product-sort-order').value || 0
+        sort_order: document.getElementById('product-sort-order').value || 0,
+        stock: document.getElementById('product-stock').value
       };
       if (!payload.name || payload.cost_price === '' || payload.price_value === '') {
         showToast('Preencha nome, custo e preço.', 'error');
