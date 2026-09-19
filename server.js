@@ -2587,10 +2587,12 @@ app.get('/api/v1/my-purchases', botKeyAuth, async (req, res) => {
 
     const where = clauses.map((c) => `(${c})`).join(' OR ');
     const rows = await dbHelpers.db.prepare(`
-      SELECT id, token, target_url, product, sale_price, delivery_status, created_at
-      FROM sales
+      SELECT s.id, s.token, s.target_url, s.product, s.sale_price, s.delivery_status, s.created_at,
+             pi.type AS item_type, pi.login AS account_login, pi.password AS account_password, pi.content AS item_content
+      FROM sales s
+      LEFT JOIN product_items pi ON pi.sale_id = s.id
       WHERE ${where}
-      ORDER BY created_at DESC
+      ORDER BY s.created_at DESC
     `).all(...params);
 
     // Agrupa por produto (coluna product com fallback para o produto padrão)
@@ -2604,7 +2606,11 @@ app.get('/api/v1/my-purchases', botKeyAuth, async (req, res) => {
         link: row.target_url,
         sale_price: row.sale_price,
         delivery_status: row.delivery_status,
-        created_at: row.created_at
+        created_at: row.created_at,
+        item_type: row.item_type || null,
+        account_login: row.account_login || null,
+        account_password: row.account_password || null,
+        item_content: row.item_content || null
       });
     }
 
@@ -2903,9 +2909,11 @@ app.get('/api/admin/all-sales', adminAuth, async (req, res) => {
       s.id, s.token, s.target_url, s.customer_name, s.customer_id, s.customer_contact, 
       s.product, s.product_id, s.coupon_id, s.discount,
       s.sale_price, s.cost_price, s.profit, s.delivery_status, s.created_at,
-      r.name as reseller_name, r.email as reseller_email
+      r.name as reseller_name, r.email as reseller_email,
+      pi.type AS delivered_type, pi.login AS delivered_login, pi.password AS delivered_password, pi.content AS delivered_content
     FROM sales s
     JOIN resellers r ON s.reseller_id = r.id
+    LEFT JOIN product_items pi ON pi.sale_id = s.id
     ORDER BY s.id DESC
     LIMIT ?
   `).all(limit);

@@ -1269,6 +1269,9 @@ async function handleMyPurchasesProductTxt(chatId, user, index, messageId) {
         lines.push(`----------------------------------------------`);
         lines.push(`#${idx + 1} | Pedido: ${item.token}`);
         lines.push(`Link: ${item.link}`);
+        if (item.account_login) lines.push(`Login: ${item.account_login}`);
+        if (item.account_password) lines.push(`Senha: ${item.account_password}`);
+        if (item.item_content) lines.push(`Link entregue: ${item.item_content}`);
         lines.push(`Status: ${item.delivery_status}`);
         lines.push(`Data: ${formatPurchaseDate(item.created_at)}`);
       });

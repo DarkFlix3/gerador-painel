@@ -506,6 +506,8 @@ document.addEventListener('DOMContentLoaded', () => {
             </td>
             <td class="px-5 py-3">
               <span class="font-bold text-amber-300 block text-xs">${escapeHtml(s.product || '—')}</span>
+              ${s.delivered_login ? `<span class="text-[10px] text-emerald-400 font-mono block mt-0.5">Login: ${escapeHtml(s.delivered_login)}</span>` : ''}
+              ${s.delivered_content ? `<span class="text-[10px] text-emerald-400 font-mono block mt-0.5">Link entregue: ${escapeHtml(s.delivered_content)}</span>` : ''}
             </td>
             <td class="px-5 py-3 font-mono font-bold text-white">R$ ${Number(s.sale_price).toFixed(2).replace('.', ',')}</td>
             <td class="px-5 py-3 font-mono text-[11px] ${Number(s.discount || 0) > 0 ? 'text-emerald-400' : 'text-slate-600'}">
