@@ -1863,6 +1863,27 @@ app.get('/api/v1/products', resellerBotAuth, async (req, res) => {
   });
 });
 
+// Validar cupom via API de bots (X-API-Key) sem gerar pedido
+app.post('/api/v1/validate-coupon', resellerBotAuth, async (req, res) => {
+  const body = req.body || {};
+  const fakeReq = { body: { ...body } };
+  const pricing = await resolveOrderPricing(fakeReq, req.reseller);
+  if (pricing.error) {
+    return res.status(400).json({ success: false, error: pricing.error });
+  }
+  res.json({
+    success: true,
+    data: {
+      product: pricing.productName,
+      product_id: pricing.productId,
+      base_price: pricing.baseSalePrice,
+      discount: pricing.discount,
+      final_price: pricing.finalSalePrice,
+      coupon_code: pricing.couponCode
+    }
+  });
+});
+
 app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => {
   const ip = getClientIp(req);
   const reseller = req.reseller;

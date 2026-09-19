@@ -214,7 +214,7 @@ function getMainKeyboard() {
     reply_markup: {
       inline_keyboard: [
         [
-          { text: '🛒 Comprar Spotify 3 Meses (R$ ' + DEFAULT_SALE_PRICE.toFixed(2).replace('.', ',') + ')', callback_data: 'buy_now' }
+          { text: '🛒 Comprar / Gerar Link', callback_data: 'catalog' }
         ],
         [
           { text: 'ℹ️ Como Funciona', callback_data: 'how_it_works' },
@@ -249,7 +249,7 @@ bot.onText(/\/start/, (msg) => {
 
 // Comando /comprar
 bot.onText(/\/comprar/, async (msg) => {
-  await handlePurchase(msg.chat.id, msg.from);
+  await showCatalog(msg.chat.id, null);
 });
 
 // Comando /saldo (saldo da conta vinculada ao ID de perfil)
@@ -488,7 +488,7 @@ async function checkPixStatus(chatId, user, externalReference, messageId) {
       const okKeyboard = {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '🛒 Comprar / Gerar Link', callback_data: 'buy_now' }],
+            [{ text: '🛒 Comprar / Gerar Link', callback_data: 'catalog' }],
             [{ text: '📊 Ver Meu Saldo', callback_data: 'check_balance' }],
             [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
           ]
@@ -543,8 +543,22 @@ bot.on('callback_query', async (query) => {
 
   bot.answerCallbackQuery(query.id);
 
-  if (action === 'buy_now') {
-    await handlePurchase(chatId, query.from, query.message.message_id);
+  if (action === 'buy_now' || action === 'catalog') {
+    await showCatalog(chatId, query.message.message_id);
+  } else if (action && action.startsWith('prod_')) {
+    const pid = parseInt(action.slice('prod_'.length), 10);
+    if (!isNaN(pid)) await showProductDetail(chatId, query.message.message_id, pid);
+  } else if (action && action.startsWith('buy_prod_')) {
+    const pid = parseInt(action.slice('buy_prod_'.length), 10);
+    if (!isNaN(pid)) await buyProduct(chatId, query.from, query.message.message_id, pid);
+  } else if (action && action.startsWith('coupon_prod_')) {
+    const pid = parseInt(action.slice('coupon_prod_'.length), 10);
+    if (!isNaN(pid)) await askCouponCode(chatId, query.message.message_id, pid);
+  } else if (action === 'confirm_coupon_buy') {
+    await confirmCouponBuy(chatId, query.from, query.message.message_id);
+  } else if (action === 'cancel_coupon') {
+    couponPending.delete(String(chatId));
+    await showCatalog(chatId, query.message.message_id);
   } else if (action === 'check_balance') {
     await handleCheckBalance(chatId, query.from, query.message.message_id);
   } else if (action === 'mp_recharge_menu') {
@@ -598,8 +612,184 @@ bot.on('callback_query', async (query) => {
   }
 });
 
+// ==========================================
+// CATÁLOGO DE PRODUTOS (consome /api/v1/products)
+// ==========================================
+let productsCache = { at: 0, items: [] };
+async function fetchProducts() {
+  const now = Date.now();
+  if (productsCache.items.length && now - productsCache.at < 60000) return productsCache.items;
+  const res = await fetch(`${API_BASE_URL}/api/v1/products`, {
+    headers: { 'X-API-Key': RESELLER_API_KEY },
+    signal: AbortSignal.timeout(8000)
+  });
+  const data = await res.json();
+  if (!res.ok || !data.success) throw new Error((data && data.error) || 'Falha ao carregar catálogo.');
+  productsCache = { at: now, items: data.data || [] };
+  return productsCache.items;
+}
+
+// Menu do catálogo — lista os produtos com o preço vindo do servidor
+async function showCatalog(chatId, messageId) {
+  if (!RESELLER_API_KEY) {
+    return sendOrEdit(chatId, messageId, '⚠️ <b>Bot em Manutenção:</b> A chave de revendedor não foi configurada pelo administrador no arquivo .env.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
+  }
+  const loadingText = '🛒 <i>Carregando catálogo de produtos...</i>';
+  if (messageId) await bot.editMessageText(loadingText, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML' }).catch(() => {});
+  try {
+    const products = await fetchProducts();
+    let text, keyboard;
+    if (!products.length) {
+      text = '🛒 <b>CATÁLOGO DE PRODUTOS</b>\n\n⚠️ Nenhum produto disponível no momento. Tente novamente mais tarde.';
+      keyboard = { reply_markup: { inline_keyboard: [[{ text: '🏠 Menu Principal', callback_data: 'back_to_menu' }]] } };
+    } else {
+      text = '🛒 <b>CATÁLOGO DE PRODUTOS</b>\n\nEscolha o produto desejado:';
+      const rows = products.map((p) => [{ text: `🎧 ${p.name} — ${brl(p.sale_price)}`, callback_data: `prod_${p.id}` }]);
+      rows.push([{ text: '🏠 Menu Principal', callback_data: 'back_to_menu' }]);
+      keyboard = { reply_markup: { inline_keyboard: rows } };
+    }
+    sendOrEdit(chatId, messageId, text, { parse_mode: 'HTML', ...keyboard });
+  } catch (err) {
+    sendOrEdit(chatId, messageId, `❌ <b>Erro de Conexão:</b> não foi possível carregar o catálogo (${API_BASE_URL}). Verifique se o servidor está rodando!`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
+  }
+}
+
+// Detalhe de um produto — comprar direto ou com cupom
+async function showProductDetail(chatId, messageId, pid) {
+  try {
+    let products = await fetchProducts();
+    let p = products.find((x) => x.id === pid);
+    if (!p) {
+      productsCache = { at: 0, items: [] };
+      products = await fetchProducts();
+      p = products.find((x) => x.id === pid);
+    }
+    if (!p) throw new Error('Produto não encontrado ou inativo.');
+    const desc = p.description && String(p.description).trim() ? `\n${escapeHtml(p.description)}` : '';
+    const text =
+      `🛒 <b>${escapeHtml(p.name)}</b>${desc}\n\n` +
+      `💵 <b>Preço:</b> ${brl(p.sale_price)}\n` +
+      `⚡ Entrega automática e imediata após a confirmação.`;
+    const keyboard = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: `✅ Comprar agora — ${brl(p.sale_price)}`, callback_data: `buy_prod_${p.id}` }],
+          [{ text: '🎟 Tenho cupom de desconto', callback_data: `coupon_prod_${p.id}` }],
+          [{ text: '⬅️ Voltar ao Catálogo', callback_data: 'catalog' }],
+          [{ text: '🏠 Menu Principal', callback_data: 'back_to_menu' }]
+        ]
+      }
+    };
+    sendOrEdit(chatId, messageId, text, { parse_mode: 'HTML', ...keyboard });
+  } catch (err) {
+    sendOrEdit(chatId, messageId, `❌ <b>Erro:</b> ${err.message}`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
+  }
+}
+
+// Compra direta de um produto do catálogo (sem cupom)
+async function buyProduct(chatId, user, messageId, pid) {
+  let productName;
+  try {
+    const products = await fetchProducts();
+    const p = products.find((x) => x.id === pid);
+    if (p) productName = p.name;
+  } catch (e) { /* segue com nome genérico */ }
+  await handlePurchase(chatId, user, messageId, { productId: pid, productName });
+}
+
+// ==========================================
+// CUPONS DE DESCONTO (consome /api/v1/validate-coupon)
+// ==========================================
+const couponPending = new Map(); // String(chatId) -> { productId, productName, couponCode, menuMessageId }
+
+// Pede o código do cupom; depois o botão "confirm_coupon_buy" efetiva a compra
+async function askCouponCode(chatId, menuMessageId, pid) {
+  try {
+    const products = await fetchProducts();
+    const p = products.find((x) => x.id === pid);
+    if (!p) throw new Error('Produto não encontrado ou inativo.');
+    couponPending.set(String(chatId), { productId: pid, productName: p.name, couponCode: null, menuMessageId });
+    const text =
+      `🎟 <b>CUPOM DE DESCONTO</b>\n\n` +
+      `Produto: <b>${escapeHtml(p.name)}</b> — ${brl(p.sale_price)}\n\n` +
+      `Envie o <b>código do cupom</b> como mensagem neste chat:\n\n` +
+      `<i>Ex.:</i> <code>BEMVINDO10</code>`;
+    const keyboard = { reply_markup: { inline_keyboard: [[{ text: '❌ Cancelar', callback_data: 'cancel_coupon' }]] } };
+    sendOrEdit(chatId, menuMessageId, text, { parse_mode: 'HTML', ...keyboard });
+  } catch (err) {
+    sendOrEdit(chatId, menuMessageId, `❌ <b>Erro:</b> ${err.message}`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
+  }
+}
+
+// Captura o código digitado enquanto o cliente está no fluxo de cupom
+bot.on('message', async (msg) => {
+  const key = String(msg.chat.id);
+  const pending = couponPending.get(key);
+  if (!pending || pending.couponCode) return;
+  if (!msg.text || msg.text.trim() === '' || msg.text.startsWith('/')) return;
+  const code = msg.text.trim();
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/validate-coupon`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': RESELLER_API_KEY },
+      body: JSON.stringify({ product_id: pending.productId, coupon_code: code }),
+      signal: AbortSignal.timeout(8000)
+    });
+    const data = await res.json();
+    if (res.status === 200 && data.success && data.data) {
+      const d = data.data;
+      couponPending.set(key, { ...pending, couponCode: code });
+      const text =
+        `🎟 <b>CUPOM VÁLIDO!</b>\n\n` +
+        `Produto: <b>${escapeHtml(d.product || pending.productName)}</b>\n` +
+        `Preço normal: ${brl(d.base_price != null ? d.base_price : 0)}\n` +
+        `Desconto: −${brl(d.discount != null ? d.discount : 0)} (<code>${escapeHtml(code)}</code>)\n` +
+        `━━━━━━━━━━━━━━━\n` +
+        `💰 <b>Total: ${brl(d.final_price != null ? d.final_price : 0)}</b>`;
+      const keyboard = {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: `✅ Confirmar compra — ${brl(d.final_price != null ? d.final_price : 0)}`, callback_data: 'confirm_coupon_buy' }],
+            [{ text: '❌ Cancelar', callback_data: 'cancel_coupon' }]
+          ]
+        }
+      };
+      sendOrEdit(msg.chat.id, pending.menuMessageId, text, { parse_mode: 'HTML', ...keyboard });
+      bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
+    } else {
+      const reason = (data && data.error) || 'Cupom inválido, expirado ou sem usos disponíveis.';
+      const text =
+        `❌ <b>Cupom inválido:</b> ${escapeHtml(reason)}\n\n` +
+        `Envie outro código ou toque em <b>Cancelar</b>.`;
+      const keyboard = { reply_markup: { inline_keyboard: [[{ text: '❌ Cancelar', callback_data: 'cancel_coupon' }]] } };
+      sendOrEdit(msg.chat.id, pending.menuMessageId, text, { parse_mode: 'HTML', ...keyboard });
+      bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
+    }
+  } catch (err) {
+    sendOrEdit(msg.chat.id, pending.menuMessageId,
+      `❌ <b>Erro de Conexão:</b> não foi possível validar o cupom (${API_BASE_URL}). Verifique se o servidor está rodando!`,
+      { parse_mode: 'HTML', ...backToMenuKeyboard() }
+    );
+  }
+});
+
+// Confirma a compra com o cupom já validado
+async function confirmCouponBuy(chatId, user, messageId) {
+  const pending = couponPending.get(String(chatId));
+  couponPending.delete(String(chatId));
+  if (!pending || !pending.couponCode) {
+    return showCatalog(chatId, messageId);
+  }
+  await handlePurchase(chatId, user, messageId, {
+    productId: pending.productId,
+    productName: pending.productName,
+    couponCode: pending.couponCode
+  });
+}
+
 // Função de Processar Compra e Gerar Link na API
-async function handlePurchase(chatId, user, messageId) {
+async function handlePurchase(chatId, user, messageId, opts) {
+  opts = opts || {};
   if (!RESELLER_API_KEY) {
     return sendOrEdit(chatId, messageId, '⚠️ <b>Bot em Manutenção:</b> A chave de revendedor não foi configurada pelo administrador no arquivo .env.', { parse_mode: 'HTML' });
   }
@@ -620,19 +810,23 @@ async function handlePurchase(chatId, user, messageId) {
   const customerContact = user.username ? ('@' + user.username) : ('ID: ' + user.id);
 
   try {
+    const payload = {
+      customer_name: customerName,
+      customer_id: customerId,
+      customer_contact: customerContact,
+      sale_price: DEFAULT_SALE_PRICE
+    };
+    if (opts.productId) payload.product_id = opts.productId;
+    if (opts.productName) payload.product = opts.productName;
+    if (opts.couponCode) payload.coupon_code = opts.couponCode;
+
     const response = await fetch(`${API_BASE_URL}/api/v1/generate`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-API-Key': RESELLER_API_KEY
       },
-      body: JSON.stringify({
-        customer_name: customerName,
-        customer_id: customerId,
-        customer_contact: customerContact,
-        product: 'Spotify Premium',
-        sale_price: DEFAULT_SALE_PRICE
-      })
+      body: JSON.stringify(payload)
     });
 
     const data = await response.json();
@@ -643,17 +837,22 @@ async function handlePurchase(chatId, user, messageId) {
     if (response.status === 200 && data.success) {
       // SUCESSO! Link gerado e saldo debitado em R$ 2,99
       console.log('[venda] link gerado:', data.token, 'saldo restante:', data.balance_remaining);
+      const productLabel = data.product || opts.productName || 'Spotify Premium';
+      const discountInfo = (data.discount && data.discount > 0)
+        ? `🎟 <b>Cupom aplicado:</b> <code>${escapeHtml(data.coupon_code || '')}</code> (− ${brl(data.discount)})\n`
+        : '';
       const deliveryText = 
         `🎉 <b>PAGAMENTO CONFIRMADO & ACESSO LIBERADO!</b>\n\n` +
-        `🎧 <b>Produto:</b> Spotify Premium 3 Meses (Acesso Individual)\n` +
+        `🎧 <b>Produto:</b> ${escapeHtml(productLabel)}\n` +
         `👤 <b>Cliente:</b> ${customerName}\n` +
+        `${discountInfo}` +
         `🔑 <b>Sua Chave Única:</b> <code>${data.token}</code>\n` +
         `⏳ <b>Validade do Link:</b> 24 horas\n\n` +
         `🔗 <b>Seu Link Individual:</b>\n` +
         `👉 ${data.link}\n\n` +
         `💡 <b>Como Ativar:</b>\n` +
         `1. Clique no botão azul abaixo para abrir seu link exclusivo.\n` +
-        `2. Conecte sua conta do Spotify e aproveite seus <b>3 meses</b> de Premium sem anúncios!\n\n` +
+        `2. Siga as instruções da nossa tela segura para ativar seu <b>${escapeHtml(productLabel)}</b>!\n\n` +
         `<i>Obrigado por comprar conosco!</i>`;
 
       const linkKeyboard = {
@@ -663,7 +862,7 @@ async function handlePurchase(chatId, user, messageId) {
               { text: '🚀 ABRIR MEU ACESSO AGORA', url: data.link }
             ],
             [
-              { text: '🔄 Comprar Outro Link', callback_data: 'buy_now' },
+              { text: '🔄 Comprar Outro Link', callback_data: 'catalog' },
               { text: '🏠 Menu Principal', callback_data: 'back_to_menu' }
             ]
           ]
@@ -673,11 +872,11 @@ async function handlePurchase(chatId, user, messageId) {
       sendOrEdit(chatId, messageId, deliveryText, { parse_mode: 'HTML', ...linkKeyboard });
 
     } else if (response.status === 402) {
-      // Saldo Insuficiente (< R$ 2,99)
+      // Saldo Insuficiente (custo do produto)
+      const outOfBalanceMsg = (data && data.error) || 'O saldo do revendedor na central está abaixo do custo do produto.';
       sendOrEdit(chatId, messageId, 
         `⚠️ <b>Estoque Temporariamente Esgotado!</b>\n\n` +
-        `O saldo do revendedor na central está abaixo de R$ 2,99.\n` +
-        `Por favor, recarregue seu saldo no painel do revendedor para que o bot continue entregando links.\n\n` +
+        `${escapeHtml(outOfBalanceMsg)}\n\n` +
         `💼 <b>Acesse para recarregar:</b> ${PUBLIC_BASE_URL}/revendedor.html`,
         { parse_mode: 'HTML', ...backToMenuKeyboard() }
       );
