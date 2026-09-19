@@ -838,6 +838,583 @@ app.get('/api/v1/balance', resellerBotAuth, async (req, res) => {
 });
 
 // ==========================================
+// CATÁLOGO, CUPONS, PEDIDOS E PAGAMENTOS
+// (Portados do painel lovelygemi e integrados com o bot de vendas)
+// ==========================================
+
+// Gera um código de pedido curto e único (ex: ORD-7K2XQ9P)
+function generateOrderCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 7; i += 1) code += chars[Math.floor(Math.random() * chars.length)];
+  return 'ORD-' + code;
+}
+
+// Valida um cupom e calcula o desconto sobre um preço
+async function validateCouponDb(code, price) {
+  if (!code) return null;
+  const coupon = await dbHelpers.db.prepare('SELECT * FROM coupons WHERE code = ?').get(String(code).trim().toUpperCase());
+  if (!coupon) return { error: 'Cupom não encontrado.' };
+  if (coupon.active !== 1) return { error: 'Este cupom está desativado.' };
+  if (coupon.max_uses > 0 && Number(coupon.used_count || 0) >= Number(coupon.max_uses)) {
+    return { error: 'Este cupom já atingiu o limite de usos.' };
+  }
+  if (coupon.valid_until && new Date(coupon.valid_until).getTime() < Date.now()) {
+    return { error: 'Este cupom expirou.' };
+  }
+  const basePrice = parseFloat(price || 0);
+  let discount = 0;
+  if (coupon.discount_type === 'percent') {
+    discount = Math.min(basePrice, basePrice * (parseFloat(coupon.discount_value) / 100));
+  } else {
+    discount = Math.min(basePrice, parseFloat(coupon.discount_value));
+  }
+  discount = Math.round(discount * 100) / 100;
+  return { coupon, discount, total: Math.max(0, Math.round((basePrice - discount) * 100) / 100) };
+}
+
+// Entrega um pedido pago: debita o custo do revendedor, gera o link e registra a venda
+async function deliverOrder(orderId) {
+  const order = await dbHelpers.db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+  if (!order) return { success: false, reason: 'pedido_inexistente' };
+  if (order.status === 'delivered' && order.token) return { success: true, order, alreadyDelivered: true };
+
+  const reseller = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE id = ?').get(order.reseller_id);
+  if (!reseller) return { success: false, reason: 'revendedor_inexistente' };
+  if (reseller.blocked === 1 || reseller.active !== 1) return { success: false, reason: 'revendedor_bloqueado' };
+
+  let costPrice = parseFloat(reseller.cost_per_link || 2.99);
+  if (order.product_id) {
+    const prodRow = await dbHelpers.db.prepare('SELECT cost_price FROM products WHERE id = ?').get(order.product_id);
+    if (prodRow && prodRow.cost_price > 0) costPrice = parseFloat(prodRow.cost_price);
+  }
+  const currentCredits = parseFloat(reseller.credits || 0);
+  if (currentCredits < costPrice) {
+    return { success: false, reason: 'saldo_insuficiente', costPrice };
+  }
+
+  const ip = '127.0.0.1';
+  await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits - ? AS NUMERIC), 2) WHERE id = ?').run(costPrice, reseller.id);
+  const generation = await dbHelpers.generateLink(`order:${order.order_code}`, reseller.id, ip);
+
+  await dbHelpers.db.prepare(`
+    INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_id, customer_contact, sale_price, cost_price, profit, delivery_status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Entregue (Pedido)', ?)
+  `).run(
+    reseller.id,
+    generation.token,
+    generation.targetUrl,
+    order.customer_name || 'Cliente Bot',
+    order.customer_id || 'bot',
+    order.customer_contact || 'Via Bot',
+    order.total,
+    costPrice,
+    Math.max(0, Math.round((order.total - costPrice) * 100) / 100),
+    new Date().toISOString()
+  );
+
+  await dbHelpers.db.prepare("UPDATE orders SET status = 'delivered', token = ?, updated_at = ? WHERE id = ?")
+    .run(generation.token, new Date().toISOString(), order.id);
+
+  return {
+    success: true,
+    order: {
+      ...order,
+      status: 'delivered',
+      token: generation.token,
+      link: generation.targetUrl
+    },
+    costPrice
+  };
+}
+
+// Lista produtos ativos (catálogo do bot)
+app.get('/api/v1/products', resellerBotAuth, async (req, res) => {
+  const products = await dbHelpers.db.prepare(`
+    SELECT id, name, description, price, emoji, sort_order
+    FROM products WHERE active = 1 ORDER BY sort_order ASC, id ASC
+  `).all();
+  res.json({
+    success: true,
+    data: products.map((p) => ({
+      ...p,
+      id: Number(p.id),
+      price: parseFloat(p.price || 0)
+    }))
+  });
+});
+
+// Valida um cupom de desconto
+app.get('/api/v1/coupons/:code', resellerBotAuth, async (req, res) => {
+  const price = parseFloat(req.query.price || '0');
+  const result = await validateCouponDb(req.params.code, price);
+  if (!result || result.error) {
+    return res.status(400).json({ success: false, error: (result && result.error) || 'Cupom inválido.' });
+  }
+  res.json({
+    success: true,
+    code: result.coupon.code,
+    discount_type: result.coupon.discount_type,
+    discount_value: parseFloat(result.coupon.discount_value),
+    discount: result.discount,
+    total: result.total,
+    valid_until: result.coupon.valid_until
+  });
+});
+
+// Cria um pedido (checkout do bot). Método BALANCE = entrega instantânea.
+app.post('/api/v1/orders', resellerBotAuth, async (req, res) => {
+  const reseller = req.reseller;
+  const ip = getClientIp(req);
+  const { product_id, coupon_code, customer_name, customer_id, customer_contact, payment_method } = req.body;
+
+  let product = null;
+  if (product_id) {
+    product = await dbHelpers.db.prepare('SELECT * FROM products WHERE id = ?').get(parseInt(product_id, 10));
+    if (!product || product.active !== 1) {
+      return res.status(404).json({ success: false, error: 'Produto não encontrado ou indisponível.' });
+    }
+  }
+
+  const unitPrice = product ? parseFloat(product.price) : parseFloat(reseller.sale_price || 15.00);
+  const costPrice = product ? parseFloat(product.cost_price) : parseFloat(reseller.cost_per_link || 2.99);
+
+  // Aplica cupom, se informado
+  let discount = 0;
+  let couponRow = null;
+  if (coupon_code && String(coupon_code).trim()) {
+    const v = await validateCouponDb(coupon_code, unitPrice);
+    if (!v || v.error) {
+      return res.status(400).json({ success: false, error: (v && v.error) || 'Cupom inválido.' });
+    }
+    discount = v.discount;
+    couponRow = v.coupon;
+  }
+  const total = Math.max(0, Math.round((unitPrice - discount) * 100) / 100);
+
+  const method = (payment_method || 'BALANCE').toUpperCase();
+  const now = new Date().toISOString();
+  const orderCode = generateOrderCode();
+
+  // Fluxo instantâneo (saldo do revendedor)
+  if (method === 'BALANCE') {
+    if (parseFloat(reseller.credits || 0) < costPrice) {
+      return res.status(402).json({
+        success: false,
+        error: `Saldo insuficiente para gerar o link. Custo: R$ ${costPrice.toFixed(2).replace('.', ',')}.`,
+        code: 'NO_BALANCE'
+      });
+    }
+    await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits - ? AS NUMERIC), 2) WHERE id = ?').run(costPrice, reseller.id);
+
+    const generation = await dbHelpers.generateLink(`order:${orderCode}`, reseller.id, ip);
+    if (couponRow) {
+      await dbHelpers.db.prepare('UPDATE coupons SET used_count = used_count + 1 WHERE id = ?').run(couponRow.id);
+    }
+
+    const insert = await dbHelpers.db.prepare(`
+      INSERT INTO orders (order_code, reseller_id, product_id, product_name, customer_name, customer_id, customer_contact, unit_price, discount, total, coupon_code, status, payment_method, token, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'delivered', 'BALANCE', ?, ?, ?) RETURNING id
+    `).run(
+      orderCode,
+      reseller.id,
+      product ? product.id : null,
+      product ? product.name : 'Spotify Premium 3 Meses',
+      customer_name || null,
+      customer_id || null,
+      customer_contact || null,
+      unitPrice,
+      discount,
+      total,
+      couponRow ? couponRow.code : null,
+      generation.token,
+      now,
+      now
+    );
+    const orderId = insert.lastInsertRowid;
+
+    await dbHelpers.db.prepare(`
+      INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_id, customer_contact, sale_price, cost_price, profit, delivery_status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Entregue (Pedido)', ?)
+    `).run(
+      reseller.id,
+      generation.token,
+      generation.targetUrl,
+      customer_name || 'Cliente Bot',
+      customer_id || 'bot',
+      customer_contact || 'Via Bot',
+      total,
+      costPrice,
+      Math.max(0, Math.round((total - costPrice) * 100) / 100),
+      now
+    );
+
+    await dbHelpers.db.prepare(`
+      INSERT INTO payments (order_id, reseller_id, provider, external_id, amount, currency, status, metadata, created_at, updated_at)
+      VALUES (?, ?, 'BALANCE', ?, ?, 'BRL', 'confirmed', ?, ?, ?)
+    `).run(orderId, reseller.id, orderCode, total, JSON.stringify({ method: 'instant' }), now, now);
+
+    const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
+    return res.json({
+      success: true,
+      order_code: orderCode,
+      order_id: orderId ? Number(orderId) : null,
+      product: product ? product.name : 'Spotify Premium 3 Meses',
+      unit_price: unitPrice,
+      discount,
+      total,
+      coupon_code: couponRow ? couponRow.code : null,
+      status: 'delivered',
+      token: generation.token,
+      link: generation.targetUrl,
+      balance_remaining: parseFloat(updated.credits)
+    });
+  }
+
+  // Fluxo com pagamento externo (PIX manual via painel ou cripto NOWPayments)
+  if (couponRow) {
+    await dbHelpers.db.prepare('UPDATE coupons SET used_count = used_count + 1 WHERE id = ?').run(couponRow.id);
+  }
+  const insert = await dbHelpers.db.prepare(`
+    INSERT INTO orders (order_code, reseller_id, product_id, product_name, customer_name, customer_id, customer_contact, unit_price, discount, total, coupon_code, status, payment_method, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?) RETURNING id
+  `).run(
+    orderCode,
+    reseller.id,
+    product ? product.id : null,
+    product ? product.name : 'Spotify Premium 3 Meses',
+    customer_name || null,
+    customer_id || null,
+    customer_contact || null,
+    unitPrice,
+    discount,
+    total,
+    couponRow ? couponRow.code : null,
+    method === 'NOWPAYMENTS' ? 'NOWPAYMENTS' : 'PIX',
+    now,
+    now
+  );
+  const orderId = insert.lastInsertRowid;
+
+  if (method === 'NOWPAYMENTS') {
+    const npKey = process.env.NOWPAYMENTS_API_KEY;
+    let invoice = null;
+    if (npKey) {
+      try {
+        const resp = await fetch('https://api.nowpayments.io/v1/invoice', {
+          method: 'POST',
+          headers: { 'x-api-key': npKey, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            price_amount: total,
+            price_currency: 'BRL',
+            order_id: orderCode,
+            order_description: `Pedido ${orderCode}`
+          })
+        });
+        invoice = await resp.json();
+      } catch (e) {
+        console.error('[nowpayments create invoice]', e && e.message ? e.message : e);
+      }
+    }
+    const externalId = (invoice && invoice.id) ? invoice.id : null;
+    const meta = JSON.stringify({ mock: !externalId, invoice: invoice || null });
+    await dbHelpers.db.prepare(`
+      INSERT INTO payments (order_id, reseller_id, provider, external_id, amount, currency, status, metadata, created_at, updated_at)
+      VALUES (?, ?, 'NOWPAYMENTS', ?, ?, ?, 'pending', ?, ?, ?)
+    `).run(orderId, reseller.id, externalId, total, 'BRL', meta, now, now);
+
+    return res.json({
+      success: true,
+      order_id: Number(orderId),
+      order_code: orderCode,
+      total,
+      status: 'pending',
+      payment: {
+        provider: 'NOWPAYMENTS',
+        payment_url: (invoice && invoice.invoice_url) ? invoice.invoice_url : null,
+        invoice_id: externalId,
+        mock: !externalId
+      }
+    });
+  }
+
+  // PIX: instruções de pagamento (recarga manual no painel do revendedor)
+  await dbHelpers.db.prepare(`
+    INSERT INTO payments (order_id, reseller_id, provider, external_id, amount, currency, status, metadata, created_at, updated_at)
+    VALUES (?, ?, 'PIX', ?, ?, 'BRL', 'pending', ?, ?, ?)
+  `).run(orderId, reseller.id, null, total, JSON.stringify({ instructions: 'Pagar via PIX no painel do revendedor ou recarregar saldo' }), now, now);
+
+  res.json({
+    success: true,
+    order_id: Number(orderId),
+    order_code: orderCode,
+    total,
+    status: 'pending',
+    payment: {
+      provider: 'PIX',
+      mock: true,
+      instructions: 'Faça a recarga via PIX no painel do revendedor; o admin confirma e o pedido é entregue automaticamente.'
+    }
+  });
+});
+
+// Consulta o status de um pedido pelo código
+app.get('/api/v1/orders/:order_code', resellerBotAuth, async (req, res) => {
+  const order = await dbHelpers.db.prepare('SELECT * FROM orders WHERE order_code = ? AND reseller_id = ?')
+    .get(String(req.params.order_code).toUpperCase(), req.reseller.id);
+  if (!order) return res.status(404).json({ success: false, error: 'Pedido não encontrado.' });
+  res.json({
+    success: true,
+    order: {
+      id: Number(order.id),
+      order_code: order.order_code,
+      product_name: order.product_name,
+      total: parseFloat(order.total),
+      discount: parseFloat(order.discount),
+      coupon_code: order.coupon_code,
+      status: order.status,
+      token: order.token,
+      created_at: order.created_at
+    }
+  });
+});
+
+// Webhook do NOWPayments (confirma pagamento cripto e entrega o pedido)
+app.post('/api/webhooks/nowpayments', async (req, res) => {
+  const body = req.body || {};
+  const status = String(body.payment_status || body.status || '').toLowerCase();
+  const orderCode = String(body.order_id || body.orderCode || (body.metadata && body.metadata.order_code) || '').toUpperCase();
+
+  // Protocolo de verificação de IPN (v2): responder com o hash do payment_id
+  if (req.headers['x-nowpayments-sig'] && body.payment_id) {
+    return res.json({ status: 1 });
+  }
+
+  if (!orderCode || !['confirmed', 'finished'].includes(status)) {
+    return res.json({ status: 0 });
+  }
+
+  try {
+    const order = await dbHelpers.db.prepare('SELECT * FROM orders WHERE order_code = ?').get(orderCode);
+    if (!order) return res.status(404).json({ success: false, error: 'Pedido não encontrado.' });
+
+    await dbHelpers.db.prepare(`
+      UPDATE payments SET status = 'confirmed', external_id = ?, updated_at = ?
+      WHERE order_id = ? AND provider = 'NOWPAYMENTS'
+    `).run(body.payment_id ? String(body.payment_id) : null, new Date().toISOString(), order.id);
+
+    await dbHelpers.db.prepare("UPDATE orders SET status = 'paid', updated_at = ? WHERE id = ?")
+      .run(new Date().toISOString(), order.id);
+
+    const delivery = await deliverOrder(order.id);
+    return res.json({
+      status: 1,
+      success: true,
+      order_code: orderCode,
+      delivered: delivery.success,
+      reason: delivery.reason || null
+    });
+  } catch (e) {
+    dbHelpers.logError({ endpoint: '/api/webhooks/nowpayments', method: 'POST', statusCode: 500, errorType: 'WebhookError', message: e && e.message ? e.message : String(e), source: 'webhook' });
+    return res.status(500).json({ status: 0, success: false });
+  }
+});
+
+// ---------- ADMIN: PRODUTOS ----------
+app.get('/api/admin/products', adminAuth, async (req, res) => {
+  const products = await dbHelpers.db.prepare('SELECT * FROM products ORDER BY sort_order ASC, id ASC').all();
+  res.json({ success: true, data: products.map((p) => ({ ...p, id: Number(p.id), price: parseFloat(p.price || 0), cost_price: parseFloat(p.cost_price || 0) })) });
+});
+
+app.post('/api/admin/products', adminAuth, async (req, res) => {
+  const { name, description, price, cost_price, emoji, active, sort_order } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ success: false, error: 'Informe o nome do produto.' });
+  const cleanPrice = Math.max(0, parseFloat(price) || 0);
+  const cleanCost = Math.max(0, parseFloat(cost_price));
+  const now = new Date().toISOString();
+  const r = await dbHelpers.db.prepare(`
+    INSERT INTO products (name, description, price, cost_price, emoji, active, sort_order, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+  `).run(
+    name.trim(),
+    description ? String(description).trim() : null,
+    cleanPrice,
+    cleanCost,
+    emoji || '🎁',
+    active === false || active === 0 ? 0 : 1,
+    parseInt(sort_order || '0', 10),
+    now
+  );
+  res.json({ success: true, message: 'Produto criado com sucesso!', id: Number(r.lastInsertRowid) });
+});
+
+app.put('/api/admin/products/:id', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const existing = await dbHelpers.db.prepare('SELECT id FROM products WHERE id = ?').get(id);
+  if (!existing) return res.status(404).json({ success: false, error: 'Produto não encontrado.' });
+  const { name, description, price, cost_price, emoji, active, sort_order } = req.body;
+  await dbHelpers.db.prepare(`
+    UPDATE products SET name = ?, description = ?, price = ?, cost_price = ?, emoji = ?, active = ?, sort_order = ? WHERE id = ?
+  `).run(
+    name !== undefined ? String(name).trim() : existing.name,
+    description !== undefined ? String(description).trim() : existing.description,
+    price !== undefined ? Math.max(0, parseFloat(price) || 0) : existing.price,
+    cost_price !== undefined ? Math.max(0, parseFloat(cost_price) || 0) : existing.cost_price,
+    emoji !== undefined ? (emoji || '🎁') : existing.emoji,
+    active !== undefined ? (active === false || active === 0 ? 0 : 1) : existing.active,
+    sort_order !== undefined ? parseInt(sort_order || '0', 10) : existing.sort_order
+  );
+  res.json({ success: true, message: 'Produto atualizado com sucesso!' });
+});
+
+app.delete('/api/admin/products/:id', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  await dbHelpers.db.prepare('UPDATE products SET active = 0 WHERE id = ?').run(id);
+  res.json({ success: true, message: 'Produto desativado com sucesso.' });
+});
+
+// ---------- ADMIN: CUPONS ----------
+app.get('/api/admin/coupons', adminAuth, async (req, res) => {
+  const coupons = await dbHelpers.db.prepare('SELECT * FROM coupons ORDER BY id DESC').all();
+  res.json({ success: true, data: coupons.map((c) => ({ ...c, id: Number(c.id) })) });
+});
+
+app.post('/api/admin/coupons', adminAuth, async (req, res) => {
+  const { code, discount_type, discount_value, max_uses, valid_until, active } = req.body;
+  const cleanCode = code ? String(code).trim().toUpperCase().replace(/\s+/g, '') : '';
+  if (!cleanCode) return res.status(400).json({ success: false, error: 'Informe o código do cupom.' });
+  const value = parseFloat(discount_value);
+  if (isNaN(value) || value <= 0) return res.status(400).json({ success: false, error: 'Valor de desconto inválido.' });
+  if (discount_type === 'percent' && value > 100) return res.status(400).json({ success: false, error: 'Desconto percentual não pode passar de 100%.' });
+  const dup = await dbHelpers.db.prepare('SELECT id FROM coupons WHERE code = ?').get(cleanCode);
+  if (dup) return res.status(400).json({ success: false, error: 'Já existe um cupom com este código.' });
+  const now = new Date().toISOString();
+  const r = await dbHelpers.db.prepare(`
+    INSERT INTO coupons (code, discount_type, discount_value, max_uses, used_count, valid_until, active, created_at)
+    VALUES (?, ?, ?, ?, 0, ?, ?, ?) RETURNING id
+  `).run(
+    cleanCode,
+    discount_type === 'fixed' ? 'fixed' : 'percent',
+    value,
+    Math.max(0, parseInt(max_uses || '0', 10)),
+    valid_until ? new Date(valid_until).toISOString() : null,
+    active === false || active === 0 ? 0 : 1,
+    now
+  );
+  res.json({ success: true, message: `Cupom ${cleanCode} criado com sucesso!`, id: Number(r.lastInsertRowid) });
+});
+
+app.put('/api/admin/coupons/:id', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const existing = await dbHelpers.db.prepare('SELECT * FROM coupons WHERE id = ?').get(id);
+  if (!existing) return res.status(404).json({ success: false, error: 'Cupom não encontrado.' });
+  const { code, discount_type, discount_value, max_uses, valid_until, active } = req.body;
+  let cleanCode = existing.code;
+  if (code !== undefined) {
+    cleanCode = String(code).trim().toUpperCase().replace(/\s+/g, '');
+    if (!cleanCode) return res.status(400).json({ success: false, error: 'Código inválido.' });
+    const dup = await dbHelpers.db.prepare('SELECT id FROM coupons WHERE code = ? AND id != ?').get(cleanCode, id);
+    if (dup) return res.status(400).json({ success: false, error: 'Código já em uso por outro cupom.' });
+  }
+  const value = discount_value !== undefined ? parseFloat(discount_value) : existing.discount_value;
+  if (isNaN(value) || value <= 0) return res.status(400).json({ success: false, error: 'Valor de desconto inválido.' });
+  await dbHelpers.db.prepare(`
+    UPDATE coupons SET code = ?, discount_type = ?, discount_value = ?, max_uses = ?, valid_until = ?, active = ? WHERE id = ?
+  `).run(
+    cleanCode,
+    discount_type !== undefined ? (discount_type === 'fixed' ? 'fixed' : 'percent') : existing.discount_type,
+    value,
+    max_uses !== undefined ? Math.max(0, parseInt(max_uses || '0', 10)) : existing.max_uses,
+    valid_until !== undefined ? (valid_until ? new Date(valid_until).toISOString() : null) : existing.valid_until,
+    active !== undefined ? (active === false || active === 0 ? 0 : 1) : existing.active
+  );
+  res.json({ success: true, message: 'Cupom atualizado com sucesso!' });
+});
+
+app.delete('/api/admin/coupons/:id', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  await dbHelpers.db.prepare('UPDATE coupons SET active = 0 WHERE id = ?').run(id);
+  res.json({ success: true, message: 'Cupom desativado.' });
+});
+
+// ---------- ADMIN: PEDIDOS E PAGAMENTOS (FINANCEIRO) ----------
+app.get('/api/admin/orders', adminAuth, async (req, res) => {
+  const status = req.query.status;
+  const limit = Math.min(parseInt(req.query.limit || '100', 10), 300);
+  let query = `
+    SELECT o.*, r.name as reseller_name
+    FROM orders o
+    LEFT JOIN resellers r ON r.id = o.reseller_id
+  `;
+  const params = [];
+  if (status) {
+    query += ' WHERE o.status = ?';
+    params.push(status);
+  }
+  query += ' ORDER BY o.id DESC LIMIT ?';
+  params.push(limit);
+  const orders = await dbHelpers.db.prepare(query).all(...params);
+  res.json({ success: true, data: orders.map((o) => ({ ...o, id: Number(o.id), total: parseFloat(o.total), unit_price: parseFloat(o.unit_price), discount: parseFloat(o.discount) })) });
+});
+
+app.post('/api/admin/orders/:id/status', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const { status } = req.body;
+  const allowed = ['pending', 'paid', 'delivered', 'cancelled'];
+  if (!allowed.includes(status)) return res.status(400).json({ success: false, error: 'Status inválido.' });
+  const order = await dbHelpers.db.prepare('SELECT * FROM orders WHERE id = ?').get(id);
+  if (!order) return res.status(404).json({ success: false, error: 'Pedido não encontrado.' });
+
+  await dbHelpers.db.prepare('UPDATE orders SET status = ?, updated_at = ? WHERE id = ?')
+    .run(status, new Date().toISOString(), id);
+
+  // Ao marcar como entregue sem token, tenta gerar o link automaticamente
+  if (status === 'delivered' && !order.token) {
+    const delivery = await deliverOrder(id);
+    if (!delivery.success) {
+      return res.json({
+        success: true,
+        message: `Pedido marcado como ${status}. Entrega automática falhou: ${delivery.reason === 'saldo_insuficiente' ? 'saldo insuficiente do revendedor' : delivery.reason}.`,
+        delivery: delivery.reason
+      });
+    }
+    return res.json({ success: true, message: 'Pedido marcado como entregue e link gerado automaticamente!', delivered: true });
+  }
+
+  res.json({ success: true, message: `Pedido #${order.order_code} atualizado para ${status}.` });
+});
+
+app.get('/api/admin/payments', adminAuth, async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit || '100', 10), 300);
+  const payments = await dbHelpers.db.prepare(`
+    SELECT p.*, o.order_code, o.product_name, r.name as reseller_name
+    FROM payments p
+    JOIN orders o ON o.id = p.order_id
+    LEFT JOIN resellers r ON r.id = p.reseller_id
+    ORDER BY p.id DESC LIMIT ?
+  `).all(limit);
+  res.json({ success: true, data: payments.map((p) => ({ ...p, id: Number(p.id), amount: parseFloat(p.amount) })) });
+});
+
+// ---------- REVENDEDOR: PEDIDOS ----------
+app.get('/api/reseller/orders', resellerUserAuth, async (req, res) => {
+  const orders = await dbHelpers.db.prepare(`
+    SELECT * FROM orders WHERE reseller_id = ? ORDER BY id DESC LIMIT 100
+  `).all(req.reseller.id);
+  res.json({ success: true, data: orders.map((o) => ({ ...o, id: Number(o.id), total: parseFloat(o.total), unit_price: parseFloat(o.unit_price), discount: parseFloat(o.discount) })) });
+});
+
+app.post('/api/reseller/orders/:id/cancel', resellerUserAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const order = await dbHelpers.db.prepare('SELECT * FROM orders WHERE id = ? AND reseller_id = ?').get(id, req.reseller.id);
+  if (!order) return res.status(404).json({ success: false, error: 'Pedido não encontrado.' });
+  if (order.status !== 'pending') return res.status(400).json({ success: false, error: 'Apenas pedidos pendentes podem ser cancelados.' });
+  await dbHelpers.db.prepare("UPDATE orders SET status = 'cancelled', updated_at = ? WHERE id = ?")
+    .run(new Date().toISOString(), id);
+  res.json({ success: true, message: `Pedido #${order.order_code} cancelado.` });
+});
+
+// ==========================================
 // ROTAS DO PAINEL ADMIN (GESTÃO GLOBAL)
 // ==========================================
 
@@ -1065,19 +1642,70 @@ app.delete('/api/admin/resellers/:id', adminAuth, async (req, res) => {
 // Relatório Global de Vendas de Todos os Revendedores
 app.get('/api/admin/all-sales', adminAuth, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || '100', 10), 200);
+  const q = (req.query.q || '').toString().trim();
 
-  const sales = await dbHelpers.db.prepare(`
+  let sql = `
     SELECT 
       s.id, s.token, s.target_url, s.customer_name, s.customer_id, s.customer_contact, 
       s.sale_price, s.cost_price, s.profit, s.delivery_status, s.created_at,
       r.name as reseller_name, r.email as reseller_email
     FROM sales s
     JOIN resellers r ON s.reseller_id = r.id
-    ORDER BY s.id DESC
-    LIMIT ?
-  `).all(limit);
+  `;
+  const params = [];
+  if (q) {
+    // Escapa metas LIKE (% _ !) e usa ESCAPE '!' (compatível com SQLite e PostgreSQL)
+    const term = q.replace(/([%_!])/g, '!$1');
+    const like = `%${term}%`;
+    sql += ` WHERE LOWER(s.token) LIKE LOWER(?) ESCAPE '!'
+        OR LOWER(s.customer_name) LIKE LOWER(?) ESCAPE '!'
+        OR LOWER(s.customer_id) LIKE LOWER(?) ESCAPE '!'
+        OR LOWER(s.customer_contact) LIKE LOWER(?) ESCAPE '!'
+        OR LOWER(r.name) LIKE LOWER(?) ESCAPE '!'
+        OR LOWER(r.email) LIKE LOWER(?) ESCAPE '!'`;
+    params.push(like, like, like, like, like, like);
+  }
+  sql += ` ORDER BY s.id DESC
+    LIMIT ?`;
+  params.push(limit);
+
+  const sales = await dbHelpers.db.prepare(sql).all(...params);
 
   res.json({ success: true, data: sales });
+});
+
+// Clientes Globais (agrupados a partir das vendas) com busca por ID, nome ou contato
+app.get('/api/admin/customers', adminAuth, async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit || '100', 10), 200);
+  const q = (req.query.q || '').toString().trim();
+
+  let sql = `
+    SELECT
+      s.customer_id,
+      s.customer_name,
+      s.customer_contact,
+      COUNT(*) AS purchase_count,
+      SUM(COALESCE(s.sale_price, 0)) AS total_spent,
+      MAX(s.created_at) AS last_purchase
+    FROM sales s
+  `;
+  const params = [];
+  if (q) {
+    const term = q.replace(/([%_!])/g, '!$1');
+    const like = `%${term}%`;
+    sql += ` WHERE LOWER(s.customer_name) LIKE LOWER(?) ESCAPE '!'
+        OR LOWER(s.customer_id) LIKE LOWER(?) ESCAPE '!'
+        OR LOWER(s.customer_contact) LIKE LOWER(?) ESCAPE '!'`;
+    params.push(like, like, like);
+  }
+  sql += ` GROUP BY s.customer_id, s.customer_name, s.customer_contact
+    ORDER BY last_purchase DESC
+    LIMIT ?`;
+  params.push(limit);
+
+  const customers = await dbHelpers.db.prepare(sql).all(...params);
+
+  res.json({ success: true, data: customers });
 });
 
 // Logs de Erros

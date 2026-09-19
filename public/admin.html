@@ -262,26 +262,43 @@
           </div>
         </div>
 
-        <!-- ============================================== -->
-        <!-- TAB 3: TODAS AS VENDAS & CLIENTES (GLOBAL) -->
+<!-- ============================================== -->
+        <!-- TAB 3: VENDAS & CLIENTES (GLOBAL) — sub-abas + lupa -->
         <!-- ============================================== -->
         <div id="tab-all-sales" class="tab-content hidden space-y-6">
           <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div>
-              <h2 class="text-xl font-black text-white">Histórico Geral de Vendas para Clientes</h2>
-              <p class="text-xs text-slate-400">Visualização de todos os clientes finais que compraram links em qualquer bot de revenda.</p>
+              <h2 class="text-xl font-black text-white">Vendas & Clientes Globais</h2>
+              <p class="text-xs text-slate-400">Histórico de vendas realizadas pelos bots e lista de clientes finais, com busca por código, ID ou nome.</p>
             </div>
             <button id="btn-refresh-all-sales" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5">
               <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-indigo-400"></i>
-              <span>Atualizar Vendas</span>
+              <span>Atualizar</span>
             </button>
           </div>
 
-          <div class="glass-panel overflow-hidden">
+          <div class="glass-panel !p-3 flex flex-col sm:flex-row sm:items-center gap-3">
+            <div class="flex items-center gap-1 bg-slate-900/80 rounded-xl p-1 border border-white/10 w-fit">
+              <button id="btn-section-sales" data-section="sales" class="section-btn text-white bg-indigo-600/30 border border-indigo-500/40 px-4 py-1.5 rounded-lg text-xs font-bold transition-all">
+                <i data-lucide="shopping-cart" class="w-3.5 h-3.5 inline -mt-0.5 mr-1"></i>Vendas
+              </button>
+              <button id="btn-section-customers" data-section="customers" class="section-btn text-slate-400 px-4 py-1.5 rounded-lg text-xs font-bold transition-all">
+                <i data-lucide="users" class="w-3.5 h-3.5 inline -mt-0.5 mr-1"></i>Clientes
+              </button>
+            </div>
+            <div class="relative flex-1 min-w-[220px]">
+              <i data-lucide="search" class="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"></i>
+              <input id="input-section-search" type="text" placeholder="Buscar venda por código, cliente ou revendedor..."
+                class="w-full bg-slate-900/80 text-xs text-slate-200 placeholder-slate-500 pl-9 pr-3 py-2 rounded-xl border border-white/10 focus:border-indigo-500/50 focus:outline-none" />
+            </div>
+          </div>
+
+          <div id="section-sales" class="glass-panel overflow-hidden">
             <div class="overflow-x-auto">
               <table class="w-full text-left text-xs">
                 <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
                   <tr>
+                    <th class="px-5 py-3">Código / Token</th>
                     <th class="px-5 py-3">Revendedor / Bot</th>
                     <th class="px-5 py-3">Cliente Final</th>
                     <th class="px-5 py-3">Link Entregue</th>
@@ -292,6 +309,25 @@
                   </tr>
                 </thead>
                 <tbody id="all-sales-table-body" class="divide-y divide-white/5">
+                  <!-- JS Data -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="section-customers" class="glass-panel overflow-hidden hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs">
+                <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
+                  <tr>
+                    <th class="px-5 py-3">Cliente</th>
+                    <th class="px-5 py-3">ID / Contato</th>
+                    <th class="px-5 py-3">Compras</th>
+                    <th class="px-5 py-3">Total Gasto</th>
+                    <th class="px-5 py-3">Última Compra</th>
+                  </tr>
+                </thead>
+                <tbody id="customers-table-body" class="divide-y divide-white/5">
                   <!-- JS Data -->
                 </tbody>
               </table>

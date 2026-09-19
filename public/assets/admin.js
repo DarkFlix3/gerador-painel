@@ -168,7 +168,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (tabId === 'dashboard') loadStats();
     if (tabId === 'resellers') loadResellers();
-    if (tabId === 'all-sales') loadAllSales();
+    if (tabId === 'all-sales') setSection(currentSection);
     if (tabId === 'error-logs') loadErrorLogs();
     if (tabId === 'settings') loadSettings();
   }
@@ -464,19 +464,48 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   // ==============================================
-  // 3. TODAS AS VENDAS & CLIENTES (GLOBAL)
+  // 3. VENDAS & CLIENTES (GLOBAL) - sub-abas + lupa
   // ==============================================
-  async function loadAllSales() {
+  let currentSection = 'sales';
+  let currentQ = '';
+
+  function setSection(section) {
+    currentSection = section || 'sales';
+    const btnSales = document.getElementById('btn-section-sales');
+    const btnCustomers = document.getElementById('btn-section-customers');
+    const panelSales = document.getElementById('section-sales');
+    const panelCustomers = document.getElementById('section-customers');
+    const input = document.getElementById('input-section-search');
+    if (!panelSales || !panelCustomers) return;
+
+    const activeClass = 'text-white bg-indigo-600/30 border border-indigo-500/40';
+    const idleClass = 'text-slate-400';
+    const baseClass = 'section-btn px-4 py-1.5 rounded-lg text-xs font-bold transition-all ';
+    if (btnSales) btnSales.className = baseClass + (currentSection === 'sales' ? activeClass : idleClass);
+    if (btnCustomers) btnCustomers.className = baseClass + (currentSection === 'customers' ? activeClass : idleClass);
+    panelSales.classList.toggle('hidden', currentSection !== 'sales');
+    panelCustomers.classList.toggle('hidden', currentSection !== 'customers');
+    if (input) {
+      input.placeholder = currentSection === 'customers'
+        ? 'Buscar cliente por ID, nome ou contato...'
+        : 'Buscar venda por código, cliente ou revendedor...';
+    }
+    if (currentSection === 'customers') loadCustomers(currentQ);
+    else loadAllSales(currentQ);
+  }
+
+  async function loadAllSales(q = '') {
     const tbody = document.getElementById('all-sales-table-body');
     if (!tbody) return;
 
     try {
-      const res = await apiFetch('/api/admin/all-sales');
+      const url = q ? `/api/admin/all-sales?q=${encodeURIComponent(q)}` : '/api/admin/all-sales';
+      const res = await apiFetch(url);
       const data = await res.json();
       if (!data.success) return;
 
       if (data.data.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7" class="px-5 py-8 text-center text-slate-500">Nenhuma venda realizada por revendedores ainda.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8" class="px-5 py-8 text-center text-slate-500">Nenhuma venda encontrada.</td></tr>`;
         return;
       }
 
@@ -485,7 +514,11 @@ document.addEventListener('DOMContentLoaded', () => {
         return `
           <tr class="hover:bg-white/[0.02] transition-colors">
             <td class="px-5 py-3.5">
-              <span class="font-bold text-indigo-300 block text-xs">${escapeHtml(s.reseller_name)}</span>
+              <span class="font-mono font-bold text-indigo-300 block text-[11px]">${escapeHtml(s.token || s.customer_id || '-')}</span>
+              <span class="text-[10px] text-slate-500">#${escapeHtml(s.id)}</span>
+            </td>
+            <td class="px-5 py-3.5">
+              <span class="font-bold text-white block text-xs">${escapeHtml(s.reseller_name)}</span>
               <span class="text-[10px] text-slate-400">${escapeHtml(s.reseller_email || '')}</span>
             </td>
             <td class="px-5 py-3.5">
@@ -520,11 +553,70 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  async function loadCustomers(q = '') {
+    const tbody = document.getElementById('customers-table-body');
+    if (!tbody) return;
+
+    try {
+      const url = q ? `/api/admin/customers?q=${encodeURIComponent(q)}` : '/api/admin/customers';
+      const res = await apiFetch(url);
+      const data = await res.json();
+      if (!data.success) return;
+
+      if (data.data.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" class="px-5 py-8 text-center text-slate-500">Nenhum cliente encontrado.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = data.data.map(c => {
+        const d = c.last_purchase ? new Date(c.last_purchase) : null;
+        return `
+          <tr class="hover:bg-white/[0.02] transition-colors">
+            <td class="px-5 py-3.5">
+              <span class="font-bold text-white block text-[11px]">${escapeHtml(c.customer_name || 'Cliente')}</span>
+            </td>
+            <td class="px-5 py-3.5">
+              <span class="font-mono text-[11px] text-indigo-300 block">${escapeHtml(c.customer_id || '-')}</span>
+              <span class="text-[10px] text-slate-400">${escapeHtml(c.customer_contact || '')}</span>
+            </td>
+            <td class="px-5 py-3.5 font-mono font-bold text-white">${Number(c.purchase_count || 0)}x</td>
+            <td class="px-5 py-3.5 font-mono font-bold text-emerald-400">R$ ${Number(c.total_spent || 0).toFixed(2).replace('.', ',')}</td>
+            <td class="px-5 py-3.5 font-mono text-[11px] text-slate-400">${d ? d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR') : '-'}</td>
+          </tr>
+        `;
+      }).join('');
+
+      if (window.lucide) window.lucide.createIcons();
+
+    } catch (e) {
+      console.warn('Erro ao carregar clientes:', e);
+    }
+  }
+
+  const btnSectionSales = document.getElementById('btn-section-sales');
+  if (btnSectionSales) btnSectionSales.addEventListener('click', () => setSection('sales'));
+  const btnSectionCustomers = document.getElementById('btn-section-customers');
+  if (btnSectionCustomers) btnSectionCustomers.addEventListener('click', () => setSection('customers'));
+
+  const inputSectionSearch = document.getElementById('input-section-search');
+  if (inputSectionSearch) {
+    let searchTimer = null;
+    inputSectionSearch.addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        currentQ = inputSectionSearch.value.trim();
+        if (currentSection === 'customers') loadCustomers(currentQ);
+        else loadAllSales(currentQ);
+      }, 350);
+    });
+  }
+
   const btnRefreshAllSales = document.getElementById('btn-refresh-all-sales');
   if (btnRefreshAllSales) {
     btnRefreshAllSales.addEventListener('click', () => {
-      loadAllSales();
-      showToast('Vendas atualizadas.', 'info');
+      if (currentSection === 'customers') loadCustomers(currentQ);
+      else loadAllSales(currentQ);
+      showToast('Dados atualizados.', 'info');
     });
   }
 
@@ -693,7 +785,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function loadAllDashboardData() {
     loadStats();
     loadResellers();
-    loadAllSales();
+    setSection(currentSection);
     loadErrorLogs();
     loadSettings();
   }

@@ -210,6 +210,65 @@ const SQLITE_DDL = `
     details TEXT,
     created_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS products (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    price REAL DEFAULT 15.00,
+    cost_price REAL DEFAULT 2.99,
+    emoji TEXT DEFAULT '🎁',
+    active INTEGER DEFAULT 1,
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS coupons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT UNIQUE NOT NULL,
+    discount_type TEXT DEFAULT 'percent',
+    discount_value REAL NOT NULL DEFAULT 10,
+    max_uses INTEGER DEFAULT 0,
+    used_count INTEGER DEFAULT 0,
+    valid_until TEXT,
+    active INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_code TEXT UNIQUE NOT NULL,
+    reseller_id INTEGER NOT NULL,
+    product_id INTEGER,
+    product_name TEXT,
+    customer_name TEXT,
+    customer_id TEXT,
+    customer_contact TEXT,
+    unit_price REAL NOT NULL DEFAULT 0,
+    discount REAL DEFAULT 0,
+    total REAL NOT NULL DEFAULT 0,
+    coupon_code TEXT,
+    status TEXT DEFAULT 'pending',
+    payment_method TEXT DEFAULT 'BALANCE',
+    payment_id TEXT,
+    token TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL,
+    reseller_id INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    external_id TEXT,
+    amount REAL NOT NULL,
+    currency TEXT DEFAULT 'BRL',
+    status TEXT DEFAULT 'pending',
+    metadata TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+  );
 `;
 
 const POSTGRES_DDL = `
@@ -290,6 +349,65 @@ const POSTGRES_DDL = `
     details TEXT,
     created_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS products (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    price DOUBLE PRECISION DEFAULT 15.00,
+    cost_price DOUBLE PRECISION DEFAULT 2.99,
+    emoji TEXT DEFAULT '🎁',
+    active INTEGER DEFAULT 1,
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS coupons (
+    id BIGSERIAL PRIMARY KEY,
+    code TEXT UNIQUE NOT NULL,
+    discount_type TEXT DEFAULT 'percent',
+    discount_value DOUBLE PRECISION NOT NULL DEFAULT 10,
+    max_uses INTEGER DEFAULT 0,
+    used_count INTEGER DEFAULT 0,
+    valid_until TEXT,
+    active INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS orders (
+    id BIGSERIAL PRIMARY KEY,
+    order_code TEXT UNIQUE NOT NULL,
+    reseller_id INTEGER NOT NULL,
+    product_id INTEGER,
+    product_name TEXT,
+    customer_name TEXT,
+    customer_id TEXT,
+    customer_contact TEXT,
+    unit_price DOUBLE PRECISION NOT NULL DEFAULT 0,
+    discount DOUBLE PRECISION DEFAULT 0,
+    total DOUBLE PRECISION NOT NULL DEFAULT 0,
+    coupon_code TEXT,
+    status TEXT DEFAULT 'pending',
+    payment_method TEXT DEFAULT 'BALANCE',
+    payment_id TEXT,
+    token TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS payments (
+    id BIGSERIAL PRIMARY KEY,
+    order_id INTEGER NOT NULL,
+    reseller_id INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    external_id TEXT,
+    amount DOUBLE PRECISION NOT NULL,
+    currency TEXT DEFAULT 'BRL',
+    status TEXT DEFAULT 'pending',
+    metadata TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+  );
 `;
 
 // Colunas adicionadas em versões posteriores (migração segura)
@@ -346,6 +464,25 @@ async function initDb() {
   try {
     await db.exec('UPDATE resellers SET cost_per_link = 2.99 WHERE cost_per_link != 2.99 OR cost_per_link IS NULL;');
   } catch (e) {}
+
+  // Seed default product (catálogo do bot) se não existir nenhum
+  const countProducts = await db.prepare('SELECT COUNT(*) as count FROM products').get();
+  if (Number(countProducts.count) === 0) {
+    const seedSettings = await db.prepare("SELECT key, value FROM settings WHERE key = 'admin_cost_per_link'").all();
+    const seedCost = parseFloat((seedSettings[0] && seedSettings[0].value) || '2.99');
+    await db.prepare(`
+      INSERT INTO products (name, description, price, cost_price, emoji, active, sort_order, created_at)
+      VALUES (?, ?, ?, ?, ?, 1, 0, ?)
+    `).run(
+      'Spotify Premium 3 Meses',
+      'Acesso Premium individual com entrega 100% automática e instantânea.',
+      parseFloat(process.env.DEFAULT_SALE_PRICE || '15.00'),
+      seedCost,
+      '🎧',
+      new Date().toISOString()
+    );
+    console.log('Produto padrão criado: Spotify Premium 3 Meses');
+  }
 
   // Seed default settings
   const existingSettings = await db.prepare('SELECT key FROM settings').all();
