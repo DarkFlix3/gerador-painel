@@ -157,7 +157,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const titles = {
       dashboard: 'Dashboard Geral & Estatísticas',
-      resellers: 'Gestão Completa de Revendedores & Bloqueios',
       'all-sales': 'Vendas Realizadas por Bots para Clientes',
       'error-logs': 'Monitoramento de Falhas e Erros',
       settings: 'Configurações do Link Alvo',
@@ -167,7 +166,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (window.lucide) window.lucide.createIcons();
 
     if (tabId === 'dashboard') loadStats();
-    if (tabId === 'resellers') loadResellers();
     if (tabId === 'all-sales') loadAllSales();
     if (tabId === 'error-logs') loadErrorLogs();
     if (tabId === 'settings') loadSettings();
@@ -300,168 +298,6 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
-
-  // ==============================================
-  // 2. GESTÃO DE REVENDEDORES & BLOQUEIOS
-  // ==============================================
-  async function loadResellers() {
-    const tbody = document.getElementById('resellers-table-body');
-    if (!tbody) return;
-
-    try {
-      const res = await apiFetch('/api/admin/resellers');
-      const data = await res.json();
-      if (!data.success) return;
-
-      if (data.data.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7" class="px-5 py-6 text-center text-slate-500">Nenhum revendedor cadastrado ainda.</td></tr>`;
-        return;
-      }
-
-      tbody.innerHTML = data.data.map(r => {
-        const isBlocked = r.blocked === 1;
-
-        return `
-          <tr class="hover:bg-white/[0.02] transition-colors ${isBlocked ? 'bg-rose-950/10' : ''}">
-            <td class="px-5 py-3.5">
-              <span class="font-bold text-white block text-sm">${escapeHtml(r.name)}</span>
-              <span class="text-[11px] text-cyan-400 font-mono block">${escapeHtml(r.email || 'Sem e-mail')}</span>
-              ${r.phone ? `<span class="text-[10px] text-slate-400 block">${escapeHtml(r.phone)}</span>` : ''}
-            </td>
-            <td class="px-5 py-3.5 font-mono">
-              <div class="flex items-center gap-2">
-                <span class="bg-slate-900 px-2 py-1 rounded text-[11px] text-slate-300 border border-white/5 select-all">
-                  ${r.api_key.substring(0, 16)}...
-                </span>
-                <button onclick="copyToClipboard('${r.api_key}')" class="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white" title="Copiar Chave Completa">
-                  <i data-lucide="copy" class="w-3.5 h-3.5"></i>
-                </button>
-              </div>
-            </td>
-            <td class="px-5 py-3.5">
-              <span class="font-bold ${r.credits > 0 ? 'text-emerald-400' : 'text-rose-400'} text-sm">
-                ${r.credits}
-              </span>
-              <span class="text-[10px] text-slate-500 block">créditos</span>
-            </td>
-            <td class="px-5 py-3.5 text-white font-bold text-sm">
-              ${r.total_links_sold || 0}
-              <span class="text-[10px] text-slate-400 font-normal block">links gerados</span>
-            </td>
-            <td class="px-5 py-3.5 font-mono font-bold text-emerald-400 text-sm">
-              R$ ${Number(r.total_revenue_sold || 0).toFixed(2).replace('.', ',')}
-              <span class="text-[10px] text-slate-400 font-normal block">Preço médio: R$ ${Number(r.sale_price || 15).toFixed(2).replace('.', ',')}</span>
-            </td>
-            <td class="px-5 py-3.5">
-              ${isBlocked 
-                ? `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-950 text-rose-400 border border-rose-500/40">
-                     <span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
-                     BLOQUEADO
-                   </span>`
-                : `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-500/40">
-                     <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                     Ativo & Liberado
-                   </span>`
-              }
-            </td>
-            <td class="px-5 py-3.5 text-right space-x-1.5 whitespace-nowrap">
-              <!-- Botão Bloquear / Desbloquear -->
-              <button 
-                onclick="toggleBlockReseller(${r.id}, ${isBlocked ? 'false' : 'true'}, '${escapeHtml(r.name)}')" 
-                class="px-2.5 py-1.5 rounded text-[11px] font-bold transition-all border ${isBlocked ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500' : 'bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 border-rose-500/40'}"
-                title="${isBlocked ? 'Desbloquear Acesso' : 'Bloquear Acesso Imediatamente'}"
-              >
-                ${isBlocked ? 'Desbloquear' : 'Bloquear'}
-              </button>
-
-              <!-- Botão Adicionar Créditos -->
-              <button 
-                onclick="promptAdjustCredits(${r.id}, '${escapeHtml(r.name)}', ${r.credits})" 
-                class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[11px] font-semibold border border-white/10"
-              >
-                + Créditos
-              </button>
-
-              <!-- Botão Excluir -->
-              <button 
-                onclick="deleteReseller(${r.id}, '${escapeHtml(r.name)}')" 
-                class="p-1.5 hover:bg-rose-950/80 text-rose-400 rounded text-[11px]" 
-                title="Excluir Revendedor"
-              >
-                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-              </button>
-            </td>
-          </tr>
-        `;
-      }).join('');
-
-      if (window.lucide) window.lucide.createIcons();
-
-    } catch (e) {
-      console.warn('Erro ao carregar revendedores:', e);
-    }
-  }
-
-  // Toggle Block Action
-  window.toggleBlockReseller = async function(id, willBlock, name) {
-    const actionName = willBlock ? 'BLOQUEAR' : 'DESBLOQUEAR';
-    if (!confirm(`Deseja realmente ${actionName} o revendedor "${name}"?\n${willBlock ? 'O bot dele deixará de gerar links imediatamente!' : 'O bot dele voltará a funcionar normalmente.'}`)) return;
-
-    try {
-      const res = await apiFetch(`/api/admin/resellers/${id}/toggle-block`, { method: 'POST' });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error);
-
-      showToast(data.message, willBlock ? 'error' : 'success');
-      loadResellers();
-      loadStats();
-    } catch (err) {
-      showToast(err.message, 'error');
-    }
-  };
-
-  // Adjust Credits / Balance in R$
-  window.promptAdjustCredits = async function(id, name, currentCredits) {
-    const formattedCurrent = Number(currentCredits || 0).toFixed(2).replace('.', ',');
-    const input = prompt(`Adicionar Saldo em Reais (R$) para "${name}" (Saldo atual: R$ ${formattedCurrent}):\nInforme o valor em Reais a adicionar (ex: 15.00 ou 50.00):`, '15.00');
-    if (input === null) return;
-    const credits = parseFloat(input.replace(',', '.'));
-    if (isNaN(credits) || credits <= 0) {
-      showToast('Valor em Reais inválido.', 'error');
-      return;
-    }
-
-    try {
-      const res = await apiFetch(`/api/admin/resellers/${id}/credits`, {
-        method: 'POST',
-        body: JSON.stringify({ credits, mode: 'add' })
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error);
-
-      showToast(data.message, 'success');
-      loadResellers();
-    } catch (err) {
-      showToast(err.message, 'error');
-    }
-  };
-
-  // Delete Reseller
-  window.deleteReseller = async function(id, name) {
-    if (!confirm(`Tem certeza absoluta que deseja remover o revendedor "${name}" e todo o histórico dele?`)) return;
-
-    try {
-      const res = await apiFetch(`/api/admin/resellers/${id}`, { method: 'DELETE' });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error);
-
-      showToast(data.message, 'info');
-      loadResellers();
-      loadStats();
-    } catch (err) {
-      showToast(err.message, 'error');
-    }
-  };
 
   // ==============================================
   // 3. TODAS AS VENDAS & CLIENTES (GLOBAL)
@@ -692,7 +528,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function loadAllDashboardData() {
     loadStats();
-    loadResellers();
     loadAllSales();
     loadErrorLogs();
     loadSettings();
