@@ -54,6 +54,37 @@ function escapeHtml(str) {
     .replace(/'/g, '&#039;');
 }
 
+// ==========================================================
+// MENU UNICO POR CHAT (evita empilhar menus no Telegram)
+// ----------------------------------------------------------
+// Guarda o ID da mensagem que e o "painel" atual de cada chat.
+// Toda navegacao reaproveita essa mensagem (edita no lugar) e,
+// quando precisa criar uma nova, remove o painel antigo antes.
+// ==========================================================
+const panelMsgByChat = new Map();
+
+// Marca a mensagem informada como o painel atual do chat
+function trackPanel(chatId, messageId) {
+  if (messageId) panelMsgByChat.set(String(chatId), messageId);
+}
+
+// Apaga o painel atual do chat (se existir) e para de rastreia-lo.
+// 'exceptId' preserva uma mensagem especifica (ex.: a recem-enviada).
+async function deletePanel(chatId, exceptId) {
+  const key = String(chatId);
+  const id = panelMsgByChat.get(key);
+  panelMsgByChat.delete(key);
+  if (id && id !== exceptId) await bot.deleteMessage(chatId, id).catch(() => {});
+}
+
+// Envia uma mensagem nova ja rastreando-a como o painel do chat
+function sendTracked(chatId, text, opts) {
+  return safeSend(chatId, text, opts).then((m) => {
+    if (m && m.message_id) trackPanel(chatId, m.message_id);
+    return m;
+  });
+}
+
 // Teclado padrão das telas de informação: botão Voltar ao Menu
 function backToMenuKeyboard() {
   return {
@@ -136,22 +167,8 @@ async function sendMainMenu(chatId, messageId, user) {
 Selecione uma das opções abaixo para começar:`;
   const keyboard = getMainKeyboard();
 
-  if (messageId) {
-    bot.editMessageText(mainText, {
-      chat_id: chatId,
-      message_id: messageId,
-      parse_mode: 'HTML',
-      reply_markup: keyboard.reply_markup
-    }).catch((e) => {
-      // Conteúdo já igual: sucesso sem ação
-      if (e && e.message && String(e.message).includes('message is not modified')) return null;
-      // Falha real (mensagem é foto/QR ou antiga demais): apaga e envia o menu limpo
-      bot.deleteMessage(chatId, messageId).catch(() => {});
-      return bot.sendMessage(chatId, mainText, { parse_mode: 'HTML', ...keyboard }).catch(() => null);
-    });
-  } else {
-    bot.sendMessage(chatId, mainText, { parse_mode: 'HTML', ...keyboard }).catch(() => null);
-  }
+  // Renderiza o menu como o PAINEL UNICO do chat (edita no lugar / limpa o anterior)
+  return sendOrEdit(chatId, messageId, mainText, { parse_mode: 'HTML', ...keyboard });
 }
 // Mostra o ID de Perfil da pessoa (id único no bot e no site do gerador)
 function sendProfileId(chatId, user, messageId) {
@@ -322,12 +339,7 @@ async function sendMpRechargeMenu(chatId, messageId) {
     }
   };
 
-  if (messageId) {
-    bot.editMessageText(text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML', ...keyboard })
-      .catch(() => bot.sendMessage(chatId, text, { parse_mode: 'HTML', ...keyboard }));
-  } else {
-    bot.sendMessage(chatId, text, { parse_mode: 'HTML', ...keyboard });
-  }
+  return sendOrEdit(chatId, messageId, text, { parse_mode: 'HTML', ...keyboard });
 }
 
 // Formata um número como moeda brasileira (R$ 30,00)
@@ -358,6 +370,8 @@ async function handleMpRecharge(chatId, user, amount, messageId) {
   // "Gerando..."; fora de clique (ex.: /recarga 30), envia mensagem nova e apaga depois.
   const waitingText = `⏳ Gerando cobrança PIX de <b>${brl(amountValue)}</b>...`;
   let waitingMsg = null;
+  // Fora de clique em menu (ex.: /recarga 30): remove o painel anterior para nao empilhar
+  if (!messageId) await deletePanel(chatId);
   if (messageId) {
     await bot.editMessageText(waitingText, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML' }).catch(() => {});
   } else {
@@ -441,6 +455,7 @@ async function handleMpRecharge(chatId, user, amount, messageId) {
     }
     if (sentPix) {
       lastPixMsg.set(chatId, sentPix.message_id);
+      trackPanel(chatId, sentPix.message_id);
       if (messageId) bot.deleteMessage(chatId, messageId).catch(() => {});
     }
   } catch (e) {
@@ -1203,19 +1218,25 @@ function formatPurchaseDate(iso) {
 function sendOrEdit(chatId, messageId, text, options) {
   const opts = options || {};
   const isNotModified = (e) => e && e.message && String(e.message).includes('message is not modified');
+  const sendFresh = () => sendTracked(chatId, text, opts);
+
   if (messageId) {
+    // Esta mensagem passa a ser o painel unico do chat
+    trackPanel(chatId, messageId);
     return bot.editMessageText(text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML', ...opts })
       .catch((e) => {
-        if (isNotModified(e)) return null; // já está com esse conteúdo: sucesso
-        // Mensagem com mídia (foto do QR PIX): edita a LEGENDA mantendo a foto
+        if (isNotModified(e)) return null; // ja esta com esse conteudo: sucesso
+        // Mensagem com midia (foto do QR PIX / arquivo .txt): edita a LEGENDA mantendo a midia
         return bot.editMessageCaption(chatId, messageId, text, { parse_mode: 'HTML', ...opts })
           .catch((e2) => {
             if (isNotModified(e2)) return null;
-            return safeSend(chatId, text, opts);
+            // Ultimo recurso: apaga a mensagem antiga (nao deixa menu pra tras) e envia a nova
+            return deletePanel(chatId).then(sendFresh);
           });
       });
   }
-  return safeSend(chatId, text, opts);
+  // Sem mensagem de referencia (ex.: comando): limpa o painel anterior e envia a tela nova
+  return deletePanel(chatId).then(sendFresh);
 }
 
 // Tela: lista os produtos comprados (botões) para escolher e baixar o .txt
@@ -1283,10 +1304,20 @@ async function handleMyPurchasesProductTxt(chatId, user, index, messageId) {
       listed.forEach((item, idx) => {
         lines.push(`----------------------------------------------`);
         lines.push(`#${idx + 1} | Pedido: ${item.token}`);
-        lines.push(`Link: ${item.link}`);
-        if (item.account_login) lines.push(`Login: ${item.account_login}`);
-        if (item.account_password) lines.push(`Senha: ${item.account_password}`);
-        if (item.item_content) lines.push(`Link entregue: ${item.item_content}`);
+        const isLinkItem = String(item.item_type || '').toLowerCase() === 'link';
+        if (isLinkItem) {
+          // Produto de LINK: entrega o proprio link gerado/entregue
+          lines.push(`Link: ${item.item_content || item.link || '(nao informado)'}`);
+        } else if (item.account_login || item.account_password) {
+          // Produto de CONTA (ex.: Outlook): entrega o login e a senha comprados
+          lines.push(`Login: ${item.account_login || '(nao informado)'}`);
+          lines.push(`Senha: ${item.account_password || '(nao informado)'}`);
+          if (item.item_content) lines.push(`Observacao: ${item.item_content}`);
+        } else if (item.item_content || item.link) {
+          lines.push(`Link: ${item.item_content || item.link}`);
+        } else {
+          lines.push('Nenhum dado de entrega disponivel para este item.');
+        }
         lines.push(`Status: ${item.delivery_status}`);
         lines.push(`Data: ${formatPurchaseDate(item.created_at)}`);
       });
@@ -1306,7 +1337,11 @@ async function handleMyPurchasesProductTxt(chatId, user, index, messageId) {
     // IMPORTANTE: filename/contentType vão no 4º argumento (fileOptions).
     // Sem contentType, a lib tenta detectar o tipo do Buffer com file-type,
     // que NÃO reconhece texto puro e lança 'Unsupported Buffer file-type'.
-    await bot.sendDocument(chatId, Buffer.from(content, 'utf-8'), {
+    // Remove a listagem (painel atual) e a mensagem clicada antes de enviar o .txt,
+    // para o chat nao ficar com um menu orfao atras do arquivo.
+    await deletePanel(chatId);
+    if (messageId) await bot.deleteMessage(chatId, messageId).catch(() => {});
+    const sentDoc = await bot.sendDocument(chatId, Buffer.from(content, 'utf-8'), {
       caption,
       parse_mode: 'HTML',
       reply_markup: {
@@ -1323,6 +1358,7 @@ async function handleMyPurchasesProductTxt(chatId, user, index, messageId) {
       // Fallback: entrega o conteúdo como mensagem de texto comum
       await bot.sendMessage(chatId, '❌ Envio de arquivo falhou — seguem os acessos em texto:\n\n' + content.slice(0, 3800), { ...backToMenuKeyboard() }).catch(() => {});
     });
+    if (sentDoc && sentDoc.message_id) trackPanel(chatId, sentDoc.message_id);
   } catch (e) {
     console.error('[minhas compras txt] falha:', e && e.message ? e.message : e);
     sendOrEdit(chatId, messageId, `❌ <b>Erro de Conexão:</b> não foi possível gerar o arquivo (${API_BASE_URL}).`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
