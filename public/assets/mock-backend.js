@@ -56,6 +56,10 @@
           cost_price: 2.99,
           profit: 12.01,
           delivery_status: 'Entregue',
+          delivered_type: 'account',
+          delivered_login: 'gabriel.martins@email.com',
+          delivered_password: 'Spotify@2026#gab',
+          delivered_content: null,
           created_at: new Date(Date.now() - 3600000 * 2).toISOString()
         },
         {
@@ -70,6 +74,10 @@
           cost_price: 2.99,
           profit: 12.01,
           delivery_status: 'Entregue',
+          delivered_type: 'link',
+          delivered_login: null,
+          delivered_password: null,
+          delivered_content: 'https://open.spotify.com/intl-pt/album/3pdr5eXXla4JphZqUcSPjp',
           created_at: new Date(Date.now() - 3600000 * 5).toISOString()
         }
       ];
@@ -834,7 +842,11 @@
             delivery_status: s.delivery_status || 'Entregue',
             created_at: s.created_at,
             customer_contact: s.customer_contact || null,
-            reseller_name: 'Revendedor Demo'
+            reseller_name: 'Revendedor Demo',
+            item_type: s.delivered_type || null,
+            account_login: s.delivered_login || null,
+            account_password: s.delivered_password || null,
+            item_content: s.delivered_content || null
           })).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
           return mockResponse(200, {
             success: true,

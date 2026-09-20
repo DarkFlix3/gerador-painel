@@ -3123,9 +3123,11 @@ app.get('/api/admin/customers/:id/purchases', adminAuth, async (req, res) => {
   const where = clauses.map((c) => `(${c})`).join(' OR ');
 
   const purchases = await dbHelpers.db.prepare(`
-    SELECT s.id, s.token, s.product, s.sale_price, s.delivery_status, s.created_at, s.customer_contact, r.name AS reseller_name
+    SELECT s.id, s.token, s.product, s.sale_price, s.delivery_status, s.created_at, s.customer_contact, r.name AS reseller_name,
+           pi.type AS item_type, pi.login AS account_login, pi.password AS account_password, pi.content AS item_content
     FROM sales s
     JOIN resellers r ON s.reseller_id = r.id
+    LEFT JOIN product_items pi ON pi.sale_id = s.id
     WHERE ${where}
     ORDER BY s.created_at DESC
   `).all(...params);

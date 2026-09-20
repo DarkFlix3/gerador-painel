@@ -316,9 +316,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const res = await apiFetch('/api/admin/all-sales');
       const data = await res.json();
       if (!data.success) return;
+      window.__allSales = data.data || [];
 
       if (data.data.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="9" class="px-5 py-8 text-center text-slate-500">Nenhuma venda realizada por revendedores ainda.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" class="px-5 py-8 text-center text-slate-500">Nenhuma venda realizada por revendedores ainda.</td></tr>`;
         return;
       }
 
@@ -344,8 +345,19 @@ document.addEventListener('DOMContentLoaded', () => {
             </td>
             <td class="px-5 py-3">
               <span class="font-bold text-amber-300 block text-xs">${escapeHtml(s.product || '—')}</span>
-              ${s.delivered_login ? `<span class="text-[10px] text-emerald-400 font-mono block mt-0.5">Login: ${escapeHtml(s.delivered_login)}</span>` : ''}
-              ${s.delivered_content ? `<span class="text-[10px] text-emerald-400 font-mono block mt-0.5">Link entregue: ${escapeHtml(s.delivered_content)}</span>` : ''}
+              ${s.delivered_login ? `
+                <span class="flex items-center gap-1 text-[10px] text-emerald-400 font-mono mt-0.5">
+                  <span class="text-slate-500 font-sans">Login:</span>
+                  <span class="truncate max-w-[10rem]">${escapeHtml(s.delivered_login)}</span>
+                  <button onclick="copyToClipboard('${escapeHtml(s.delivered_login)}')" class="p-0.5 hover:text-white" title="Copiar login"><i data-lucide="copy" class="w-3 h-3"></i></button>
+                </span>` : ''}
+              ${s.delivered_password ? `
+                <span class="flex items-center gap-1 text-[10px] text-sky-300 font-mono mt-0.5">
+                  <span class="text-slate-500 font-sans">Senha:</span>
+                  <span class="truncate max-w-[10rem]">${escapeHtml(s.delivered_password)}</span>
+                  <button onclick="copyToClipboard('${escapeHtml(s.delivered_password)}')" class="p-0.5 hover:text-white" title="Copiar senha"><i data-lucide="copy" class="w-3 h-3"></i></button>
+                </span>` : ''}
+              ${s.delivered_content ? `<span class="text-[10px] text-emerald-400 font-mono block mt-0.5 truncate max-w-[15rem]">Link entregue: ${escapeHtml(s.delivered_content)}</span>` : ''}
             </td>
             <td class="px-5 py-3 font-mono font-bold text-white">R$ ${Number(s.sale_price).toFixed(2).replace('.', ',')}</td>
             <td class="px-5 py-3 font-mono text-[11px] ${Number(s.discount || 0) > 0 ? 'text-emerald-400' : 'text-slate-600'}">
@@ -359,6 +371,12 @@ document.addEventListener('DOMContentLoaded', () => {
               </span>
             </td>
             <td class="px-5 py-3.5 font-mono text-[11px] text-slate-400">${d.toLocaleDateString('pt-BR')} ${d.toLocaleTimeString('pt-BR')}</td>
+            <td class="px-5 py-3.5 text-right">
+              <button onclick="openSaleReceipt(${s.id})" class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 text-[10px] font-bold transition-colors" title="Abrir comprovante da venda">
+                <i data-lucide="receipt-text" class="w-3.5 h-3.5"></i>
+                Comprovante
+              </button>
+            </td>
           </tr>
         `;
       }).join('');
@@ -375,6 +393,127 @@ document.addEventListener('DOMContentLoaded', () => {
     btnRefreshAllSales.addEventListener('click', () => {
       loadAllSales();
       showToast('Vendas atualizadas.', 'info');
+    });
+  }
+
+  // ==============================================
+  // 3.5 COMPROVANTE DE VENDA (modal ao clicar na venda)
+  // ==============================================
+  let currentReceiptUrl = '';
+
+  function receiptStatusBadge(status) {
+    const st = String(status || 'Entregue').toLowerCase();
+    if (st.includes('erro') || st.includes('falha')) {
+      return '<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-950/60 text-rose-400 border border-rose-500/30"><span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>Erro no envio</span>';
+    }
+    if (st.includes('pend')) {
+      return '<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-950/60 text-amber-400 border border-amber-500/30"><span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>Envio pendente</span>';
+    }
+    return '<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950/60 text-emerald-400 border border-emerald-500/30"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Entregue</span>';
+  }
+
+  function receiptTypeLabel(type) {
+    const t = String(type || '').toLowerCase();
+    if (t === 'link') return 'Link';
+    if (t === 'pdf') return 'Arquivo PDF';
+    if (t === 'file' || t === 'arquivo') return 'Arquivo';
+    if (t === 'account' || t === 'conta') return 'Conta de Acesso';
+    return 'Entrega';
+  }
+
+  function receiptFieldRow(label, value, isUrl) {
+    const openBtn = isUrl
+      ? `<a href="${escapeHtml(value)}" target="_blank" rel="noopener" class="p-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 shrink-0" title="Abrir"><i data-lucide="external-link" class="w-3.5 h-3.5"></i></a>`
+      : '';
+    return `<div class="flex items-start justify-between gap-3 rounded-lg bg-slate-950/70 border border-white/5 p-2.5">
+      <div class="min-w-0">
+        <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">${label}</div>
+        <div class="font-mono text-[12px] text-white break-all">${escapeHtml(value)}</div>
+      </div>
+      <div class="flex items-center gap-1 shrink-0">
+        <button onclick="copyToClipboard(this.dataset.v)" data-v="${escapeHtml(value)}" class="p-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300" title="Copiar"><i data-lucide="copy" class="w-3.5 h-3.5"></i></button>
+        ${openBtn}
+      </div>
+    </div>`;
+  }
+
+  function receiptItemFields(s) {
+    const type = String(s.delivered_type || '').toLowerCase();
+    const parts = [];
+    const isAccount = type === 'account' || type === 'conta' || (!type && (s.delivered_login || s.delivered_password));
+    if (isAccount) {
+      if (s.delivered_login) parts.push(receiptFieldRow('Login', s.delivered_login, false));
+      if (s.delivered_password) parts.push(receiptFieldRow('Senha', s.delivered_password, false));
+    }
+    if (s.delivered_content) {
+      const isUrl = /^https?:\/\//i.test(String(s.delivered_content));
+      parts.push(receiptFieldRow(type === 'link' ? 'Link entregue' : 'Arquivo / Conteúdo', s.delivered_content, isUrl));
+    }
+    if (!parts.length) {
+      parts.push('<div class="text-slate-500 text-[11px]">Nenhum item entregue registrado (venda sem produto associado).</div>');
+    }
+    return parts.join('');
+  }
+
+  function fillReceipt(s) {
+    const d = s.created_at ? new Date(s.created_at) : null;
+    const datetime = d && !isNaN(d.getTime())
+      ? `${d.toLocaleDateString('pt-BR')} às ${d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`
+      : '—';
+    const tgId = s.customer_id ? String(s.customer_id).replace(/^tg_/, '') : '—';
+
+    document.getElementById('receipt-token-line').textContent = s.token ? `Pedido #${s.token} • ID ${s.id}` : `Venda #${s.id}`;
+    document.getElementById('receipt-buyer-name').textContent = s.customer_name || '—';
+    document.getElementById('receipt-buyer-contact').textContent = s.customer_contact || s.customer_id || 'Via Bot';
+    document.getElementById('receipt-telegram-id').textContent = tgId;
+    document.getElementById('receipt-datetime').textContent = datetime;
+    document.getElementById('receipt-status').innerHTML = receiptStatusBadge(s.delivery_status);
+    document.getElementById('receipt-reseller').textContent = s.reseller_name || '—';
+    document.getElementById('receipt-item-type').textContent = receiptTypeLabel(s.delivered_type);
+    document.getElementById('receipt-product-name').textContent = s.product || '—';
+    document.getElementById('receipt-item-fields').innerHTML = receiptItemFields(s);
+    currentReceiptUrl = s.target_url || '';
+    document.getElementById('receipt-target-url').textContent = currentReceiptUrl || '—';
+    document.getElementById('receipt-price').textContent = __brl(s.sale_price);
+    document.getElementById('receipt-discount').textContent = Number(s.discount || 0) > 0 ? '− ' + __brl(s.discount) : '—';
+    document.getElementById('receipt-profit').textContent = '+ ' + __brl(s.profit);
+    document.getElementById('receipt-generated-at').textContent = 'Comprovante gerado em ' + new Date().toLocaleString('pt-BR');
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  window.openSaleReceipt = function(id) {
+    const s = (window.__allSales || []).find(x => String(x.id) === String(id));
+    if (!s) {
+      showToast('Venda não encontrada.', 'error');
+      return;
+    }
+    fillReceipt(s);
+    const modal = document.getElementById('sale-receipt-modal');
+    if (!modal) return;
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+  };
+
+  function closeSaleReceipt() {
+    const modal = document.getElementById('sale-receipt-modal');
+    if (!modal) return;
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+  }
+
+  const receiptModal = document.getElementById('sale-receipt-modal');
+  if (receiptModal) {
+    const btnCloseReceipt = document.getElementById('sale-receipt-close');
+    if (btnCloseReceipt) btnCloseReceipt.addEventListener('click', closeSaleReceipt);
+    receiptModal.addEventListener('click', (e) => { if (e.target === receiptModal) closeSaleReceipt(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSaleReceipt(); });
+  }
+
+  const btnCopyReceiptLink = document.getElementById('receipt-copy-link');
+  if (btnCopyReceiptLink) {
+    btnCopyReceiptLink.addEventListener('click', () => {
+      if (!currentReceiptUrl) { showToast('Nenhum link para copiar.', 'info'); return; }
+      copyToClipboard(currentReceiptUrl);
     });
   }
 
@@ -699,6 +838,19 @@ document.addEventListener('DOMContentLoaded', () => {
           <td class="px-4 py-3">
             <span class="font-bold text-amber-300 block text-xs">${escapeHtml(p.product || '—')}</span>
             ${p.token ? `<span class="text-[10px] text-slate-500 font-mono">${escapeHtml(p.token)}</span>` : ''}
+            ${p.account_login ? `
+              <span class="flex items-center gap-1 text-[10px] text-emerald-400 font-mono mt-1">
+                <span class="text-slate-500 font-sans">Login:</span>
+                <span class="truncate max-w-[11rem]">${escapeHtml(p.account_login)}</span>
+                <button onclick="copyToClipboard('${escapeHtml(p.account_login)}')" class="p-0.5 hover:text-white" title="Copiar login"><i data-lucide="copy" class="w-3 h-3"></i></button>
+              </span>` : ''}
+            ${p.account_password ? `
+              <span class="flex items-center gap-1 text-[10px] text-sky-300 font-mono mt-0.5">
+                <span class="text-slate-500 font-sans">Senha:</span>
+                <span class="truncate max-w-[11rem]">${escapeHtml(p.account_password)}</span>
+                <button onclick="copyToClipboard('${escapeHtml(p.account_password)}')" class="p-0.5 hover:text-white" title="Copiar senha"><i data-lucide="copy" class="w-3 h-3"></i></button>
+              </span>` : ''}
+            ${p.item_content ? `<span class="text-[10px] text-emerald-400 font-mono block mt-0.5 truncate max-w-[15rem]">Link: ${escapeHtml(p.item_content)}</span>` : ''}
           </td>
           <td class="px-4 py-3 font-mono font-bold text-white">${__brl(p.sale_price)}</td>
           <td class="px-4 py-3 text-[11px] text-slate-300">${escapeHtml(p.reseller_name || '—')}</td>
