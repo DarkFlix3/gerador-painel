@@ -148,27 +148,41 @@ async function sendMainMenu(chatId, messageId, user) {
 
 `;
 
-  // Busca o saldo e monta a linha de saldo (erro de consulta nunca bloqueia o menu)
-  let balanceLine = '💰 <b>Saldo:</b> indisponível no momento';
-  try {
-    const { data } = await fetchBalance(user);
-    if (data) {
-      if (data.needs_link) {
-        balanceLine = '🔗 <b>Perfil não vinculado</b> — use <code>/saldo</code> para vincular seu ID de perfil';
-      } else if (data.success) {
-        const balance = parseFloat(data.credits != null ? data.credits : (data.balance || 0));
-        balanceLine = `💰 <b>Seu Saldo:</b> R$ ${balance.toFixed(2).replace('.', ',')}`;
-      }
-    }
-  } catch (e) { /* mantém a linha padrão */ }
-
-  const mainText = welcomeText + balanceLine + `
-
-Selecione uma das opções abaixo para começar:`;
   const keyboard = getMainKeyboard();
+  const buildMainText = (balanceLine) => welcomeText + balanceLine + '\n\nSelecione uma das opções abaixo para começar:';
 
-  // Renderiza o menu como o PAINEL UNICO do chat (edita no lugar / limpa o anterior)
-  return sendOrEdit(chatId, messageId, mainText, { parse_mode: 'HTML', ...keyboard });
+  // Renderiza o menu IMEDIATAMENTE (nao espera a API) para o botao "Voltar ao Menu"
+  // nao parecer travado quando o servidor esta lento / em cold start.
+  const result = await sendOrEdit(chatId, messageId, buildMainText('💰 <b>Saldo:</b> consultando...'), { parse_mode: 'HTML', ...keyboard });
+
+  // Atualiza a linha de saldo em segundo plano assim que a API responder.
+  // So edita se o menu ainda for o painel atual do chat (evita mexer em outra tela).
+  (async () => {
+    let balanceLine = '💰 <b>Saldo:</b> indisponível no momento';
+    try {
+      const { data } = await fetchBalance(user);
+      if (data) {
+        if (data.needs_link) {
+          balanceLine = '🔗 <b>Perfil não vinculado</b> — use <code>/saldo</code> para vincular seu ID de perfil';
+        } else if (data.success) {
+          const balance = parseFloat(data.credits != null ? data.credits : (data.balance || 0));
+          balanceLine = `💰 <b>Seu Saldo:</b> R$ ${balance.toFixed(2).replace('.', ',')}`;
+        }
+      }
+    } catch (e) { /* mantém a linha padrão */ }
+
+    const panelId = panelMsgByChat.get(String(chatId));
+    if (!panelId) return; // o chat já navegou para outra tela
+    const payload = { chat_id: chatId, message_id: panelId, parse_mode: 'HTML', ...keyboard };
+    try {
+      await bot.editMessageText(buildMainText(balanceLine), payload);
+    } catch (e) {
+      // painel virou mídia (ex.: foto do PIX): edita a legenda; senao ignora
+      await bot.editMessageCaption(buildMainText(balanceLine), payload).catch(() => {});
+    }
+  })();
+
+  return result;
 }
 // Mostra o ID de Perfil da pessoa (id único no bot e no site do gerador)
 function sendProfileId(chatId, user, messageId) {
@@ -567,10 +581,20 @@ bot.onText(/\/(api|minhaapi|apikey)/, async (msg) => {
 
 // Resposta a Botões Inline
 bot.on('callback_query', async (query) => {
+  // Para o "carregando" do botão no Telegram imediatamente.
+  bot.answerCallbackQuery(query.id).catch(() => {});
+  if (!query.message) return; // callbacks de mensagem inline (sem chat) não têm painel
+  try {
+    await handleCallback(query);
+  } catch (err) {
+    console.error('[callback] falha ao processar', query && query.data, err && err.message ? err.message : err);
+  }
+});
+
+// Processa os botões inline do painel (chamado pelo handler acima).
+async function handleCallback(query) {
   const chatId = query.message.chat.id;
   const action = query.data;
-
-  bot.answerCallbackQuery(query.id);
 
   if (action === 'buy_now' || action === 'catalog') {
     await showCatalog(chatId, query.message.message_id);
@@ -639,7 +663,7 @@ bot.on('callback_query', async (query) => {
     // Edita a mensagem atual virando o menu principal (sem duplicar no chat)
     await sendMainMenu(chatId, query.message.message_id, query.from);
   }
-});
+}
 
 // ==========================================
 // CATÁLOGO DE PRODUTOS (consome /api/v1/products)
@@ -1227,7 +1251,7 @@ function sendOrEdit(chatId, messageId, text, options) {
       .catch((e) => {
         if (isNotModified(e)) return null; // ja esta com esse conteudo: sucesso
         // Mensagem com midia (foto do QR PIX / arquivo .txt): edita a LEGENDA mantendo a midia
-        return bot.editMessageCaption(chatId, messageId, text, { parse_mode: 'HTML', ...opts })
+        return Promise.resolve().then(() => bot.editMessageCaption(text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML', ...opts }))
           .catch((e2) => {
             if (isNotModified(e2)) return null;
             // Ultimo recurso: apaga a mensagem antiga (nao deixa menu pra tras) e envia a nova
