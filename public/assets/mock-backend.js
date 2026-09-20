@@ -15,7 +15,8 @@
     PRODUCTS: 'quantum_mock_products',
     COUPONS: 'quantum_mock_coupons',
     ORDERS: 'quantum_mock_orders',
-    PAYMENTS: 'quantum_mock_payments'
+    PAYMENTS: 'quantum_mock_payments',
+    CUSTOMERS: 'quantum_mock_customers'
   };
 
   // Inicializa dados padrão no localStorage se não existirem
@@ -175,6 +176,58 @@
       localStorage.setItem(STORAGE_KEYS.PAYMENTS, JSON.stringify(defaultPayments));
     }
 
+    if (!localStorage.getItem(STORAGE_KEYS.CUSTOMERS)) {
+      const now = Date.now();
+      const defaultCustomers = [
+        {
+          id: 1,
+          telegram_id: '88921',
+          username: 'gabriel_vip',
+          name: 'Gabriel Martins',
+          first_seen: new Date(now - 2 * 86400000).toISOString(),
+          last_seen: new Date(now - 1800000).toISOString(),
+          orders_count: 3,
+          total_spent: 45.00,
+          blocked: 0,
+          blocked_reason: null,
+          blocked_at: null,
+          notes: 'Cliente recorrente (3 compras).',
+          created_at: new Date(now - 2 * 86400000).toISOString()
+        },
+        {
+          id: 2,
+          telegram_id: '77192',
+          username: 'lucas_ferr',
+          name: 'Lucas Ferreira',
+          first_seen: new Date(now - 86400000).toISOString(),
+          last_seen: new Date(now - 5 * 3600000).toISOString(),
+          orders_count: 1,
+          total_spent: 13.50,
+          blocked: 0,
+          blocked_reason: null,
+          blocked_at: null,
+          notes: null,
+          created_at: new Date(now - 86400000).toISOString()
+        },
+        {
+          id: 3,
+          telegram_id: '77112',
+          username: 'stephanie_a',
+          name: 'Stephanie Alves',
+          first_seen: new Date(now - 3 * 86400000).toISOString(),
+          last_seen: new Date(now - 86400000).toISOString(),
+          orders_count: 2,
+          total_spent: 30.00,
+          blocked: 1,
+          blocked_reason: 'Chargeback na compra anterior.',
+          blocked_at: new Date(now - 12 * 3600000).toISOString(),
+          notes: null,
+          created_at: new Date(now - 3 * 86400000).toISOString()
+        }
+      ];
+      localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(defaultCustomers));
+    }
+
     if (!localStorage.getItem(STORAGE_KEYS.LOGS)) {
       localStorage.setItem(STORAGE_KEYS.LOGS, JSON.stringify([]));
     }
@@ -193,6 +246,12 @@
   }
   function saveSales(data) {
     localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(data));
+  }
+  function getCustomers() {
+    return JSON.parse(localStorage.getItem(STORAGE_KEYS.CUSTOMERS) || '[]');
+  }
+  function saveCustomers(data) {
+    localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(data));
   }
   function getLogs() {
     return JSON.parse(localStorage.getItem(STORAGE_KEYS.LOGS) || '[]');
@@ -738,6 +797,86 @@
           }
         }
         return mockResponse(200, { success: true, data: getCoupons() });
+      }
+
+      // 21b. ADMIN: CLIENTES DO BOT
+      if (cleanUrl.startsWith('/api/admin/customers')) {
+        const match = cleanUrl.match(/\/api\/admin\/customers\/(\d+)\/(toggle-block|purchases)/);
+        const listOnly = /\/api\/admin\/customers(\?.*)?$/.test(cleanUrl);
+        if (match && method === 'POST') {
+          const list = getCustomers();
+          const c = list.find(x => Number(x.id) === Number(match[1]));
+          if (!c) return mockResponse(404, { success: false, error: 'Cliente não encontrado.' });
+          const willBlock = Number(c.blocked) === 1 ? 0 : 1;
+          c.blocked = willBlock;
+          c.blocked_reason = willBlock === 1 ? (body.reason ? String(body.reason).trim() : null) : null;
+          c.blocked_at = willBlock === 1 ? new Date().toISOString() : null;
+          saveCustomers(list);
+          return mockResponse(200, {
+            success: true,
+            blocked: willBlock === 1,
+            blocked_reason: c.blocked_reason,
+            message: willBlock === 1 ? 'Cliente bloqueado com sucesso.' : 'Cliente desbloqueado com sucesso.'
+          });
+        }
+        if (match && method === 'GET') {
+          const c = getCustomers().find(x => Number(x.id) === Number(match[1]));
+          if (!c) return mockResponse(404, { success: false, error: 'Cliente não encontrado.' });
+          const sales = getSales().filter(s =>
+            (c.telegram_id && (s.customer_id === 'tg_' + c.telegram_id || s.customer_id === c.telegram_id)) ||
+            (c.username && String(s.customer_contact || '').toLowerCase() === '@' + String(c.username).toLowerCase())
+          );
+          const purchases = sales.map(s => ({
+            id: s.id,
+            token: s.token,
+            product: s.product || 'Link gerado',
+            sale_price: parseFloat(s.sale_price || 0),
+            delivery_status: s.delivery_status || 'Entregue',
+            created_at: s.created_at,
+            customer_contact: s.customer_contact || null,
+            reseller_name: 'Revendedor Demo'
+          })).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+          return mockResponse(200, {
+            success: true,
+            data: purchases,
+            total_spent: Number(purchases.reduce((acc, p) => acc + p.sale_price, 0).toFixed(2))
+          });
+        }
+        if (method === 'DELETE') {
+          const m2 = cleanUrl.match(/\/api\/admin\/customers\/(\d+)/);
+          if (m2) {
+            const list = getCustomers();
+            const idx = list.findIndex(x => Number(x.id) === Number(m2[1]));
+            if (idx === -1) return mockResponse(404, { success: false, error: 'Cliente não encontrado.' });
+            list.splice(idx, 1);
+            saveCustomers(list);
+            return mockResponse(200, { success: true, message: 'Cliente removido com sucesso.' });
+          }
+        }
+        if (listOnly && method === 'GET') {
+          const url = new URL(cleanUrl, window.location.origin);
+          const search = (url.searchParams.get('search') || '').trim().toLowerCase();
+          let list = getCustomers().slice();
+          if (search) {
+            list = list.filter(c =>
+              String(c.name || '').toLowerCase().includes(search) ||
+              String(c.username || '').toLowerCase().includes(search) ||
+              String(c.telegram_id || '').toLowerCase().includes(search)
+            );
+          }
+          list.sort((a, b) => String(b.last_seen || '').localeCompare(String(a.last_seen || '')));
+          const total_blocked = getCustomers().filter(c => Number(c.blocked) === 1).length;
+          const total_revenue = getCustomers().reduce((acc, c) => acc + parseFloat(c.total_spent || 0), 0);
+          return mockResponse(200, {
+            success: true,
+            data: list,
+            total: list.length,
+            total_blocked: total_blocked,
+            total_revenue: Number(total_revenue.toFixed(2)),
+            limit: 200,
+            offset: 0
+          });
+        }
       }
 
       // 22. ADMIN: PEDIDOS

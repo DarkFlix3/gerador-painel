@@ -81,6 +81,25 @@ async function fetchBalance(user) {
   }
 }
 
+// Ping silencioso do usuário final no servidor: registra/atualiza a ficha
+// do cliente (cadastro + last_seen) e detecta bloqueio. Fire-and-forget:
+// qualquer falha de rede é ignorada — nunca atrapalha o /start.
+async function pingCustomer(user) {
+  if (!RESELLER_API_KEY || !user || !user.id) return;
+  try {
+    const headers = { 'X-API-Key': RESELLER_API_KEY, 'X-Telegram-Id': String(user.id) };
+    if (user.username) headers['X-Telegram-Username'] = String(user.username);
+    if (user.first_name) headers['X-Telegram-Name'] = String(user.first_name);
+    await fetch(`${API_BASE_URL}/api/v1/customer-ping`, {
+      method: 'POST',
+      headers,
+      signal: AbortSignal.timeout(8000)
+    });
+  } catch (e) {
+    /* silencioso — fail-open */
+  }
+}
+
 // Envia o Menu Principal (boas-vindas + saldo). Se messageId for informado,
 // EDITA a mensagem atual no lugar (vira o menu) em vez de enviar outra.
 async function sendMainMenu(chatId, messageId, user) {
@@ -239,6 +258,8 @@ bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   console.log('[recv] /start de', chatId, msg.from && msg.from.first_name);
   sendMainMenu(chatId, null, msg.from);
+  // Registra/atualiza a ficha do cliente no servidor (fire-and-forget)
+  pingCustomer(msg.from);
 });
 
 // Comando /comprar
@@ -936,11 +957,14 @@ async function handlePurchase(chatId, user, messageId, opts) {
         { parse_mode: 'HTML', ...backToMenuKeyboard() }
       );
     } else if (response.status === 403) {
-      // Conta Bloqueada
-      sendOrEdit(chatId, messageId, 
-        '🚫 <b>Acesso Suspenso:</b> A conta deste revendedor foi temporariamente suspensa pelo administrador da plataforma.',
-        { parse_mode: 'HTML', ...backToMenuKeyboard() }
-      );
+      // Bloqueio: cliente final bloqueado no painel (CUSTOMER_BLOCKED)
+      // ou conta de revendedor suspensa (mensagem original mantida)
+      const isCustomerBlocked = data && data.error === 'CUSTOMER_BLOCKED';
+      const blockedReason = isCustomerBlocked ? (data.message || data.reason || '') : '';
+      const blockedText = isCustomerBlocked
+        ? `🚫 <b>Compra Bloqueada</b>\n\nSua conta foi bloqueada pelo administrador.\n📌 <b>Motivo:</b> ${escapeHtml(blockedReason)}\n\n🆘 Se acredita que houve engano, fale com o suporte: ${SUPPORT_USER}`
+        : '🚫 <b>Acesso Suspenso:</b> A conta deste revendedor foi temporariamente suspensa pelo administrador da plataforma.';
+      sendOrEdit(chatId, messageId, blockedText, { parse_mode: 'HTML', ...backToMenuKeyboard() });
     } else {
       // Outro Erro
       const otherErrMsg = data.error || 'Erro interno no servidor. Tente novamente em instantes.';

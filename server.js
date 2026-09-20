@@ -2141,6 +2141,20 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
     // Consome o cupom (incrementa o contador de usos)
     await consumeCoupon(pricing.couponId);
 
+    // 5b. Atualiza a ficha do cliente (pedidos, total gasto, último acesso). Fire-and-forget: nunca quebra a venda.
+    if (finalCustomerId) {
+      try {
+        await dbHelpers.recordCustomerSale({
+          telegramId: finalCustomerId,
+          username: finalContact,
+          name: finalCustomerName,
+          salePrice: finalSalePrice
+        });
+      } catch (custErr) {
+        console.error('recordCustomerSale falhou (não afeta a venda):', custErr.message);
+      }
+    }
+
     // Vincula o item consumido a venda (historico/estorno) e monta a entrega
     if (itemConsumed) {
       await dbHelpers.db.prepare('UPDATE product_items SET sale_id = ? WHERE id = ?').run(saleResult.lastInsertRowid, itemConsumed.id);
@@ -2280,6 +2294,47 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
   const finalCustomerId = customer_id ? String(customer_id).trim() : null;
   const finalContact = customer_contact ? String(customer_contact).trim() : null;
   const finalProduct = pricing.productName || (req.body && req.body.product ? String(req.body.product).trim() : '') || 'Spotify Premium';
+
+  // 2b. Checa se o cliente está bloqueado (checkout interrompido ANTES de qualquer débito/consumo)
+  const blockedQuery = [];
+  const blockedParams = [];
+  const blockedId = finalCustomerId ? String(finalCustomerId).replace(/^tg_/, '') : null;
+  const blockedUsername = finalContact ? String(finalContact).replace(/^@/, '') : null;
+  if (blockedId) {
+    blockedQuery.push('telegram_id = ?');
+    blockedParams.push(blockedId);
+  }
+  if (blockedUsername) {
+    blockedQuery.push('LOWER(username) = LOWER(?)');
+    blockedParams.push(blockedUsername);
+  }
+  if (blockedQuery.length > 0) {
+    const blockedCustomer = await dbHelpers.db.prepare(`
+      SELECT telegram_id, username, name, blocked, blocked_reason, blocked_at
+      FROM customers
+      WHERE (${blockedQuery.join(') OR (')}) AND blocked = 1
+      LIMIT 1
+    `).get(...blockedParams);
+    if (blockedCustomer) {
+      const reason = blockedCustomer.blocked_reason || 'Cliente bloqueado pelo administrador.';
+      dbHelpers.logError({
+        endpoint: '/api/v1/generate',
+        method: 'POST',
+        statusCode: 403,
+        errorType: 'CustomerBlocked',
+        message: `Cliente bloqueado tentou gerar link (${blockedCustomer.name || blockedCustomer.username || blockedCustomer.telegram_id}): ${reason}`,
+        ip,
+        source: 'bot_api',
+        details: { telegram_id: blockedCustomer.telegram_id, blocked_at: blockedCustomer.blocked_at }
+      });
+      return res.status(403).json({
+        success: false,
+        error: 'CUSTOMER_BLOCKED',
+        message: reason,
+        reason
+      });
+    }
+  }
 
   // Preço de venda final (produto do catálogo + cupom aplicado, com fallback para o preço do revendedor)
   const finalSalePrice = pricing.finalSalePrice;
@@ -2639,6 +2694,65 @@ app.get('/api/v1/my-purchases', botKeyAuth, async (req, res) => {
 });
 
 // ==========================================
+// PING DO CLIENTE (bot) — consulta se o cliente está bloqueado
+// ------------------------------------------
+// Chamado pelo bot quando o usuário final dá /start: registra/atualiza a
+// ficha do cliente (last_seen) e informa se ele está bloqueado. Fail-open:
+// qualquer erro de backend NUNCA impede o usuário de comprar.
+// ==========================================
+app.post('/api/v1/customer-ping', botKeyAuth, async (req, res) => {
+  try {
+    const tgId = (req.headers['x-telegram-id'] || '').toString().trim();
+    const tgUsername = (req.headers['x-telegram-username'] || '').toString().trim();
+    const tgName = (req.headers['x-telegram-name'] || '').toString().trim();
+
+    if (!tgId && !tgUsername) {
+      return res.status(400).json({ success: false, error: 'Identificação do cliente não fornecida. Envie o header X-Telegram-Id e/ou X-Telegram-Username.' });
+    }
+
+    // Registra/atualiza a ficha do cliente (fire-and-forget, nunca quebra o fluxo)
+    if (tgId) {
+      try {
+        await dbHelpers.upsertCustomer({ telegramId: tgId, username: tgUsername, name: tgName });
+      } catch (upsertErr) {
+        console.error('customer-ping upsert falhou:', upsertErr.message);
+      }
+    }
+
+    const clauses = [];
+    const params = [];
+    if (tgId) {
+      clauses.push('telegram_id = ?');
+      params.push(tgId.replace(/^tg_/, ''));
+    }
+    if (tgUsername) {
+      clauses.push('LOWER(username) = LOWER(?)');
+      params.push(tgUsername.replace(/^@/, ''));
+    }
+    const where = clauses.map((c) => `(${c})`).join(' OR ');
+    const customer = await dbHelpers.db.prepare(`
+      SELECT telegram_id, username, name, blocked, blocked_reason, blocked_at
+      FROM customers
+      WHERE ${where}
+      LIMIT 1
+    `).get(...params);
+
+    const isBlocked = customer ? Number(customer.blocked) === 1 : false;
+    res.json({
+      success: true,
+      customer_id: tgId ? 'tg_' + tgId.replace(/^tg_/, '') : null,
+      customer_contact: tgUsername ? '@' + tgUsername.replace(/^@/, '') : null,
+      blocked: isBlocked,
+      blocked_reason: isBlocked ? (customer.blocked_reason || null) : null
+    });
+  } catch (err) {
+    // Fail-open: erro interno nunca bloqueia o cliente
+    console.error('customer-ping erro (fail-open):', err.message);
+    res.json({ success: true, blocked: false, blocked_reason: null });
+  }
+});
+
+// ==========================================
 // API KEY PRÓPRIA DO REVENDEDOR (para bots próprios)
 // ------------------------------------------
 // Cada revendedor tem a PRÓPRIA api_key. Estes endpoints entregam a chave
@@ -2919,6 +3033,115 @@ app.get('/api/admin/all-sales', adminAuth, async (req, res) => {
   `).all(limit);
 
   res.json({ success: true, data: sales });
+});
+
+// ==========================================
+// CLIENTES (gestão dos usuários finais do bot)
+// ------------------------------------------
+// Lista com busca, bloqueio/desbloqueio (bloqueados NÃO conseguem gerar
+// link no checkout), histórico de compras e exclusão da ficha.
+// ==========================================
+
+// Lista clientes (opções: ?search=, ?limit=, ?offset=)
+app.get('/api/admin/customers', adminAuth, async (req, res) => {
+  const search = (req.query.search || '').toString().trim();
+  const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+  const offset = Math.max(parseInt(req.query.offset || '0', 10), 0);
+
+  let where = '';
+  const params = [];
+  if (search) {
+    where = ' WHERE (telegram_id LIKE ? OR LOWER(username) LIKE LOWER(?) OR LOWER(name) LIKE LOWER(?))';
+    const like = `%${search}%`;
+    params.push(like, like, like);
+  }
+
+  const customers = await dbHelpers.db.prepare(`
+    SELECT id, telegram_id, username, name, first_seen, last_seen, orders_count, total_spent, blocked, blocked_reason, blocked_at, notes, created_at
+    FROM customers${where}
+    ORDER BY last_seen DESC, id DESC
+    LIMIT ? OFFSET ?
+  `).all(...params, limit, offset);
+
+  const total = await dbHelpers.db.prepare(`SELECT COUNT(*) AS count FROM customers${where}`).get(...params);
+  const totalBlocked = await dbHelpers.db.prepare('SELECT COUNT(*) AS count FROM customers WHERE blocked = 1').get();
+  const totalRevenue = await dbHelpers.db.prepare('SELECT COALESCE(SUM(total_spent), 0) AS revenue FROM customers').get();
+
+  res.json({
+    success: true,
+    data: customers,
+    total: Number(total.count),
+    total_blocked: Number(totalBlocked.count),
+    total_revenue: Number(totalRevenue.revenue) || 0,
+    limit,
+    offset
+  });
+});
+
+// Bloqueia / desbloqueia um cliente (motivo opcional no corpo: { reason })
+app.post('/api/admin/customers/:id/toggle-block', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const customer = await dbHelpers.db.prepare('SELECT id, telegram_id, blocked FROM customers WHERE id = ?').get(id);
+  if (!customer) {
+    return res.status(404).json({ success: false, error: 'Cliente não encontrado.' });
+  }
+
+  const willBlock = Number(customer.blocked) === 1 ? 0 : 1;
+  const reason = willBlock === 1 ? ((req.body && req.body.reason ? String(req.body.reason).trim() : '') || null) : null;
+  const blockedAt = willBlock === 1 ? new Date().toISOString() : null;
+  await dbHelpers.db.prepare('UPDATE customers SET blocked = ?, blocked_reason = ?, blocked_at = ? WHERE id = ?').run(willBlock, reason, blockedAt, id);
+
+  res.json({
+    success: true,
+    blocked: willBlock === 1,
+    blocked_reason: reason,
+    message: willBlock === 1 ? 'Cliente bloqueado com sucesso.' : 'Cliente desbloqueado com sucesso.'
+  });
+});
+
+// Compras de um cliente (cruza as vendas antigas: 'tg_<id>', '<id>' e @username)
+app.get('/api/admin/customers/:id/purchases', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const customer = await dbHelpers.db.prepare('SELECT id, telegram_id, username FROM customers WHERE id = ?').get(id);
+  if (!customer) {
+    return res.status(404).json({ success: false, error: 'Cliente não encontrado.' });
+  }
+
+  const clauses = [];
+  const params = [];
+  if (customer.telegram_id) {
+    clauses.push('customer_id = ?', 'customer_id = ?');
+    params.push('tg_' + customer.telegram_id, customer.telegram_id);
+  }
+  if (customer.username) {
+    clauses.push('LOWER(customer_contact) = LOWER(?)');
+    params.push('@' + customer.username);
+  }
+  if (clauses.length === 0) {
+    return res.json({ success: true, data: [], total_spent: 0 });
+  }
+  const where = clauses.map((c) => `(${c})`).join(' OR ');
+
+  const purchases = await dbHelpers.db.prepare(`
+    SELECT s.id, s.token, s.product, s.sale_price, s.delivery_status, s.created_at, s.customer_contact, r.name AS reseller_name
+    FROM sales s
+    JOIN resellers r ON s.reseller_id = r.id
+    WHERE ${where}
+    ORDER BY s.created_at DESC
+  `).all(...params);
+
+  const totalSpent = purchases.reduce((acc, p) => acc + (parseFloat(p.sale_price) || 0), 0);
+  res.json({ success: true, data: purchases, total_spent: Number(totalSpent.toFixed(2)) });
+});
+
+// Remove a ficha de um cliente (não apaga o histórico de vendas)
+app.delete('/api/admin/customers/:id', adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const result = await dbHelpers.db.prepare('DELETE FROM customers WHERE id = ?').run(id);
+  if (Number(result.changes) === 0) {
+    return res.status(404).json({ success: false, error: 'Cliente não encontrado.' });
+  }
+  res.json({ success: true, message: 'Cliente removido com sucesso.' });
 });
 
 // Logs de Erros

@@ -160,6 +160,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'all-sales': 'Vendas Realizadas por Bots para Clientes',
       products: 'Catálogo de Produtos',
       coupons: 'Cupons de Desconto',
+      customers: 'Clientes do Bot',
       'error-logs': 'Monitoramento de Falhas e Erros',
       settings: 'Configurações do Link Alvo',
       'api-docs': 'Documentação da API para Bots de Revenda'
@@ -171,6 +172,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (tabId === 'all-sales') loadAllSales();
     if (tabId === 'products') loadProducts();
     if (tabId === 'coupons') loadCoupons();
+    if (tabId === 'customers') loadCustomers();
     if (tabId === 'error-logs') loadErrorLogs();
     if (tabId === 'settings') loadSettings();
   }
@@ -545,6 +547,220 @@ document.addEventListener('DOMContentLoaded', () => {
     loadSettings();
     loadProducts();
     loadCoupons();
+    loadCustomers();
+  }
+
+  // ==============================================
+  // CLIENTES DO BOT (ADMIN)
+  // ==============================================
+  let __adminCustomers = [];
+  let __customerSearchTimer = null;
+
+  function __brl(v) {
+    return 'R$ ' + Number(v || 0).toFixed(2).replace('.', ',');
+  }
+
+  function __fmtDateTime(v) {
+    if (!v) return '—';
+    const d = new Date(String(v).replace(' ', 'T'));
+    if (isNaN(d.getTime())) return '—';
+    return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR');
+  }
+
+  function __fmtAgo(v) {
+    if (!v) return '—';
+    const d = new Date(String(v).replace(' ', 'T'));
+    if (isNaN(d.getTime())) return '—';
+    const diffMs = Date.now() - d.getTime();
+    if (diffMs < 0) return __fmtDateTime(v);
+    const mins = Math.floor(diffMs / 60000);
+    if (mins < 1) return 'agora mesmo';
+    if (mins < 60) return 'há ' + mins + ' min';
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return 'há ' + hours + 'h';
+    const days = Math.floor(hours / 24);
+    if (days < 7) return 'há ' + days + ' dia' + (days > 1 ? 's' : '');
+    return __fmtDateTime(v);
+  }
+
+  async function loadCustomers() {
+    const tbody = document.getElementById('customers-table-body');
+    if (!tbody) return;
+    const searchInput = document.getElementById('customer-search');
+    const search = searchInput ? searchInput.value.trim() : '';
+
+    try {
+      const res = await apiFetch('/api/admin/customers?search=' + encodeURIComponent(search) + '&limit=200');
+      const data = await res.json();
+      if (!data.success) return;
+
+      document.getElementById('kpi-customers-total').innerText = (data.total || 0).toString();
+      document.getElementById('kpi-customers-blocked').innerText = (data.total_blocked || 0).toString();
+      document.getElementById('kpi-customers-revenue').innerText = __brl(data.total_revenue);
+
+      __adminCustomers = data.data || [];
+      if (__adminCustomers.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" class="px-5 py-8 text-center text-slate-500">Nenhum cliente encontrado${search ? ' para &quot;' + escapeHtml(search) + '&quot;' : ''}. As fichas são criadas automaticamente quando o cliente interage com o bot.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = __adminCustomers.map(c => {
+        const isBlocked = Number(c.blocked) === 1;
+        const idLabel = c.telegram_id ? (c.username ? '@' + c.username : 'ID ' + c.telegram_id) : (c.username ? '@' + c.username : '—');
+        return `
+          <tr class="hover:bg-white/[0.02] transition-colors">
+            <td class="px-5 py-3.5">
+              <span class="font-bold text-sky-300 block text-xs">${escapeHtml(c.name || 'Cliente')}</span>
+              <span class="text-[10px] text-slate-400 font-mono">${escapeHtml(idLabel)}</span>
+              ${c.blocked_reason ? `<span class="text-[10px] text-rose-400/90 block mt-0.5">Motivo: ${escapeHtml(c.blocked_reason)}</span>` : ''}
+            </td>
+            <td class="px-5 py-3.5 font-mono font-bold text-white">${Number(c.orders_count || 0)}</td>
+            <td class="px-5 py-3.5 font-mono font-bold text-emerald-400">${__brl(c.total_spent)}</td>
+            <td class="px-5 py-3.5 text-[11px] text-slate-300">
+              <span class="block">${__fmtAgo(c.last_seen)}</span>
+              <span class="text-[10px] text-slate-500">primeira vez: ${__fmtDateTime(c.first_seen)}</span>
+            </td>
+            <td class="px-5 py-3.5">
+              ${isBlocked
+                ? `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-950/60 text-rose-400 border border-rose-500/30"><span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>Bloqueado</span>`
+                : `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950/60 text-emerald-400 border border-emerald-500/30"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Ativo</span>`}
+            </td>
+            <td class="px-5 py-3.5">
+              <div class="flex items-center gap-1.5">
+                ${isBlocked
+                  ? `<button onclick="toggleBlockCustomer(${c.id})" class="p-2 rounded-lg bg-emerald-950/50 hover:bg-emerald-800/50 text-emerald-400 border border-emerald-500/20" title="Desbloquear"><i data-lucide="unlock" class="w-3.5 h-3.5"></i></button>`
+                  : `<button onclick="toggleBlockCustomer(${c.id})" class="p-2 rounded-lg bg-rose-950/50 hover:bg-rose-800/50 text-rose-400 border border-rose-500/20" title="Bloquear"><i data-lucide="ban" class="w-3.5 h-3.5"></i></button>`}
+                <button onclick="showCustomerPurchases(${c.id})" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300" title="Ver compras"><i data-lucide="shopping-bag" class="w-3.5 h-3.5"></i></button>
+                <button onclick="deleteCustomer(${c.id})" class="p-2 rounded-lg bg-slate-800 hover:bg-rose-900/60 text-slate-400 hover:text-rose-400" title="Excluir ficha"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      if (window.lucide) window.lucide.createIcons();
+    } catch (e) {
+      console.warn('Erro ao carregar clientes:', e);
+    }
+  }
+
+  window.toggleBlockCustomer = async function (id) {
+    const c = __adminCustomers.find(x => String(x.id) === String(id));
+    const name = c ? (c.name || 'Cliente') : 'Cliente';
+    const isBlocked = c ? Number(c.blocked) === 1 : false;
+    let reason = null;
+    if (!isBlocked) {
+      reason = prompt('Bloquear &quot;' + name + '&quot;?\nMotivo (opcional):', '');
+      if (reason === null) return; // cancelou
+      reason = reason.trim() || null;
+    }
+    try {
+      const res = await apiFetch('/api/admin/customers/' + id + '/toggle-block', {
+        method: 'POST',
+        body: JSON.stringify({ reason })
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Falha ao atualizar bloqueio.');
+      showToast(data.message, data.blocked ? 'info' : 'success');
+      loadCustomers();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  window.showCustomerPurchases = async function (id) {
+    const c = __adminCustomers.find(x => String(x.id) === String(id)) || {};
+    const modal = document.getElementById('customer-purchases-modal');
+    const title = document.getElementById('customer-purchases-title');
+    const sub = document.getElementById('customer-purchases-sub');
+    const tbody = document.getElementById('customer-purchases-body');
+    const totalEl = document.getElementById('customer-purchases-total');
+    if (!modal || !tbody) return;
+    title.innerText = 'Compras de ' + (c.name || 'Cliente');
+    sub.innerText = 'Carregando histórico...';
+    tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-8 text-center text-slate-500">Carregando...</td></tr>';
+    totalEl.innerText = 'R$ 0,00';
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+
+    try {
+      const res = await apiFetch('/api/admin/customers/' + id + '/purchases');
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Falha ao carregar compras.');
+      const purchases = data.data || [];
+      sub.innerText = purchases.length + ' compra(s) encontrada(s)';
+      totalEl.innerText = __brl(data.total_spent);
+      if (purchases.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-8 text-center text-slate-500">Nenhuma compra registrada para este cliente.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = purchases.map(p => `
+        <tr class="hover:bg-white/[0.02] transition-colors">
+          <td class="px-4 py-3">
+            <span class="font-bold text-amber-300 block text-xs">${escapeHtml(p.product || '—')}</span>
+            ${p.token ? `<span class="text-[10px] text-slate-500 font-mono">${escapeHtml(p.token)}</span>` : ''}
+          </td>
+          <td class="px-4 py-3 font-mono font-bold text-white">${__brl(p.sale_price)}</td>
+          <td class="px-4 py-3 text-[11px] text-slate-300">${escapeHtml(p.reseller_name || '—')}</td>
+          <td class="px-4 py-3">
+            <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950/60 text-emerald-400 border border-emerald-500/30">${escapeHtml(p.delivery_status || 'Entregue')}</span>
+          </td>
+          <td class="px-4 py-3 font-mono text-[11px] text-slate-400">${__fmtDateTime(p.created_at)}</td>
+        </tr>
+      `).join('');
+      if (window.lucide) window.lucide.createIcons();
+    } catch (err) {
+      sub.innerText = 'Falha ao carregar compras.';
+      tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-8 text-center text-rose-400">' + escapeHtml(err.message) + '</td></tr>';
+    }
+  };
+
+  window.closeCustomerPurchases = function () {
+    const modal = document.getElementById('customer-purchases-modal');
+    if (!modal) return;
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+  };
+
+  window.deleteCustomer = async function (id) {
+    const c = __adminCustomers.find(x => String(x.id) === String(id));
+    const name = c ? (c.name || 'Cliente') : 'Cliente';
+    if (!confirm('Excluir a ficha de &quot;' + name + '&quot;?\nO histórico de vendas NÃO será apagado.')) return;
+    try {
+      const res = await apiFetch('/api/admin/customers/' + id, { method: 'DELETE' });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Falha ao excluir ficha.');
+      showToast(data.message, 'success');
+      loadCustomers();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const btnRefreshCustomers = document.getElementById('btn-refresh-customers');
+  if (btnRefreshCustomers) {
+    btnRefreshCustomers.addEventListener('click', () => {
+      loadCustomers();
+      showToast('Clientes atualizados.', 'info');
+    });
+  }
+
+  const customerSearchInput = document.getElementById('customer-search');
+  if (customerSearchInput) {
+    customerSearchInput.addEventListener('input', () => {
+      clearTimeout(__customerSearchTimer);
+      __customerSearchTimer = setTimeout(loadCustomers, 350);
+    });
+  }
+
+  const btnClosePurchases = document.getElementById('customer-purchases-close');
+  if (btnClosePurchases) btnClosePurchases.addEventListener('click', window.closeCustomerPurchases);
+
+  const purchasesModal = document.getElementById('customer-purchases-modal');
+  if (purchasesModal) {
+    purchasesModal.addEventListener('click', (e) => {
+      if (e.target === purchasesModal) window.closeCustomerPurchases();
+    });
   }
 
   // ==============================================

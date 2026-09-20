@@ -324,6 +324,22 @@ const SQLITE_DDL = `
     created_at TEXT NOT NULL,
     updated_at TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS customers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id TEXT UNIQUE NOT NULL,
+    username TEXT,
+    name TEXT,
+    first_seen TEXT,
+    last_seen TEXT,
+    orders_count INTEGER DEFAULT 0,
+    total_spent REAL DEFAULT 0,
+    blocked INTEGER DEFAULT 0,
+    blocked_reason TEXT,
+    blocked_at TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL
+  );
 `;
 
 const POSTGRES_DDL = `
@@ -518,6 +534,22 @@ const POSTGRES_DDL = `
     created_at TEXT NOT NULL,
     updated_at TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS customers (
+    id BIGSERIAL PRIMARY KEY,
+    telegram_id TEXT UNIQUE NOT NULL,
+    username TEXT,
+    name TEXT,
+    first_seen TEXT,
+    last_seen TEXT,
+    orders_count INTEGER DEFAULT 0,
+    total_spent DOUBLE PRECISION DEFAULT 0,
+    blocked INTEGER DEFAULT 0,
+    blocked_reason TEXT,
+    blocked_at TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL
+  );
 `;
 
 // Colunas adicionadas em versões posteriores (migração segura)
@@ -657,6 +689,48 @@ async function initDb() {
     );
     console.log(`Revendedor padrão criado! Email: demo@revenda.com (Senha: 123456) | Chave: ${demoApiKey}`);
   }
+
+  // Backfill da tabela customers a partir das vendas existentes (primeira execução)
+  // Reaproveita o histórico: clientes do bot são identificados por customer_id = 'tg_<id>'
+  try {
+    const customerCount = await db.prepare('SELECT COUNT(*) as count FROM customers').get();
+    if (Number(customerCount.count) === 0) {
+      const backfill = await db.prepare(`
+        SELECT
+          substr(customer_id, 4) AS telegram_id,
+          CASE WHEN customer_contact LIKE '@%' THEN LTRIM(customer_contact, '@') ELSE NULL END AS username,
+          MAX(customer_name) AS name,
+          MIN(created_at) AS first_seen,
+          MAX(created_at) AS last_seen,
+          COUNT(*) AS orders_count,
+          SUM(sale_price) AS total_spent
+        FROM sales
+        WHERE customer_id LIKE 'tg_%'
+        GROUP BY substr(customer_id, 4), CASE WHEN customer_contact LIKE '@%' THEN LTRIM(customer_contact, '@') ELSE NULL END
+      `).all();
+      for (const c of backfill) {
+        await db.prepare(`
+          INSERT INTO customers (telegram_id, username, name, first_seen, last_seen, orders_count, total_spent, blocked, notes, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        `).run(
+          String(c.telegram_id),
+          c.username || null,
+          c.name || null,
+          c.first_seen,
+          c.last_seen,
+          Number(c.orders_count || 0),
+          Number(c.total_spent || 0),
+          'Importado automaticamente do histórico de vendas.',
+          new Date().toISOString()
+        );
+      }
+      if (backfill.length > 0) {
+        console.log(`Clientes importados do histórico de vendas: ${backfill.length}`);
+      }
+    }
+  } catch (e) {
+    console.warn('Backfill de clientes ignorado:', e.message);
+  }
 }
 
 // ==========================================
@@ -693,6 +767,66 @@ const helpers = {
     } else {
       await db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(key, value);
     }
+  },
+
+  // Ficha do cliente (usuário final do bot): cria se não existir e atualiza
+  // nome/username/último acesso. Aceita telegramId no formato 'tg_123' ou '123'.
+  async upsertCustomer({ telegramId, username = null, name = null }) {
+    if (!telegramId) return null;
+    const tgId = String(telegramId).replace(/^tg_/, '');
+    const usernameClean = (username || '').toString().trim().replace(/^@/, '') || null;
+    const nameClean = (name || '').toString().trim() || null;
+    const now = new Date().toISOString();
+
+    const existing = await db.prepare('SELECT * FROM customers WHERE telegram_id = ?').get(tgId);
+    if (existing) {
+      await db.prepare(`
+        UPDATE customers
+        SET username = COALESCE(?, username),
+            name = COALESCE(?, name),
+            last_seen = ?
+        WHERE id = ?
+      `).run(usernameClean, nameClean, now, existing.id);
+      return db.prepare('SELECT * FROM customers WHERE id = ?').get(existing.id);
+    }
+
+    await db.prepare(`
+      INSERT INTO customers (telegram_id, username, name, first_seen, last_seen, orders_count, total_spent, blocked, notes, created_at)
+      VALUES (?, ?, ?, ?, ?, 0, 0, 0, ?, ?)
+    `).run(tgId, usernameClean, nameClean, now, now, 'Criado pelo ping do bot.', now);
+    return db.prepare('SELECT * FROM customers WHERE telegram_id = ?').get(tgId);
+  },
+
+  // Registra uma venda concluída na ficha do cliente: incrementa pedidos e
+  // total gasto, atualiza último acesso. Nunca quebra o fluxo (fire-and-forget).
+  async recordCustomerSale({ telegramId, username = null, name = null, salePrice = 0 }) {
+    if (!telegramId) return null;
+    const tgId = String(telegramId).replace(/^tg_/, '');
+    const now = new Date().toISOString();
+    const price = parseFloat(salePrice) || 0;
+    const usernameClean = (username || '').toString().trim().replace(/^@/, '') || null;
+    const nameClean = (name || '').toString().trim() || null;
+
+    const existing = await db.prepare('SELECT * FROM customers WHERE telegram_id = ?').get(tgId);
+    if (existing) {
+      await db.prepare(`
+        UPDATE customers
+        SET orders_count = orders_count + 1,
+            total_spent = ROUND(CAST(total_spent + ? AS NUMERIC), 2),
+            last_seen = ?,
+            username = COALESCE(?, username),
+            name = COALESCE(?, name)
+        WHERE id = ?
+      `).run(price, now, usernameClean, nameClean, existing.id);
+      return true;
+    }
+
+    // Cliente sem ficha (ex.: venda de bot sem ping prévio) — cria a ficha
+    await db.prepare(`
+      INSERT INTO customers (telegram_id, username, name, first_seen, last_seen, orders_count, total_spent, blocked, notes, created_at)
+      VALUES (?, ?, ?, ?, ?, 1, ?, 0, ?, ?)
+    `).run(tgId, usernameClean, nameClean, now, now, price, 'Criado a partir de uma venda.', now);
+    return true;
   },
 
   // Exposição do DDL Postgres (usado pelo script de migração scripts/migrate-to-pg.js)
