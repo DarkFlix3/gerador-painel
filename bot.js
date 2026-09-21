@@ -112,24 +112,6 @@ async function fetchBalance(user) {
   }
 }
 
-// Consulta o saldo da CONTA DO CLIENTE (comprador final): saldo adicionado
-// pelo administrador. É ele que libera a compra (saldo >= preço do produto).
-async function fetchCustomerBalance(user) {
-  if (!RESELLER_API_KEY) {
-    return { status: 0, data: { success: false, error: 'Chave de revendedor não configurada.' } };
-  }
-  const headers = { 'X-API-Key': RESELLER_API_KEY };
-  if (user && user.id) headers['X-Telegram-Id'] = String(user.id);
-  if (user && user.username) headers['X-Telegram-Username'] = String(user.username);
-  if (user && user.first_name) headers['X-Telegram-Name'] = String(user.first_name);
-  try {
-    const res = await fetch(`${API_BASE_URL}/api/v1/customer/balance`, { headers, signal: AbortSignal.timeout(8000) });
-    const data = await res.json();
-    return { status: res.status, data };
-  } catch (e) {
-    return { status: 0, data: { success: false, error: e && e.message ? e.message : 'Erro de conexão' } };
-  }
-}
 
 // Ping silencioso do usuário final no servidor: registra/atualiza a ficha
 // do cliente (cadastro + last_seen) e detecta bloqueio. Fire-and-forget:
@@ -179,22 +161,12 @@ async function sendMainMenu(chatId, messageId, user) {
   (async () => {
     let balanceLine = '💰 <b>Saldo:</b> indisponível no momento';
     try {
-      const { data } = await fetchCustomerBalance(user);
-      if (data && data.success) {
-        const cBalance = parseFloat(data.balance || 0);
-        balanceLine = `💰 <b>Seu Saldo:</b> R$ ${cBalance.toFixed(2).replace('.', ',')}`;
-        const resellerRes = await fetchBalance(user);
-        if (resellerRes.data && resellerRes.data.success) {
-          const rBalance = parseFloat(resellerRes.data.credits != null ? resellerRes.data.credits : (resellerRes.data.balance || 0));
-          balanceLine += `\n💼 <b>Saldo Revendedor:</b> R$ ${rBalance.toFixed(2).replace('.', ',')}`;
-        }
-      } else if (data && data.needs_link) {
-        balanceLine = '🔗 <b>Perfil não vinculado</b> — use <code>/saldo</code> para vincular seu ID de perfil';
-      } else {
-        // Fallback: revendedor vinculado sem ficha de cliente (fluxo antigo)
-        const { data: resellerData } = await fetchBalance(user);
-        if (resellerData && resellerData.success) {
-          const balance = parseFloat(resellerData.credits != null ? resellerData.credits : (resellerData.balance || 0));
+      const { data } = await fetchBalance(user);
+      if (data) {
+        if (data.needs_link) {
+          balanceLine = '🔗 <b>Perfil não vinculado</b> — use <code>/saldo</code> para vincular seu ID de perfil';
+        } else if (data.success) {
+          const balance = parseFloat(data.credits != null ? data.credits : (data.balance || 0));
           balanceLine = `💰 <b>Seu Saldo:</b> R$ ${balance.toFixed(2).replace('.', ',')}`;
         }
       }
@@ -1010,27 +982,14 @@ async function handlePurchase(chatId, user, messageId, opts) {
       sendOrEdit(chatId, messageId, deliveryText, { parse_mode: 'HTML', ...linkKeyboard });
 
     } else if (response.status === 402) {
-      if (data && data.error_code === 'CUSTOMER_BALANCE_INSUFFICIENT') {
-        // Saldo insuficiente da CONTA DO CLIENTE (comprador final)
-        const custBalanceMsg = (data && data.error) || 'Seu saldo é insuficiente para comprar este produto.';
-        const required = data.required ? ` (necessário: R$ ${String(data.required).replace('.', ',')})` : '';
-        sendOrEdit(chatId, messageId, 
-          `⚠️ <b>Saldo Insuficiente na sua conta!</b>\n\n` +
-          `${escapeHtml(custBalanceMsg)}\n\n` +
-          `📌 Seu saldo atual: <b>${data.balance ? 'R$ ' + String(data.balance).replace('.', ',') : 'R$ 0,00'}</b>${required}\n\n` +
-          `💰 <b>Como adicionar saldo?</b> Fale com nosso atendimento: ${SUPPORT_USER} — o saldo é liberado na sua conta e você já pode comprar.`,
-          { parse_mode: 'HTML', ...backToMenuKeyboard() }
-        );
-      } else {
-        // Saldo Insuficiente (custo do produto) — conta do revendedor
-        const outOfBalanceMsg = (data && data.error) || 'O saldo do revendedor na central está abaixo do custo do produto.';
-        sendOrEdit(chatId, messageId, 
-          `⚠️ <b>Saldo Insuficiente!</b>\n\n` +
-          `${escapeHtml(outOfBalanceMsg)}\n\n` +
-          `💼 <b>Para recarregar, use o comando /recarga <valor> (mínimo R$ 15,00).</b>`,
-          { parse_mode: 'HTML', ...backToMenuKeyboard() }
-        );
-      }
+      // Saldo Insuficiente
+      const outOfBalanceMsg = (data && data.error) || 'Seu saldo está abaixo do custo do produto.';
+      sendOrEdit(chatId, messageId, 
+        `⚠️ <b>Saldo Insuficiente!</b>\n\n` +
+        `${escapeHtml(outOfBalanceMsg)}\n\n` +
+        `💼 <b>Para recarregar seu saldo, use o comando /recarga <valor> (mínimo R$ 15,00) ou toque no botão de Recarga no menu principal.</b>`,
+        { parse_mode: 'HTML', ...backToMenuKeyboard() }
+      );
     } else if (response.status === 409) {
       // Produto esgotado ou conflito de estoque (venda simultanea)
       const outOfStockMsg = (data && data.error) || 'Produto esgotado no momento. Tente novamente mais tarde.';

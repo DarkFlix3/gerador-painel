@@ -2341,13 +2341,7 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
   const finalSalePrice = pricing.finalSalePrice;
   const profit = Math.max(0, finalSalePrice - costPrice);
 
-  // 2c. SALDO DO CLIENTE (fluxo normal de venda): o produto só é liberado se o
-  // comprador final tiver saldo suficiente na conta. Identifica a ficha pelo
-  // Telegram ID ou username, cria a conta se ainda não existir (saldo 0) e
-  // exige saldo >= preço de venda ANTES de gerar o link/debitar o revendedor.
-  // Sem customer_id (uso de API sem ficha): mantém o fluxo antigo, sem exigir saldo.
-  let customerDebitTarget = null; // { id, name } do cliente que pagará com saldo
-  let customerDebited = false;
+  // 2c. Atualiza a ficha do cliente (last_seen/cadastro) no painel administrativo
   const custRawId = finalCustomerId ? String(finalCustomerId).replace(/^tg_/, '') : null;
   const custUsername = finalContact ? String(finalContact).replace(/^@/, '').trim().toLowerCase() : null;
   if (custRawId) {
@@ -2359,36 +2353,6 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
       });
     } catch (upsertErr) {
       console.error('[generate] upsert da ficha do cliente falhou:', upsertErr.message);
-    }
-    customerDebitTarget = await dbHelpers.db.prepare('SELECT id, name, balance FROM customers WHERE telegram_id = ?').get(custRawId);
-    // Fallback: ficha cadastrada por @username (sem telegram_id vinculado)
-    if (!customerDebitTarget && custUsername) {
-      customerDebitTarget = await dbHelpers.db.prepare('SELECT id, name, balance FROM customers WHERE LOWER(username) = ?').get(custUsername);
-    }
-  }
-  if (customerDebitTarget) {
-    const custBalance = parseFloat(customerDebitTarget.balance || 0);
-    const required = parseFloat(finalSalePrice) || 0;
-    if (custBalance < required) {
-      const errMsg = `Seu saldo é insuficiente para comprar este produto. Saldo atual: R$ ${custBalance.toFixed(2).replace('.', ',')} — necessário: R$ ${required.toFixed(2).replace('.', ',')}. Recarregue/adicione saldo à sua conta para continuar.`;
-      dbHelpers.logError({
-        endpoint: '/api/v1/generate',
-        method: 'POST',
-        statusCode: 402,
-        errorType: 'CustomerOutOfBalance',
-        message: `Compra recusada: cliente #${customerDebitTarget.id} (${customerDebitTarget.name || custRawId}) sem saldo suficiente (Saldo: R$ ${custBalance.toFixed(2)} - Preço: R$ ${required.toFixed(2)}).`,
-        ip,
-        source: 'bot_api',
-        details: { customer_id: customerDebitTarget.id, balance: custBalance, required, product: finalProduct }
-      });
-      return res.status(402).json({
-        success: false,
-        error_code: 'CUSTOMER_BALANCE_INSUFFICIENT',
-        error: errMsg,
-        balance: custBalance.toFixed(2),
-        required: required.toFixed(2),
-        customer_id: finalCustomerId
-      });
     }
   }
 
@@ -2432,15 +2396,6 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
     await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits - ? AS NUMERIC), 2) WHERE id = ?').run(costPrice, reseller.id);
     debited = true; // débito concluído — falhas daqui pra frente disparam estorno automático
 
-    // 3b. Debita o preço de venda do saldo do cliente (comprador final paga com saldo).
-    // Debito condicional: garante saldo suficiente mesmo em venda simultanea (nunca fica negativo).
-    if (customerDebitTarget) {
-      const debitRes = await dbHelpers.db.prepare('UPDATE customers SET balance = ROUND(CAST(balance - ? AS NUMERIC), 2) WHERE id = ? AND balance >= ?').run(finalSalePrice, customerDebitTarget.id, finalSalePrice);
-      if (Number(debitRes.changes) !== 1) {
-        throw Object.assign(new Error('Seu saldo é insuficiente para comprar este produto.'), { code: 'CUSTOMER_BALANCE_INSUFFICIENT' });
-      }
-      customerDebited = true; // débito do cliente concluído — falhas daqui pra frente disparam estorno
-    }
 
     // 4. Gera o Link
     const generation = await dbHelpers.generateLink(`bot:${reseller.name}`, reseller.id, ip, pricing.productTargetUrl);
@@ -2482,11 +2437,6 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
     }
 
     const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
-    let customerBalanceRemaining = null;
-    if (customerDebitTarget) {
-      const custRow = await dbHelpers.db.prepare('SELECT balance FROM customers WHERE id = ?').get(customerDebitTarget.id);
-      customerBalanceRemaining = custRow ? Number(custRow.balance || 0).toFixed(2) : null;
-    }
 
     // Alerta de venda via bot (principal fonte de compras)
     notifyNewSale({
@@ -2524,7 +2474,6 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
       discount: pricing.discount,
       coupon_code: pricing.couponCode,
       balance_remaining: Number(updated.credits).toFixed(2),
-      customer_balance_remaining: customerBalanceRemaining,
       stock_remaining: stockRemaining,
       sale_id: saleResult.lastInsertRowid,
       created_at: now,
@@ -2547,15 +2496,6 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
         await dbHelpers.db.prepare('UPDATE product_items SET status = \'available\', sale_id = NULL, sold_at = NULL WHERE id = ? AND status = \'sold\'').run(itemConsumed.id);
       } catch (itemRestoreErr) {
         console.error('[generate] restauracao do item falhou:', itemRestoreErr.message);
-      }
-    }
-
-    // ESTORNO AUTOMÁTICO do saldo do cliente: devolve o que foi debitado do comprador
-    if (customerDebited && customerDebitTarget) {
-      try {
-        await dbHelpers.db.prepare('UPDATE customers SET balance = ROUND(CAST(balance + ? AS NUMERIC), 2) WHERE id = ?').run(finalSalePrice, customerDebitTarget.id);
-      } catch (custRefundErr) {
-        console.error('[generate] estorno do saldo do cliente falhou:', custRefundErr.message);
       }
     }
 
