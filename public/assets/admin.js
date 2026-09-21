@@ -1244,10 +1244,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!data.success) return;
       __adminProducts = data.data || [];
       if (__adminProducts.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="px-5 py-8 text-center text-slate-500">Nenhum produto cadastrado ainda.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="px-5 py-8 text-center text-slate-500">Nenhum produto cadastrado ainda.</td></tr>';
         return;
       }
-      tbody.innerHTML = __adminProducts.map(p => {
+      tbody.innerHTML = __adminProducts.map((p, idx) => {
         const salePrice = p.price_type === 'margin' ? (Number(p.cost_price) * (1 + Number(p.price_value) / 100)) : Number(p.price_value);
         const margin = Number(p.cost_price) > 0 ? ((salePrice - Number(p.cost_price)) / Number(p.cost_price) * 100) : 0;
         const pStock = (p.stock === null || p.stock === undefined) ? null : Number(p.stock);
@@ -1260,7 +1260,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const itemsBadge = pItems > 0
           ? `<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-indigo-950/60 text-indigo-400 border border-indigo-500/30">📦 ${pItems} ITENS</span>`
           : '<span class="text-[10px] text-slate-600">—</span>';
-        return `<tr class="hover:bg-white/[0.02] transition-colors">
+        const isFirst = idx === 0;
+        const isLast = idx === __adminProducts.length - 1;
+        return `<tr class="hover:bg-white/[0.02] transition-colors" data-product-id="${p.id}">
             <td class="px-5 py-3.5">
               <div class="flex items-center gap-2.5">
                 <span class="text-xl shrink-0 w-8 h-8 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center">${escapeHtml(p.emoji || '🎁')}</span>
@@ -1280,6 +1282,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 <span class="w-1.5 h-1.5 rounded-full ${Number(p.active) ? 'bg-emerald-400' : 'bg-rose-400'}"></span>
                 ${Number(p.active) ? 'ATIVO' : 'INATIVO'}
               </button>
+            </td>
+            <td class="px-5 py-3.5">
+              <div class="flex items-center gap-1">
+                <button onclick="moveProduct(${p.id}, 'up')" class="p-1 text-slate-400 hover:text-amber-400 ${isFirst ? 'opacity-30 cursor-not-allowed' : ''}" title="Mover para cima" ${isFirst ? 'disabled' : ''}><i data-lucide="chevron-up" class="w-4 h-4"></i></button>
+                <span class="text-[10px] font-mono text-slate-500 w-5 text-center">${idx + 1}</span>
+                <button onclick="moveProduct(${p.id}, 'down')" class="p-1 text-slate-400 hover:text-amber-400 ${isLast ? 'opacity-30 cursor-not-allowed' : ''}" title="Mover para baixo" ${isLast ? 'disabled' : ''}><i data-lucide="chevron-down" class="w-4 h-4"></i></button>
+              </div>
             </td>
             <td class="px-5 py-3.5">
               <div class="flex items-center gap-2">
@@ -1360,6 +1369,31 @@ document.addEventListener('DOMContentLoaded', () => {
       loadProducts();
     } catch (err) {
       showToast(err.message, 'error');
+    }
+  };
+  window.moveProduct = async (id, direction) => {
+    const idx = __adminProducts.findIndex(x => Number(x.id) === Number(id));
+    if (idx < 0) return;
+    const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= __adminProducts.length) return;
+    // Troca localmente
+    const tmp = __adminProducts[idx];
+    __adminProducts[idx] = __adminProducts[swapIdx];
+    __adminProducts[swapIdx] = tmp;
+    // Envia nova ordem ao servidor
+    const order = __adminProducts.map(p => p.id);
+    try {
+      const res = await apiFetch('/api/admin/products/reorder', {
+        method: 'POST',
+        body: JSON.stringify({ order })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao reordenar.');
+      showToast('Posição atualizada!', 'success');
+      loadProducts();
+    } catch (err) {
+      showToast(err.message, 'error');
+      loadProducts(); // recarrega do servidor em caso de erro
     }
   };
 

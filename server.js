@@ -2045,6 +2045,23 @@ app.delete('/api/admin/products/:id', adminAuth, async (req, res) => {
   res.json({ success: true, message: 'Produto "' + product.name + '" removido com sucesso! (historico de vendas preservado)' });
 });
 
+// Reordenar produtos (drag/drop ou setas)
+app.post('/api/admin/products/reorder', adminAuth, async (req, res) => {
+  const { order } = req.body; // array de IDs na ordem desejada
+  if (!Array.isArray(order) || order.length === 0) {
+    return res.status(400).json({ success: false, error: 'Envie { order: [id1, id2, ...] }' });
+  }
+  try {
+    for (let i = 0; i < order.length; i++) {
+      await dbHelpers.db.prepare('UPDATE products SET sort_order = ? WHERE id = ?').run(i, parseInt(order[i], 10));
+    }
+    res.json({ success: true, message: 'Ordem dos produtos atualizada!' });
+  } catch (err) {
+    console.error('Erro ao reordenar produtos:', err);
+    res.status(500).json({ success: false, error: 'Erro ao reordenar produtos.' });
+  }
+});
+
 // ==========================================
 // ITENS DE ESTOQUE (contas / links do produto)
 // ------------------------------------------
