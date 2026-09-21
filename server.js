@@ -563,10 +563,18 @@ async function mpCreatePixPayment({ resellerId, amount, reseller, telegramId, cu
   const expirationMinutes = parseInt(process.env.MP_PIX_EXPIRATION_MINUTES || '30', 10);
 
   // O Mercado Pago exige o campo payer.email na API para gerar o PIX.
-  // Para que NENHUM cliente precise de e-mail, o sistema usa um e-mail genérico válido.
-  const payerEmail = (reseller && reseller.email && reseller.email.includes('@') && !reseller.email.endsWith('.local') && !reseller.email.endsWith('.telegram') && !reseller.email.endsWith('.internal') && reseller.email.includes('.'))
-    ? reseller.email
-    : 'pagamento.darkflix@gmail.com';
+  // IMPORTANTE: O Mercado Pago rejeita e-mails puramente numéricos (ex: 8626065376@gmail.com) ou auto-gerados.
+  // Para que QUALQUER cliente/usuário do bot gere o PIX com 100% de sucesso sem precisar de e-mail,
+  // para todas as cobranças originadas no Telegram usamos sempre o e-mail oficial válido.
+  const isRealPersonalEmail = reseller && reseller.email &&
+    !telegramId &&
+    /^[a-zA-Z][a-zA-Z0-9._%+-]*@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(reseller.email.trim()) &&
+    !reseller.email.startsWith('cliente_') &&
+    !reseller.email.endsWith('.local') &&
+    !reseller.email.endsWith('.telegram') &&
+    !reseller.email.endsWith('.internal');
+
+  const payerEmail = isRealPersonalEmail ? reseller.email.trim() : 'pagamento.darkflix@gmail.com';
   const payerName = 'Cliente';
 
   const notificationUrl = (baseUrl && baseUrl.startsWith('https://')) ? `${baseUrl}/api/v1/mp/webhook` : undefined;
