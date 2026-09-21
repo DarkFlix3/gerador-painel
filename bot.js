@@ -433,7 +433,8 @@ function getMainKeyboard(statusInfo) {
     reply_markup: {
       inline_keyboard: [
         [
-          { text: '🛒 Produtos', callback_data: 'catalog' }
+          { text: '🛒 Produtos', callback_data: 'catalog' },
+          { text: '📦 Meus Pedidos', callback_data: 'my_purchases' }
         ],
         [
           { text: 'ℹ️ Como Funciona', callback_data: 'how_it_works' },
@@ -470,6 +471,12 @@ bot.onText(/\/start/, (msg) => {
 bot.onText(/\/comprar/, async (msg) => {
   if (await isMaintenanceBlocked(msg.chat.id, msg.from)) return;
   await showCatalog(msg.chat.id, null);
+});
+
+// Comando /pedidos (e /compras /meuspedidos /historico)
+bot.onText(/\/(pedidos|compras|meuspedidos|minhascompras|historico)/, async (msg) => {
+  if (await isMaintenanceBlocked(msg.chat.id, msg.from)) return;
+  await handleMyPurchases(msg.chat.id, msg.from);
 });
 
 // Comando /saldo (saldo da conta vinculada ao ID de perfil)
@@ -1220,18 +1227,25 @@ async function handlePurchase(chatId, user, messageId, opts) {
         : '';
       let deliveryText, linkKeyboard;
       if (data.delivered_item) {
-        // Entrega de item do estoque (conta ou link cadastrado no painel)
+        // Entrega de item do estoque (conta ou link) ou fornecedor parceiro
         const item = data.delivered_item;
+        const rawContent = item.content || item.password || item.login || '';
+        const isUrl = /^https?:\/\//i.test(String(rawContent).trim());
+        const redeemUrl = isUrl ? String(rawContent).trim() : null;
+
         let detailBlock = '';
-        if (item.type === 'link') {
-          detailBlock = `🔗 <b>Seu Link de Ativação:</b>\n👉 ${escapeHtml(item.content)}\n\n`;
+        if (isUrl) {
+          detailBlock = `🔗 <b>Seu Link de Ativação / Resgate:</b>\n👉 <code>${escapeHtml(rawContent)}</code>\n\n`;
         } else if (item.type === 'coupon') {
-          detailBlock = `🎟 <b>Seu Código / Chave de Resgate:</b>\n<code>${escapeHtml(item.content || item.password || '')}</code>\n\n`;
+          detailBlock = `🎟 <b>Seu Código / Chave de Resgate:</b>\n<code>${escapeHtml(rawContent)}</code>\n\n`;
         } else if (item.login || item.password) {
           detailBlock = (item.login ? `🔑 <b>Login:</b> <code>${escapeHtml(item.login)}</code>\n` : '') +
                         (item.password ? `🔒 <b>Senha:</b> <code>${escapeHtml(item.password)}</code>\n\n` : '\n');
+          if (item.content && item.content !== item.login && item.content !== item.password) {
+            detailBlock += `📦 <b>Conteúdo:</b>\n<code>${escapeHtml(item.content)}</code>\n\n`;
+          }
         } else {
-          detailBlock = `📦 <b>Dados de Acesso:</b>\n<code>${escapeHtml(item.content || '')}</code>\n\n`;
+          detailBlock = `📦 <b>Dados de Acesso:</b>\n<code>${escapeHtml(rawContent)}</code>\n\n`;
         }
         if (item.instructions) {
           detailBlock += `ℹ️ <b>Instruções de Uso:</b>\n${escapeHtml(item.instructions)}\n\n`;
@@ -1243,20 +1257,22 @@ async function handlePurchase(chatId, user, messageId, opts) {
           `${discountInfo}` +
           `📦 <b>Sua entrega:</b>\n` +
           `${detailBlock}` +
-          `💡 <b>Atenção:</b> guarde esses dados com segurança. Eles são entregues apenas uma vez e não podem ser recuperados novamente.\n\n` +
+          `💡 <i>Acesse seus pedidos a qualquer momento em <b>📦 Meus Pedidos</b> no menu principal!</i>\n\n` +
           `<i>Obrigado por comprar conosco!</i>`;
-        const urlRow = item.type === 'link'
-          ? [{ text: '🚀 ABRIR MEU LINK AGORA', url: item.content }]
-          : [];
+
+        const actionRows = [];
+        if (redeemUrl) {
+          actionRows.push([{ text: '🚀 RESGATAR / ABRIR AGORA', url: redeemUrl }]);
+        }
+        actionRows.push([{ text: '📦 Ver em Meus Pedidos', callback_data: 'my_purchases' }]);
+        actionRows.push([
+          { text: '🔄 Outro Produto', callback_data: 'catalog' },
+          { text: '🏠 Menu Principal', callback_data: 'back_to_menu' }
+        ]);
+
         linkKeyboard = {
           reply_markup: {
-            inline_keyboard: [
-              ...(urlRow.length ? [urlRow] : []),
-              [
-                { text: '🔄 Outro Produto', callback_data: 'catalog' },
-                { text: '🏠 Menu Principal', callback_data: 'back_to_menu' }
-              ]
-            ]
+            inline_keyboard: actionRows
           }
         };
       } else {
@@ -1676,22 +1692,44 @@ async function handleMyPurchases(chatId, user, messageId) {
     const purchases = data.purchases || [];
     if (purchases.length === 0) {
       const emptyText =
-        `📦 <b>MINHAS COMPRAS</b>\n\n` +
-        `Você ainda não possui compras registradas neste bot.\n\n` +
-        `🛒 Toque em <b>Comprar</b> no menu principal para fazer seu primeiro pedido!`;
+        `📦 <b>MEUS PEDIDOS</b>\n\n` +
+        `Você ainda não possui pedidos registrados neste bot.\n\n` +
+        `🛒 Toque em <b>Produtos</b> no menu principal para fazer seu primeiro pedido!`;
       return sendOrEdit(chatId, messageId, emptyText, backToMenuKeyboard());
     }
 
-    const title =
-      `📦 <b>MINHAS COMPRAS</b>\n\n` +
-      `Selecione um produto para baixar o <b>.txt</b> com os acessos que já foram entregues:`;
+    let text = `📦 <b>MEUS PEDIDOS & ACESSOS</b>\n━━━━━━━━━━━━━━━\n\n`;
+    const keyboard = [];
+    const directActionLinks = [];
 
-    const keyboard = purchases.map((p, i) => [
-      { text: `${productIcon(p.product)} ${p.product} (${p.total})`, callback_data: `my_purchases_prod_${i}` }
-    ]);
+    purchases.forEach((p, i) => {
+      const icon = productIcon(p.product);
+      text += `${icon} <b>${escapeHtml(p.product)}</b> (${p.total} un.):\n`;
+      const recentItems = (p.items || []).slice(0, 3);
+      recentItems.forEach((item) => {
+        const dateStr = formatPurchaseDate(item.created_at);
+        const statusBadge = String(item.delivery_status || '').toLowerCase().startsWith('entregue') ? '✅ Entregue' : `⏳ ${item.delivery_status}`;
+        text += `• Pedido: <code>${escapeHtml(item.token)}</code> (${statusBadge})\n`;
+        
+        const lines = deliveryLines(item);
+        lines.forEach(l => {
+          text += `  👉 <code>${escapeHtml(l)}</code>\n`;
+          const urlMatch = l.match(/https?:\/\/[^\s]+/i);
+          if (urlMatch && directActionLinks.length < 2) {
+            directActionLinks.push({ text: `🚀 Abrir ${escapeHtml(p.product).substring(0, 20)}`, url: urlMatch[0] });
+          }
+        });
+        text += `  📅 Data: ${dateStr}\n\n`;
+      });
+      keyboard.push([{ text: `📥 Baixar .txt: ${icon} ${p.product} (${p.total})`, callback_data: `my_purchases_prod_${i}` }]);
+    });
+
+    if (directActionLinks.length > 0) {
+      directActionLinks.forEach(lnk => keyboard.unshift([lnk]));
+    }
     keyboard.push([{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]);
 
-    sendOrEdit(chatId, messageId, title, { reply_markup: { inline_keyboard: keyboard } });
+    sendOrEdit(chatId, messageId, text, { parse_mode: 'HTML', reply_markup: { inline_keyboard: keyboard } });
   } catch (e) {
     console.error('[minhas compras] falha:', e && e.message ? e.message : e);
     sendOrEdit(chatId, messageId, `❌ <b>Erro de Conexão:</b> não foi possível consultar suas compras.`, backToMenuKeyboard());

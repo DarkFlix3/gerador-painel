@@ -3102,7 +3102,13 @@ async function fulfillExternalProviderOrder(pricing, info) {
         if (del.link) {
           return { type: 'link', content: del.link, instructions };
         } else if (del.code) {
-          return { type: 'coupon', content: del.code, password: del.code, instructions };
+          const isUrl = /^https?:\/\//i.test(String(del.code).trim());
+          return { 
+            type: isUrl ? 'link' : 'coupon', 
+            content: del.code, 
+            password: del.code, 
+            instructions 
+          };
         } else if (del.content) {
           return { type: 'account', content: del.content, instructions };
         } else {
@@ -3115,24 +3121,19 @@ async function fulfillExternalProviderOrder(pricing, info) {
           const reqVal = extData?.error?.required || '?';
           const balVal = extData?.error?.balance || '0.00';
           console.error(`🚨 [ALERTA GGOSOMA] Saldo insuficiente no @Ggsomabot! Necessário: $${reqVal} USD | Disponível: $${balVal} USD.`);
-          if (info.saleId) {
-            await dbHelpers.db.prepare('UPDATE sales SET delivery_status = ? WHERE id = ?').run('Pendente (Saldo Fornecedor)', info.saleId);
-          }
-          notifyNewSale({
-            service: `⚠️ [SALDO FORNECEDOR ZERADO] ${pricing.product.name}`,
-            customerName: info.customerName,
-            customerId: info.customerId,
-            customerContact: info.customerContact,
-            plan: `Falta de saldo na conta GGOSOMA (Necessário: $${reqVal} USD / Disp: $${balVal} USD)`,
-            orderNumber: info.orderNumber,
-            qty: 1
-          }).catch(() => {});
           return {
-            type: 'account',
-            content: 'Seu pagamento foi confirmado! O seu acesso está sendo preparado pela nossa equipe e será enviado aqui em instantes.',
-            instructions: 'Por favor, aguarde alguns minutos enquanto processamos a liberação.'
+            failed: true,
+            error: 'INSUFFICIENT_BALANCE',
+            required: reqVal,
+            available: balVal,
+            message: `Saldo insuficiente na conta GGOSOMA (Necessário: $${reqVal} USD / Disponível: $${balVal} USD)`
           };
         }
+        return {
+          failed: true,
+          error: errCode || 'PROVIDER_ERROR',
+          message: extData?.error?.message || 'Falha ao processar com fornecedor parceiro'
+        };
       }
     } else {
       const extRes = await fetch(`${cleanProviderUrl}/api/v1/generate`, {
@@ -3290,6 +3291,38 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
         saleId: saleResult.lastInsertRowid,
         orderNumber: generation.token
       });
+
+      if (deliveredItem && deliveredItem.failed) {
+        // Estorna o saldo do revendedor imediatamente para evitar cobrança indevida
+        await dbHelpers.db.prepare('UPDATE resellers SET credits = credits + ? WHERE id = ?').run(costPrice, reseller.id);
+        await dbHelpers.db.prepare('UPDATE sales SET delivery_status = ? WHERE id = ?').run('Cancelada (Falha Fornecedor)', saleResult.lastInsertRowid);
+        return res.status(409).json({
+          success: false,
+          error: '⚠️ Este produto está temporariamente indisponível para entrega imediata no fornecedor. Seu saldo foi integralmente preservado!'
+        });
+      }
+
+      if (deliveredItem && (deliveredItem.content || deliveredItem.password || deliveredItem.login)) {
+        const pContent = deliveredItem.content || deliveredItem.password || deliveredItem.login || '';
+        const pType = deliveredItem.type || (/^https?:\/\//i.test(pContent) ? 'link' : 'coupon');
+        try {
+          await dbHelpers.db.prepare(`
+            INSERT INTO product_items (product_id, type, login, password, content, status, sale_id, sold_at, created_at)
+            VALUES (?, ?, ?, ?, ?, 'sold', ?, ?, ?)
+          `).run(
+            pricing.productId,
+            pType,
+            deliveredItem.login || null,
+            deliveredItem.password || (pType === 'coupon' ? pContent : null),
+            pContent,
+            saleResult.lastInsertRowid,
+            now,
+            now
+          );
+        } catch (mItemSaveErr) {
+          console.error('[manualItemSaveErr]', mItemSaveErr.message);
+        }
+      }
     }
 
     const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
@@ -3571,6 +3604,38 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
         saleId: saleResult.lastInsertRowid,
         orderNumber: generation.token
       });
+
+      if (deliveredItem && deliveredItem.failed) {
+        // Estorna o saldo do revendedor imediatamente para evitar cobrança indevida
+        await dbHelpers.db.prepare('UPDATE resellers SET credits = credits + ? WHERE id = ?').run(costPrice, reseller.id);
+        await dbHelpers.db.prepare('UPDATE sales SET delivery_status = ? WHERE id = ?').run('Cancelada (Falha Fornecedor)', saleResult.lastInsertRowid);
+        return res.status(409).json({
+          success: false,
+          error: '⚠️ Este produto está temporariamente indisponível para entrega imediata (estoque em reposição pelo fornecedor). Seu saldo foi integralmente preservado!'
+        });
+      }
+
+      if (deliveredItem && (deliveredItem.content || deliveredItem.password || deliveredItem.login)) {
+        const pContent = deliveredItem.content || deliveredItem.password || deliveredItem.login || '';
+        const pType = deliveredItem.type || (/^https?:\/\//i.test(pContent) ? 'link' : 'coupon');
+        try {
+          await dbHelpers.db.prepare(`
+            INSERT INTO product_items (product_id, type, login, password, content, status, sale_id, sold_at, created_at)
+            VALUES (?, ?, ?, ?, ?, 'sold', ?, ?, ?)
+          `).run(
+            pricing.productId,
+            pType,
+            deliveredItem.login || null,
+            deliveredItem.password || (pType === 'coupon' ? pContent : null),
+            pContent,
+            saleResult.lastInsertRowid,
+            now,
+            now
+          );
+        } catch (itemSaveErr) {
+          console.error('[itemSaveErr]', itemSaveErr.message);
+        }
+      }
     }
 
     const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
@@ -5721,14 +5786,38 @@ async function checkGgsomaStock() {
         let deactivatedCount = 0;
         let activatedCount = 0;
 
+        let ggosomaBalance = null;
+        try {
+          const balRes = await fetch('https://ggsoma.store/api/partner/v1/balance', {
+            headers: { 'Authorization': `Bearer ${cleanKey}` },
+            signal: AbortSignal.timeout(4000)
+          });
+          if (balRes.ok) {
+            const bData = await balRes.json();
+            if (bData && bData.ok && bData.balance !== undefined) {
+              ggosomaBalance = parseFloat(bData.balance);
+            }
+          }
+        } catch (e) {}
+
         for (const item of data.data) {
           const extId = item.slug || String(item.id);
           const stockCount = (item.stock && typeof item.stock.count === 'number') ? item.stock.count : null;
           if (stockCount === null) continue;
 
-          const shouldBeActive = stockCount > 0 ? 1 : 0;
-          const current = await dbHelpers.db.prepare('SELECT id, stock, active FROM products WHERE provider_id = ? AND external_product_id = ?').get(provider.id, extId);
+          let shouldBeActive = stockCount > 0 ? 1 : 0;
+          if (ggosomaBalance !== null && item.unitPrice) {
+            const priceUsd = parseFloat(item.unitPrice);
+            if (!isNaN(priceUsd) && priceUsd > ggosomaBalance) {
+              shouldBeActive = 0; // Pausa temporariamente se a carteira GGOSOMA não tiver saldo suficiente
+            }
+          }
+
+          const current = await dbHelpers.db.prepare('SELECT id, stock, active, cost_usd FROM products WHERE provider_id = ? AND external_product_id = ?').get(provider.id, extId);
           if (current) {
+            if (ggosomaBalance !== null && current.cost_usd && Number(current.cost_usd) > ggosomaBalance) {
+              shouldBeActive = 0;
+            }
             if (Number(current.stock) !== stockCount || Number(current.active) !== shouldBeActive) {
               await dbHelpers.db.prepare('UPDATE products SET stock = ?, active = ? WHERE id = ?').run(stockCount, shouldBeActive, current.id);
               if (shouldBeActive === 0) deactivatedCount++;
