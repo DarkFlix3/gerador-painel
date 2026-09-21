@@ -739,19 +739,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
       __adminCustomers = data.data || [];
       if (__adminCustomers.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="6" class="px-5 py-8 text-center text-slate-500">Nenhum cliente encontrado${search ? ' para &quot;' + escapeHtml(search) + '&quot;' : ''}. As fichas são criadas automaticamente quando o cliente interage com o bot.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7" class="px-5 py-8 text-center text-slate-500">Nenhum cliente encontrado${search ? ' para &quot;' + escapeHtml(search) + '&quot;' : ''}. As fichas são criadas automaticamente quando o cliente interage com o bot.</td></tr>`;
         return;
       }
 
       tbody.innerHTML = __adminCustomers.map(c => {
         const isBlocked = Number(c.blocked) === 1;
         const idLabel = c.telegram_id ? (c.username ? '@' + c.username : 'ID ' + c.telegram_id) : (c.username ? '@' + c.username : '—');
+        const bal = parseFloat(c.balance || 0);
         return `
           <tr class="hover:bg-white/[0.02] transition-colors">
             <td class="px-5 py-3.5">
               <span class="font-bold text-sky-300 block text-xs">${escapeHtml(c.name || 'Cliente')}</span>
               <span class="text-[10px] text-slate-400 font-mono">${escapeHtml(idLabel)}</span>
               ${c.blocked_reason ? `<span class="text-[10px] text-rose-400/90 block mt-0.5">Motivo: ${escapeHtml(c.blocked_reason)}</span>` : ''}
+            </td>
+            <td class="px-5 py-3.5">
+              <div class="flex items-center gap-2">
+                <span class="font-mono font-bold text-xs ${bal > 0 ? 'text-emerald-400 font-black' : 'text-slate-400'}">${__brl(bal)}</span>
+                <button onclick="openCustomerBalanceModal(${c.id})" class="px-2 py-0.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/25 text-amber-300 border border-amber-500/25 transition-all text-[10px] font-bold flex items-center gap-1" title="Adicionar ou Retirar Saldo">
+                  <i data-lucide="wallet" class="w-3 h-3"></i>
+                  <span>Ajustar</span>
+                </button>
+              </div>
             </td>
             <td class="px-5 py-3.5 font-mono font-bold text-white">${Number(c.orders_count || 0)}</td>
             <td class="px-5 py-3.5 font-mono font-bold text-emerald-400">${__brl(c.total_spent)}</td>
@@ -766,6 +776,7 @@ document.addEventListener('DOMContentLoaded', () => {
             </td>
             <td class="px-5 py-3.5">
               <div class="flex items-center gap-1.5">
+                <button onclick="openCustomerBalanceModal(${c.id})" class="p-2 rounded-lg bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 transition-all" title="Colocar / Retirar Saldo"><i data-lucide="coins" class="w-3.5 h-3.5"></i></button>
                 ${isBlocked
                   ? `<button onclick="toggleBlockCustomer(${c.id})" class="p-2 rounded-lg bg-emerald-950/50 hover:bg-emerald-800/50 text-emerald-400 border border-emerald-500/20" title="Desbloquear"><i data-lucide="unlock" class="w-3.5 h-3.5"></i></button>`
                   : `<button onclick="toggleBlockCustomer(${c.id})" class="p-2 rounded-lg bg-rose-950/50 hover:bg-rose-800/50 text-rose-400 border border-rose-500/20" title="Bloquear"><i data-lucide="ban" class="w-3.5 h-3.5"></i></button>`}
@@ -889,6 +900,133 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
+  // ==============================================
+  // MODAL: GERENCIAR SALDO DO CLIENTE (ADMIN)
+  // ==============================================
+  let __balanceCustomerId = null;
+  let __balanceCurrentOp = 'add';
+
+  window.openCustomerBalanceModal = function (id) {
+    const c = __adminCustomers.find(x => String(x.id) === String(id));
+    if (!c) return;
+    __balanceCustomerId = id;
+    const modal = document.getElementById('customer-balance-modal');
+    const nameEl = document.getElementById('customer-balance-client-name');
+    const currEl = document.getElementById('customer-balance-current');
+    const amountInput = document.getElementById('customer-balance-amount');
+
+    const idLabel = c.telegram_id ? (c.username ? '@' + c.username + ' • ID ' + c.telegram_id : 'ID ' + c.telegram_id) : (c.username ? '@' + c.username : '—');
+    if (nameEl) nameEl.innerText = `${c.name || 'Cliente'} (${idLabel})`;
+    if (currEl) currEl.innerText = __brl(c.balance || 0);
+    if (amountInput) {
+      amountInput.value = '';
+      setTimeout(() => amountInput.focus(), 80);
+    }
+    setBalanceOperation('add');
+    if (modal) {
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+    }
+    if (window.lucide) window.lucide.createIcons();
+  };
+
+  window.closeCustomerBalanceModal = function () {
+    const modal = document.getElementById('customer-balance-modal');
+    if (modal) {
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+    }
+    __balanceCustomerId = null;
+  };
+
+  window.setBalanceOperation = function (op) {
+    __balanceCurrentOp = op;
+    const btnAdd = document.getElementById('btn-op-add');
+    const btnSub = document.getElementById('btn-op-sub');
+    if (btnAdd && btnSub) {
+      if (op === 'add') {
+        btnAdd.className = 'py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all bg-emerald-600/20 border-emerald-500 text-emerald-300 shadow-sm';
+        btnSub.className = 'py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all bg-slate-800/60 border-white/10 text-slate-400 hover:text-slate-200';
+      } else {
+        btnSub.className = 'py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all bg-rose-600/20 border-rose-500 text-rose-300 shadow-sm';
+        btnAdd.className = 'py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all bg-slate-800/60 border-white/10 text-slate-400 hover:text-slate-200';
+      }
+    }
+  };
+
+  window.setBalanceQuickAmount = function (val) {
+    const amountInput = document.getElementById('customer-balance-amount');
+    if (amountInput) {
+      amountInput.value = Number(val).toFixed(2);
+      amountInput.focus();
+    }
+  };
+
+  window.confirmCustomerBalance = async function () {
+    if (!__balanceCustomerId) return;
+    const amountInput = document.getElementById('customer-balance-amount');
+    const val = parseFloat(amountInput ? amountInput.value.replace(',', '.') : '0');
+    if (!Number.isFinite(val) || val <= 0) {
+      showToast('Informe um valor válido maior que zero.', 'error');
+      if (amountInput) amountInput.focus();
+      return;
+    }
+
+    const finalAmount = __balanceCurrentOp === 'sub' ? -val : val;
+    const btnConfirm = document.getElementById('btn-confirm-balance');
+    if (btnConfirm) btnConfirm.disabled = true;
+
+    try {
+      const res = await apiFetch('/api/admin/customers/' + __balanceCustomerId + '/balance', {
+        method: 'POST',
+        body: JSON.stringify({ amount: finalAmount })
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Falha ao atualizar saldo.');
+      showToast(data.message, 'success');
+      closeCustomerBalanceModal();
+      loadCustomers();
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      if (btnConfirm) btnConfirm.disabled = false;
+    }
+  };
+
+  const btnCloseBalance = document.getElementById('customer-balance-close');
+  if (btnCloseBalance) btnCloseBalance.addEventListener('click', window.closeCustomerBalanceModal);
+
+  const btnCancelBalance = document.getElementById('btn-cancel-balance');
+  if (btnCancelBalance) btnCancelBalance.addEventListener('click', window.closeCustomerBalanceModal);
+
+  const btnConfirmBalance = document.getElementById('btn-confirm-balance');
+  if (btnConfirmBalance) btnConfirmBalance.addEventListener('click', window.confirmCustomerBalance);
+
+  const balanceAmountInput = document.getElementById('customer-balance-amount');
+  if (balanceAmountInput) {
+    balanceAmountInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        window.confirmCustomerBalance();
+      }
+    });
+  }
+
+  const balanceModal = document.getElementById('customer-balance-modal');
+  if (balanceModal) {
+    balanceModal.addEventListener('click', (e) => {
+      if (e.target === balanceModal) window.closeCustomerBalanceModal();
+    });
+  }
+
+  const btnSearchCustomers = document.getElementById('btn-search-customers');
+  if (btnSearchCustomers) {
+    btnSearchCustomers.addEventListener('click', () => {
+      clearTimeout(__customerSearchTimer);
+      loadCustomers();
+    });
+  }
+
   const btnRefreshCustomers = document.getElementById('btn-refresh-customers');
   if (btnRefreshCustomers) {
     btnRefreshCustomers.addEventListener('click', () => {
@@ -902,6 +1040,12 @@ document.addEventListener('DOMContentLoaded', () => {
     customerSearchInput.addEventListener('input', () => {
       clearTimeout(__customerSearchTimer);
       __customerSearchTimer = setTimeout(loadCustomers, 350);
+    });
+    customerSearchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        clearTimeout(__customerSearchTimer);
+        loadCustomers();
+      }
     });
   }
 

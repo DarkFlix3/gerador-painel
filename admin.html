@@ -77,6 +77,18 @@
             <i data-lucide="shopping-cart" class="w-4 h-4 text-emerald-400"></i>
             <span>Vendas & Clientes</span>
           </button>
+          <button data-tab="products" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
+            <i data-lucide="package" class="w-4 h-4 text-amber-400"></i>
+            <span>Catálogo de Produtos</span>
+          </button>
+          <button data-tab="coupons" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
+            <i data-lucide="ticket-percent" class="w-4 h-4 text-pink-400"></i>
+            <span>Cupons de Desconto</span>
+          </button>
+          <button data-tab="customers" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
+            <i data-lucide="users" class="w-4 h-4 text-sky-400"></i>
+            <span>Clientes do Bot</span>
+          </button>
           <button data-tab="error-logs" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
             <i data-lucide="alert-triangle" class="w-4 h-4 text-rose-400"></i>
             <span>Monitoramento & Erros</span>
@@ -243,13 +255,282 @@
                     <th class="px-5 py-3">Revendedor / Bot</th>
                     <th class="px-5 py-3">Cliente Final</th>
                     <th class="px-5 py-3">Link Entregue</th>
+                    <th class="px-5 py-3">Produto / Entrega</th>
                     <th class="px-5 py-3">Valor Pago</th>
+                    <th class="px-5 py-3">Desconto</th>
                     <th class="px-5 py-3">Lucro Revenda</th>
                     <th class="px-5 py-3">Entrega</th>
                     <th class="px-5 py-3">Data e Hora</th>
+                    <th class="px-5 py-3"></th>
                   </tr>
                 </thead>
                 <tbody id="all-sales-table-body" class="divide-y divide-white/5">
+                  <!-- JS Data -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============================================== -->
+        <!-- TAB: CATALOGO DE PRODUTOS -->
+        <!-- ============================================== -->
+        <div id="tab-products" class="tab-content hidden space-y-6">
+          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div>
+              <h2 class="text-xl font-black text-white">Catálogo de Produtos</h2>
+              <p class="text-xs text-slate-400">Produtos vendidos pelos revendedores. O custo define o débito do saldo; o preço pode ser fixo ou margem sobre o custo.</p>
+            </div>
+            <button id="btn-new-product" class="px-3.5 py-2 bg-amber-600 hover:bg-amber-500 text-xs font-bold text-white rounded-xl border border-amber-400/30 flex items-center gap-1.5">
+              <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+              <span>Novo Produto</span>
+            </button>
+          </div>
+
+          <div id="product-form-card" class="glass-panel p-5 hidden space-y-4 border border-amber-500/30">
+            <h3 class="text-sm font-black text-amber-300 uppercase tracking-wider" id="product-form-title">Novo Produto</h3>
+            <input type="hidden" id="product-id">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Nome *</label>
+                <input type="text" id="product-name" required placeholder="Ex: Spotify Premium" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500">
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Descrição</label>
+                <input type="text" id="product-description" placeholder="Ex: 1 mês de assinatura" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500">
+              </div>
+              <div class="sm:col-span-2">
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Link de Destino (opcional)</label>
+                <input type="url" id="product-target-url" placeholder="Ex: https://www.spotify.com/br-pt/referral/..." class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500">
+                <p class="text-[10px] text-slate-500 mt-1">Para onde o cliente é redirecionado após a ativação. Vazio = usa o link padrão das Configurações.</p>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Custo (R$) *</label>
+                <input type="number" step="0.01" id="product-cost" required placeholder="Ex: 2.99" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500">
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Tipo de Preço *</label>
+                <select id="product-price-type" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500">
+                  <option value="fixed">Preço fixo de venda</option>
+                  <option value="margin">Margem (%) sobre o custo</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Preço de Venda (R$) ou Margem (%) *</label>
+                <input type="number" step="0.01" id="product-price-value" required placeholder="Ex: 15.00 ou 400" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500">
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Estoque (opcional)</label>
+                <input type="number" min="0" step="1" id="product-stock" placeholder="Vazio = ilimitado. 0 = esgotado." class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500">
+                <p class="text-[10px] text-slate-500 mt-1">Quantas unidades podem ser vendidas. Deixe vazio para estoque ilimitado.</p>
+                <p class="text-[10px] text-emerald-400/80 mt-1" id="product-stock-hint"></p>
+              </div>
+              <div class="sm:col-span-2">
+                <div class="flex items-center gap-2">
+                  <label class="block text-xs font-semibold text-emerald-300 uppercase tracking-wider">📦 Itens do Estoque (Contas / Links)</label>
+                </div>
+                <p class="text-[10px] text-slate-500 mt-1">Cada item vale 1 unidade vendável. <b class="text-emerald-400">Contas:</b> escreva <code class="text-amber-300">login:senha</code> (ou <code class="text-amber-300">login|senha</code>) — 1 por linha. <b class="text-emerald-400">Links:</b> 1 link por linha. O estoque do produto é atualizado automaticamente com a quantidade de itens.</p>
+                <div class="flex flex-col sm:flex-row gap-2 mt-2">
+                  <select id="product-items-type" class="px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-emerald-500 w-full sm:w-40">
+                    <option value="account">Contas (login:senha)</option>
+                    <option value="link">Links</option>
+                  </select>
+                  <input type="hidden" id="product-items-product-id">
+                  <textarea id="product-items-lines" rows="4" placeholder="Contas:&#10;exemplo@gmail.com:senha123&#10;outro@email.com|outrasenha&#10;&#10;ou Links:&#10;https://exemplo.com/acesso/1&#10;https://exemplo.com/acesso/2" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-emerald-500 font-mono"></textarea>
+                </div>
+                <div class="flex items-center gap-2 mt-2">
+                  <button id="btn-add-product-items" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white rounded-xl">➕ ADICIONAR ITENS</button>
+                  <span id="product-items-status" class="text-[11px] text-slate-400"></span>
+                </div>
+                <div id="product-items-list" class="mt-3 space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                  <!-- Itens carregados via JS -->
+                </div>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Ordem de Exibição</label>
+                <input type="number" id="product-sort-order" value="0" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500">
+              </div>
+            </div>
+            <div class="flex items-center gap-2 pt-1">
+              <button id="btn-save-product" class="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-xs font-bold text-white rounded-xl">SALVAR PRODUTO</button>
+              <button id="btn-cancel-product" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10">CANCELAR</button>
+            </div>
+          </div>
+
+          <div class="glass-panel overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs">
+                <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
+                  <tr>
+                    <th class="px-5 py-3">Produto</th>
+                    <th class="px-5 py-3">Custo</th>
+                    <th class="px-5 py-3">Preço de Venda</th>
+                    <th class="px-5 py-3">Margem</th>
+                    <th class="px-5 py-3">Estoque</th>
+                    <th class="px-5 py-3">Itens</th>
+                    <th class="px-5 py-3">Status</th>
+                    <th class="px-5 py-3">Ações</th>
+                  </tr>
+                </thead>
+                <tbody id="products-table-body" class="divide-y divide-white/5">
+                  <!-- JS Data -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============================================== -->
+        <!-- TAB: CUPONS DE DESCONTO -->
+        <!-- ============================================== -->
+        <div id="tab-coupons" class="tab-content hidden space-y-6">
+          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div>
+              <h2 class="text-xl font-black text-white">Cupons de Desconto</h2>
+              <p class="text-xs text-slate-400">Cupons aplicados automaticamente nas vendas (bot e painel) quando o cliente informa o código.</p>
+            </div>
+            <button id="btn-new-coupon" class="px-3.5 py-2 bg-pink-600 hover:bg-pink-500 text-xs font-bold text-white rounded-xl border border-pink-400/30 flex items-center gap-1.5">
+              <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+              <span>Novo Cupom</span>
+            </button>
+          </div>
+
+          <div id="coupon-form-card" class="glass-panel p-5 hidden space-y-4 border border-pink-500/30">
+            <h3 class="text-sm font-black text-pink-300 uppercase tracking-wider" id="coupon-form-title">Novo Cupom</h3>
+            <input type="hidden" id="coupon-id">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Código *</label>
+                <input type="text" id="coupon-code" required placeholder="Ex: BEMVINDO10" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-pink-500 uppercase">
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Tipo *</label>
+                <select id="coupon-type" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-pink-500">
+                  <option value="percent">Percentual (%)</option>
+                  <option value="fixed">Valor fixo (R$)</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Valor *</label>
+                <input type="number" step="0.01" id="coupon-value" required placeholder="Ex: 10 ou 5.00" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-pink-500">
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Limite de Usos (0 = ilimitado)</label>
+                <input type="number" id="coupon-max-uses" value="0" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-pink-500">
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Expira em (opcional)</label>
+                <input type="date" id="coupon-expires-at" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-pink-500">
+              </div>
+              <div class="flex items-end pb-2">
+                <label class="flex items-center gap-2 text-xs font-semibold text-slate-300 cursor-pointer">
+                  <input type="checkbox" id="coupon-active" checked class="w-4 h-4 accent-pink-500">
+                  Cupom ativo
+                </label>
+              </div>
+            </div>
+            <div class="flex items-center gap-2 pt-1">
+              <button id="btn-save-coupon" class="px-4 py-2 bg-pink-600 hover:bg-pink-500 text-xs font-bold text-white rounded-xl">SALVAR CUPOM</button>
+              <button id="btn-cancel-coupon" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10">CANCELAR</button>
+            </div>
+          </div>
+
+          <div class="glass-panel overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs">
+                <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
+                  <tr>
+                    <th class="px-5 py-3">Código</th>
+                    <th class="px-5 py-3">Desconto</th>
+                    <th class="px-5 py-3">Usos</th>
+                    <th class="px-5 py-3">Expira</th>
+                    <th class="px-5 py-3">Status</th>
+                    <th class="px-5 py-3">Ações</th>
+                  </tr>
+                </thead>
+                <tbody id="coupons-table-body" class="divide-y divide-white/5">
+                  <!-- JS Data -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============================================== -->
+        <!-- TAB: CLIENTES DO BOT -->
+        <!-- ============================================== -->
+        <div id="tab-customers" class="tab-content hidden space-y-6">
+          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div>
+              <h2 class="text-xl font-black text-white">Clientes do Bot</h2>
+              <p class="text-xs text-slate-400">Fichas criadas automaticamente quando o cliente interage com o bot. Clientes bloqueados não conseguem finalizar o checkout.</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <div class="relative flex items-center">
+                <div class="absolute left-3 text-slate-400 pointer-events-none flex items-center">
+                  <i data-lucide="search" class="w-4 h-4"></i>
+                </div>
+                <input type="search" id="customer-search" placeholder="Buscar por @username, ID ou nome..." class="bg-slate-900 border border-white/10 text-xs pl-9 pr-3 py-2 rounded-xl text-slate-200 focus:outline-none focus:border-sky-500 w-64 placeholder:text-slate-500">
+              </div>
+              <button id="btn-search-customers" class="px-3.5 py-2 bg-sky-600 hover:bg-sky-500 text-xs font-bold text-white rounded-xl shadow-lg shadow-sky-600/20 flex items-center gap-1.5 transition-all" title="Buscar">
+                <i data-lucide="search" class="w-3.5 h-3.5"></i>
+                <span>Buscar</span>
+              </button>
+              <button id="btn-refresh-customers" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5 transition-all" title="Atualizar">
+                <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+                <span>Atualizar</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div class="glass-panel p-5 relative overflow-hidden">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total de Clientes</span>
+                <div class="w-8 h-8 rounded-lg bg-sky-600/20 text-sky-400 flex items-center justify-center">
+                  <i data-lucide="users" class="w-4 h-4"></i>
+                </div>
+              </div>
+              <div class="text-3xl font-black text-sky-400 mt-2" id="kpi-customers-total">0</div>
+              <div class="text-[11px] text-slate-400 mt-2">fichas registradas</div>
+            </div>
+            <div class="glass-panel p-5 relative overflow-hidden">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Bloqueados</span>
+                <div class="w-8 h-8 rounded-lg bg-rose-600/20 text-rose-400 flex items-center justify-center">
+                  <i data-lucide="ban" class="w-4 h-4"></i>
+                </div>
+              </div>
+              <div class="text-3xl font-black text-rose-400 mt-2" id="kpi-customers-blocked">0</div>
+              <div class="text-[11px] text-slate-400 mt-2">sem acesso ao checkout</div>
+            </div>
+            <div class="glass-panel p-5 relative overflow-hidden">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Receita Total</span>
+                <div class="w-8 h-8 rounded-lg bg-emerald-600/20 text-emerald-400 flex items-center justify-center">
+                  <i data-lucide="circle-dollar-sign" class="w-4 h-4"></i>
+                </div>
+              </div>
+              <div class="text-3xl font-black text-emerald-400 mt-2" id="kpi-customers-revenue">R$ 0,00</div>
+              <div class="text-[11px] text-slate-400 mt-2">somando todas as compras</div>
+            </div>
+          </div>
+
+          <div class="glass-panel overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs">
+                <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
+                  <tr>
+                    <th class="px-5 py-3">Cliente</th>
+                    <th class="px-5 py-3">Saldo</th>
+                    <th class="px-5 py-3">Compras</th>
+                    <th class="px-5 py-3">Total Gasto</th>
+                    <th class="px-5 py-3">Último Acesso</th>
+                    <th class="px-5 py-3">Status</th>
+                    <th class="px-5 py-3">Ações</th>
+                  </tr>
+                </thead>
+                <tbody id="customers-table-body" class="divide-y divide-white/5">
                   <!-- JS Data -->
                 </tbody>
               </table>
@@ -418,6 +699,187 @@
         </div>
 
       </main>
+    </div>
+  </div>
+
+  <!-- Modal: Gerenciar Saldo do Cliente -->
+  <div id="customer-balance-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+    <div class="glass-panel w-full max-w-md p-6 space-y-5" style="border:1px solid rgba(255,255,255,0.1)">
+      <div class="flex items-center justify-between pb-3 border-b border-white/10">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center">
+            <i data-lucide="wallet" class="w-5 h-5"></i>
+          </div>
+          <div>
+            <h3 class="text-base font-black text-white">Gerenciar Saldo</h3>
+            <p id="customer-balance-client-name" class="text-xs text-slate-400 font-mono">Cliente</p>
+          </div>
+        </div>
+        <button id="customer-balance-close" class="p-2 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 transition-colors">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <!-- Saldo Atual -->
+      <div class="bg-slate-950/70 border border-white/5 rounded-xl p-4 flex items-center justify-between">
+        <span class="text-xs text-slate-400 font-medium">Saldo Atual:</span>
+        <span id="customer-balance-current" class="text-xl font-mono font-black text-emerald-400">R$ 0,00</span>
+      </div>
+
+      <!-- Operação: Adicionar (+) ou Retirar (-) -->
+      <div>
+        <label class="block text-xs font-semibold text-slate-300 mb-2">Operação:</label>
+        <div class="grid grid-cols-2 gap-2">
+          <button type="button" id="btn-op-add" onclick="setBalanceOperation('add')" class="py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all bg-emerald-600/20 border-emerald-500 text-emerald-300 shadow-sm">
+            <i data-lucide="plus" class="w-4 h-4"></i>
+            <span>Colocar Saldo (+)</span>
+          </button>
+          <button type="button" id="btn-op-sub" onclick="setBalanceOperation('sub')" class="py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all bg-slate-800/60 border-white/10 text-slate-400 hover:text-slate-200">
+            <i data-lucide="minus" class="w-4 h-4"></i>
+            <span>Retirar Saldo (-)</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Valor -->
+      <div>
+        <label class="block text-xs font-semibold text-slate-300 mb-1.5">Valor (R$):</label>
+        <div class="relative">
+          <span class="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-xs">R$</span>
+          <input type="number" id="customer-balance-amount" step="0.50" min="0.01" placeholder="0,00" class="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-amber-500 transition-colors">
+        </div>
+        <div class="flex gap-1.5 mt-2">
+          <button type="button" onclick="setBalanceQuickAmount(5)" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[11px] font-mono border border-white/5">+5</button>
+          <button type="button" onclick="setBalanceQuickAmount(10)" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[11px] font-mono border border-white/5">+10</button>
+          <button type="button" onclick="setBalanceQuickAmount(20)" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[11px] font-mono border border-white/5">+20</button>
+          <button type="button" onclick="setBalanceQuickAmount(50)" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[11px] font-mono border border-white/5">+50</button>
+          <button type="button" onclick="setBalanceQuickAmount(100)" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[11px] font-mono border border-white/5">+100</button>
+        </div>
+      </div>
+
+      <div class="flex gap-3 pt-2">
+        <button type="button" id="btn-cancel-balance" class="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold border border-white/10 transition-colors">Cancelar</button>
+        <button type="button" id="btn-confirm-balance" class="flex-1 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 rounded-xl text-xs font-black shadow-lg shadow-amber-500/20 transition-all flex items-center justify-center gap-1.5">
+          <i data-lucide="check" class="w-4 h-4"></i>
+          <span>Confirmar</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Compras do Cliente -->
+  <div id="customer-purchases-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+    <div class="glass-panel w-full max-w-3xl max-h-[85vh] overflow-y-auto p-6 space-y-4">
+      <div class="flex items-start justify-between gap-4">
+        <div>
+          <h3 class="text-lg font-black text-white" id="customer-purchases-title">Compras do Cliente</h3>
+          <p class="text-[11px] text-slate-400 mt-0.5" id="customer-purchases-sub">Carregando...</p>
+        </div>
+        <button id="customer-purchases-close" class="p-2 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+      <div class="overflow-hidden" style="border:1px solid rgba(255,255,255,0.06); border-radius:0.75rem">
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs">
+            <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
+              <tr>
+                <th class="px-4 py-3">Produto / Entrega</th>
+                <th class="px-4 py-3">Valor</th>
+                <th class="px-4 py-3">Revendedor</th>
+                <th class="px-4 py-3">Status</th>
+                <th class="px-4 py-3">Data</th>
+              </tr>
+            </thead>
+            <tbody id="customer-purchases-body" class="divide-y divide-white/5">
+              <!-- JS Data -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="flex items-center justify-between text-xs">
+        <span class="text-slate-400">Total gasto pelo cliente:</span>
+        <span class="font-mono font-black text-emerald-400 text-sm" id="customer-purchases-total">R$ 0,00</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Comprovante de Venda -->
+  <div id="sale-receipt-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+    <div class="glass-panel w-full max-w-2xl max-h-[85vh] overflow-y-auto p-6 space-y-5" style="border:1px solid rgba(255,255,255,0.08)">
+      <div class="flex items-start justify-between gap-4 pb-4 border-b border-white/5">
+        <div>
+          <h3 class="text-lg font-black text-white flex items-center gap-2">
+            <i data-lucide="receipt-text" class="w-5 h-5 text-indigo-400"></i>
+            Comprovante de Venda
+          </h3>
+          <p class="text-[11px] text-slate-400 mt-0.5 font-mono" id="receipt-token-line">—</p>
+        </div>
+        <button id="sale-receipt-close" class="p-2 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <!-- Comprador -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+        <div class="rounded-xl bg-slate-900/60 p-3.5 border border-white/5">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Comprador</div>
+          <div class="font-bold text-white truncate" id="receipt-buyer-name">—</div>
+          <div class="text-[10px] text-slate-500 mt-0.5 truncate" id="receipt-buyer-contact">—</div>
+        </div>
+        <div class="rounded-xl bg-slate-900/60 p-3.5 border border-white/5">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">ID do Telegram</div>
+          <div class="font-mono font-bold text-white text-sm" id="receipt-telegram-id">—</div>
+          <div class="text-[10px] text-slate-500 mt-0.5">Data: <span id="receipt-datetime" class="text-slate-300 font-mono">—</span></div>
+        </div>
+      </div>
+
+      <!-- Status -->
+      <div class="flex items-center justify-between gap-3 rounded-xl bg-slate-900/60 p-3.5 border border-white/5">
+        <div>
+          <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">Status do Envio</div>
+          <div id="receipt-status" class="font-bold text-xs">—</div>
+        </div>
+        <div class="text-right">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">Revendedor</div>
+          <div class="text-xs font-bold text-slate-300" id="receipt-reseller">—</div>
+        </div>
+      </div>
+
+      <!-- Produto entregue -->
+      <div class="rounded-xl bg-slate-900/60 p-3.5 border border-white/5">
+        <div class="flex items-center justify-between gap-2 mb-3">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500">Produto Entregue</div>
+          <span id="receipt-item-type" class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-950/70 text-indigo-300 border border-indigo-500/30">—</span>
+        </div>
+        <div class="text-sm font-black text-amber-300 mb-2" id="receipt-product-name">—</div>
+        <div id="receipt-item-fields" class="space-y-2 text-xs"><!-- JS Data --></div>
+        <div class="mt-3 pt-3 border-t border-white/5">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1.5">Link gerado</div>
+          <div class="flex items-center gap-2">
+            <span class="font-mono text-[11px] text-cyan-300 truncate" id="receipt-target-url">—</span>
+            <button id="receipt-copy-link" class="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 shrink-0" title="Copiar link"><i data-lucide="copy" class="w-3.5 h-3.5"></i></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pagamento -->
+      <div class="grid grid-cols-3 gap-3 text-xs">
+        <div class="rounded-xl bg-slate-900/60 p-3.5 border border-white/5">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Valor Pago</div>
+          <div class="font-mono font-black text-white text-sm" id="receipt-price">—</div>
+        </div>
+        <div class="rounded-xl bg-slate-900/60 p-3.5 border border-white/5">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Desconto</div>
+          <div class="font-mono font-bold text-emerald-400 text-sm" id="receipt-discount">—</div>
+        </div>
+        <div class="rounded-xl bg-slate-900/60 p-3.5 border border-white/5">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Lucro Revenda</div>
+          <div class="font-mono font-bold text-emerald-400 text-sm" id="receipt-profit">—</div>
+        </div>
+      </div>
+
+      <p class="text-center text-[10px] text-slate-600" id="receipt-generated-at">—</p>
     </div>
   </div>
 

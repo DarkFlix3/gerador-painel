@@ -809,9 +809,28 @@
 
       // 21b. ADMIN: CLIENTES DO BOT
       if (cleanUrl.startsWith('/api/admin/customers')) {
-        const match = cleanUrl.match(/\/api\/admin\/customers\/(\d+)\/(toggle-block|purchases)/);
+        const match = cleanUrl.match(/\/api\/admin\/customers\/(\d+)\/(toggle-block|purchases|balance)/);
         const listOnly = /\/api\/admin\/customers(\?.*)?$/.test(cleanUrl);
-        if (match && method === 'POST') {
+        if (match && match[2] === 'balance' && method === 'POST') {
+          const list = getCustomers();
+          const c = list.find(x => Number(x.id) === Number(match[1]));
+          if (!c) return mockResponse(404, { success: false, error: 'Cliente não encontrado.' });
+          const amount = Math.round((parseFloat(body && body.amount) || 0) * 100) / 100;
+          const current = parseFloat(c.balance || 0);
+          const updated = Math.max(0, Math.round((current + amount) * 100) / 100);
+          c.balance = updated;
+          saveCustomers(list);
+          const label = c.name || (c.username ? '@' + c.username : ('ID ' + (c.telegram_id || c.id)));
+          return mockResponse(200, {
+            success: true,
+            message: amount > 0
+              ? `R$ ${amount.toFixed(2).replace('.', ',')} adicionado ao saldo de ${label}. Novo saldo: R$ ${updated.toFixed(2).replace('.', ',')}.`
+              : `R$ ${Math.abs(amount).toFixed(2).replace('.', ',')} retirado do saldo de ${label}. Novo saldo: R$ ${updated.toFixed(2).replace('.', ',')}.`,
+            balance: updated,
+            amount
+          });
+        }
+        if (match && match[2] === 'toggle-block' && method === 'POST') {
           const list = getCustomers();
           const c = list.find(x => Number(x.id) === Number(match[1]));
           if (!c) return mockResponse(404, { success: false, error: 'Cliente não encontrado.' });

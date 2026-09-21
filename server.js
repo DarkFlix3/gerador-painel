@@ -675,7 +675,20 @@ const resellerBotAuth = async (req, res, next) => {
   // ==========================================
   const tgId = (req.headers['x-telegram-id'] || '').toString().trim();
   if (tgId) {
-    const byTg = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE telegram_id = ?').get(tgId);
+    const cleanTg = tgId.replace(/^tg_/, '');
+    let byTg = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE telegram_id = ? OR telegram_id = ?').get(cleanTg, 'tg_' + cleanTg);
+    if (!byTg) {
+      const byCust = await dbHelpers.db.prepare('SELECT * FROM customers WHERE telegram_id = ? OR telegram_id = ?').get(cleanTg, 'tg_' + cleanTg);
+      if (byCust) {
+        const autoName = byCust.name || (byCust.username ? '@' + byCust.username : 'Cliente ' + cleanTg);
+        const autoKey = 'cust_' + Math.random().toString(36).substring(2, 14);
+        const ins = await dbHelpers.db.prepare(`
+          INSERT INTO resellers (name, email, credits, active, blocked, telegram_id, api_key, sale_price)
+          VALUES (?, ?, ?, 1, ?, ?, ?, 2.99) RETURNING id
+        `).run(autoName, `${cleanTg}@bot.telegram`, parseFloat(byCust.balance || 0), byCust.blocked || 0, cleanTg, autoKey);
+        byTg = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE id = ?').get(ins.lastInsertRowid);
+      }
+    }
     if (!byTg) {
       return res.status(404).json({
         success: false,
@@ -3197,9 +3210,11 @@ app.get('/api/admin/customers', adminAuth, async (req, res) => {
   let where = '';
   const params = [];
   if (search) {
-    where = ' WHERE (telegram_id LIKE ? OR LOWER(username) LIKE LOWER(?) OR LOWER(name) LIKE LOWER(?))';
-    const like = `%${search}%`;
-    params.push(like, like, like);
+    const cleanSearch = search.replace(/^[@tg_]+/, '').trim();
+    where = ' WHERE (telegram_id LIKE ? OR telegram_id LIKE ? OR LOWER(username) LIKE LOWER(?) OR LOWER(username) LIKE LOWER(?) OR LOWER(name) LIKE LOWER(?))';
+    const likeRaw = `%${search}%`;
+    const likeClean = `%${cleanSearch}%`;
+    params.push(likeRaw, likeClean, likeRaw, likeClean, likeRaw);
   }
 
   const customers = await dbHelpers.db.prepare(`
@@ -3254,7 +3269,7 @@ app.post('/api/admin/customers/:id/balance', adminAuth, async (req, res) => {
     return res.status(400).json({ success: false, error: 'Informe um valor de saldo válido (diferente de zero).' });
   }
 
-  const customer = await dbHelpers.db.prepare('SELECT id, telegram_id, name, balance FROM customers WHERE id = ?').get(id);
+  const customer = await dbHelpers.db.prepare('SELECT id, telegram_id, username, name, balance, blocked FROM customers WHERE id = ?').get(id);
   if (!customer) {
     return res.status(404).json({ success: false, error: 'Cliente não encontrado.' });
   }
@@ -3263,12 +3278,32 @@ app.post('/api/admin/customers/:id/balance', adminAuth, async (req, res) => {
   const updated = Math.max(0, Math.round((current + amount) * 100) / 100);
   await dbHelpers.db.prepare('UPDATE customers SET balance = ? WHERE id = ?').run(updated.toFixed(2), id);
 
-  const label = customer.name || ('@' + (customer.telegram_id || id));
+  // Sincroniza saldo com a tabela resellers se houver conta vinculada a esse telegram_id
+  if (customer.telegram_id) {
+    const cleanTg = String(customer.telegram_id).replace(/^tg_/, '').trim();
+    try {
+      const existingReseller = await dbHelpers.db.prepare('SELECT id FROM resellers WHERE telegram_id = ? OR telegram_id = ?').get(cleanTg, 'tg_' + cleanTg);
+      if (existingReseller) {
+        await dbHelpers.db.prepare('UPDATE resellers SET credits = ? WHERE id = ?').run(updated.toFixed(2), existingReseller.id);
+      } else {
+        const autoName = customer.name || (customer.username ? '@' + customer.username : 'Cliente ' + cleanTg);
+        const autoKey = 'cust_' + Math.random().toString(36).substring(2, 14);
+        await dbHelpers.db.prepare(`
+          INSERT INTO resellers (name, email, credits, active, blocked, telegram_id, api_key, sale_price)
+          VALUES (?, ?, ?, 1, ?, ?, ?, 2.99)
+        `).run(autoName, `${cleanTg}@bot.telegram`, updated.toFixed(2), customer.blocked || 0, cleanTg, autoKey);
+      }
+    } catch (e) {
+      console.warn('Erro ao sincronizar saldo com reseller:', e && e.message ? e.message : e);
+    }
+  }
+
+  const label = customer.name || (customer.username ? '@' + customer.username : ('ID ' + (customer.telegram_id || id)));
   res.json({
     success: true,
     message: amount > 0
       ? `R$ ${amount.toFixed(2).replace('.', ',')} adicionado ao saldo de ${label}. Novo saldo: R$ ${updated.toFixed(2).replace('.', ',')}.`
-      : `R$ ${Math.abs(amount).toFixed(2).replace('.', ',')} removido do saldo de ${label}. Novo saldo: R$ ${updated.toFixed(2).replace('.', ',')}.`,
+      : `R$ ${Math.abs(amount).toFixed(2).replace('.', ',')} retirado do saldo de ${label}. Novo saldo: R$ ${updated.toFixed(2).replace('.', ',')}.`,
     balance: Number(updated.toFixed(2)),
     amount
   });
