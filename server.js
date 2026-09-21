@@ -2244,6 +2244,96 @@ app.delete('/api/admin/products/:id/items/:itemId', adminAuth, async (req, res) 
 
 // ---------- INTEGRAÇÕES DE BOTS (API DE FORNECEDORES) ----------
 
+// Helper universal para buscar produtos de bots fornecedores
+// Suporta o ecossistema Quantum (GET /api/v1/products com X-API-Key)
+// e a Partner API do GGSoma (GET /catalog/products com Bearer sk_live_...)
+async function fetchProviderProducts(apiUrl, apiKey) {
+  let cleanUrl = String(apiUrl || '').trim().replace(/\/+$/, '');
+  const cleanKey = String(apiKey || '').trim();
+
+  // Auto-detecção de GGSoma
+  const isGgsoma = cleanKey.startsWith('sk_live_') || cleanUrl.includes('ggsoma') || cleanUrl.includes('Ggsomabot') || cleanUrl.includes('partner/v1');
+
+  if (isGgsoma) {
+    cleanUrl = 'https://ggsoma.store/api/partner/v1';
+    const res = await fetch(`${cleanUrl}/catalog/products`, {
+      headers: {
+        'Authorization': `Bearer ${cleanKey}`,
+        'X-API-Key': cleanKey
+      },
+      signal: AbortSignal.timeout(15000)
+    });
+    const textRaw = await res.text();
+    let data;
+    try {
+      data = JSON.parse(textRaw);
+    } catch (e) {
+      throw new Error(`O servidor GGSoma respondeu com HTML em vez de JSON (status ${res.status}).`);
+    }
+
+    if (!res.ok || !data || !Array.isArray(data.data)) {
+      const errMsg = (data && data.error && (data.error.message || data.error.code)) || `Status HTTP ${res.status}`;
+      throw new Error(`Falha ao consultar API do GGSoma: ${errMsg}`);
+    }
+
+    return {
+      resolvedUrl: cleanUrl,
+      products: data.data.map(p => {
+        const costPrice = parseFloat(p.yourPrice || p.catalogPrice || 0);
+        const defaultSalePrice = Math.round(costPrice * 1.35 * 100) / 100;
+        const normalEmoji = (p.emoji && p.emoji.normal) || (p.provider && p.provider.emoji && p.provider.emoji.normal) || '🎁';
+
+        return {
+          id: p.slug || String(p.id),
+          external_product_id: p.slug || String(p.id),
+          name: p.name,
+          description: p.deliveryType ? `Entrega: ${p.deliveryType}${p.durationDays ? ` • Duração: ${p.durationDays} dias` : ''}` : null,
+          emoji: normalEmoji,
+          cost_price: costPrice,
+          sale_price: defaultSalePrice,
+          stock: (p.stock && typeof p.stock.count === 'number') ? p.stock.count : null,
+          delivery_type: p.deliveryType
+        };
+      })
+    };
+  }
+
+  // Padrão Quantum / Bot fornecedor padrão
+  if (cleanUrl.includes('t.me') || cleanUrl.includes('telegram.me')) {
+    throw new Error(`"${cleanUrl}" é o link para abrir o aplicativo do Telegram (t.me). Para a integração funcionar via API, você precisa colocar a URL da API web fornecida pelo bot (ex: https://api-fornecedor.com), e não o link do chat do Telegram.`);
+  }
+
+  const res = await fetch(`${cleanUrl}/api/v1/products`, {
+    headers: { 'X-API-Key': cleanKey },
+    signal: AbortSignal.timeout(10000)
+  });
+  const textRaw = await res.text();
+  let data;
+  try {
+    data = JSON.parse(textRaw);
+  } catch (e) {
+    throw new Error(`O servidor em ${cleanUrl} respondeu com HTML em vez de JSON (status ${res.status}). Verifique se a URL informada é a rota correta da API do bot.`);
+  }
+
+  if (!res.ok || !data || !Array.isArray(data.data)) {
+    throw new Error((data && data.error) || `Falha ao buscar produtos em ${cleanUrl} (status ${res.status}).`);
+  }
+
+  return {
+    resolvedUrl: cleanUrl,
+    products: data.data.map(p => ({
+      id: String(p.id || p.product_id || p.name),
+      external_product_id: String(p.id || p.product_id || p.name),
+      name: p.name || 'Produto',
+      description: p.description || null,
+      emoji: p.emoji || '🎁',
+      cost_price: Number(p.sale_price || p.cost_price || p.price || 0),
+      sale_price: Number(p.sale_price || p.price || (Number(p.cost_price || 0) * 1.3).toFixed(2)),
+      stock: (p.stock !== null && p.stock !== undefined) ? Number(p.stock) : null
+    }))
+  };
+}
+
 // 1. Lista todos os bots integrados com contagem de produtos sincronizados
 app.get('/api/admin/integrations', adminAuth, async (req, res) => {
   try {
@@ -2276,81 +2366,52 @@ app.post('/api/admin/integrations', adminAuth, async (req, res) => {
     if (!name || !String(name).trim()) {
       return res.status(400).json({ success: false, error: 'Informe um nome para identificar este bot fornecedor.' });
     }
-    if (!api_url || !String(api_url).trim()) {
-      return res.status(400).json({ success: false, error: 'Informe a URL da API do bot fornecedor.' });
-    }
     if (!api_key || !String(api_key).trim()) {
       return res.status(400).json({ success: false, error: 'Informe a Chave de API (X-API-Key) do bot fornecedor.' });
     }
 
-    const cleanUrl = String(api_url).trim().replace(/\/+$/, '');
-    const cleanKey = String(api_key).trim();
+    let cleanKey = String(api_key).trim();
+    let cleanUrl = String(api_url || '').trim().replace(/\/+$/, '');
 
-    if (cleanUrl.includes('t.me') || cleanUrl.includes('telegram.me')) {
-      return res.status(400).json({
-        success: false,
-        error: `"${cleanUrl}" é o link para abrir o bot no aplicativo do Telegram (t.me). Para a integração funcionar via API, você precisa colocar a URL da API web fornecida pelo bot (ex: https://api-fornecedor.com), e não o link do chat do Telegram.`
-      });
+    // Se for chave sk_live_ ou menção ao GGSoma, auto-ajusta URL
+    if (cleanKey.startsWith('sk_live_') || cleanUrl.includes('ggsoma') || cleanUrl.includes('Ggsomabot')) {
+      cleanUrl = 'https://ggsoma.store/api/partner/v1';
+    } else if (!cleanUrl) {
+      return res.status(400).json({ success: false, error: 'Informe a URL da API do bot fornecedor.' });
     }
 
-    // Testa a conexão antes de salvar
-    let testSuccess = false;
-    let fetchedProducts = [];
-    let testErrorMessage = '';
+    let fetched;
     try {
-      const testRes = await fetch(`${cleanUrl}/api/v1/products`, {
-        headers: { 'X-API-Key': cleanKey },
-        signal: AbortSignal.timeout(10000)
-      });
-      const textRaw = await testRes.text();
-      let testData;
-      try {
-        testData = JSON.parse(textRaw);
-      } catch (pe) {
-        testErrorMessage = `O servidor respondeu com uma página HTML em vez de JSON da API (status ${testRes.status}).`;
-      }
-      if (testData && testRes.ok && testData.success && Array.isArray(testData.data)) {
-        testSuccess = true;
-        fetchedProducts = testData.data;
-      } else if (testData) {
-        testErrorMessage = testData.error || `Status HTTP ${testRes.status}`;
-      }
+      fetched = await fetchProviderProducts(cleanUrl, cleanKey);
     } catch (testErr) {
-      testErrorMessage = testErr.message;
-    }
-
-    if (!testSuccess) {
       return res.status(400).json({
         success: false,
-        error: `Não foi possível conectar à API do bot em ${cleanUrl}. Verifique se a URL e a Chave de API estão corretas e se o bot está online. Detalhes: ${testErrorMessage}`
+        error: `Não foi possível conectar à API do bot: ${testErr.message}`
       });
     }
 
     const provider = await dbHelpers.createExternalProvider({
       name: String(name).trim(),
-      api_url: cleanUrl,
+      api_url: fetched.resolvedUrl,
       api_key: cleanKey
     });
 
     let syncedCount = 0;
-    if (fetchedProducts.length > 0 && provider && provider.id) {
-      for (const p of fetchedProducts) {
-        const extId = String(p.id || p.product_id || p.name);
-        const costPrice = Number(p.sale_price || p.cost_price || p.price || 0);
-        const salePrice = Number(p.sale_price || p.price || (costPrice * 1.3).toFixed(2));
+    if (fetched.products.length > 0 && provider && provider.id) {
+      for (const p of fetched.products) {
         const now = new Date().toISOString();
         await dbHelpers.db.prepare(`
           INSERT INTO products (name, description, emoji, cost_price, price_type, price_value, active, visible_in_bot, sort_order, stock, provider_id, external_product_id, created_at)
           VALUES (?, ?, ?, ?, 'fixed', ?, 1, 1, 0, ?, ?, ?, ?)
         `).run(
-          String(p.name || 'Produto').trim(),
+          String(p.name).trim(),
           p.description ? String(p.description).trim() : null,
           p.emoji || '🎁',
-          costPrice,
-          salePrice,
-          (p.stock !== null && p.stock !== undefined) ? Number(p.stock) : null,
+          p.cost_price,
+          p.sale_price,
+          p.stock,
           provider.id,
-          extId,
+          p.external_product_id,
           now
         );
         syncedCount++;
@@ -2401,7 +2462,6 @@ app.delete('/api/admin/integrations/:id', adminAuth, async (req, res) => {
 
 // 5. Sincronizar catálogo de produtos do bot fornecedor
 app.post('/api/admin/integrations/:id/sync', adminAuth, async (req, res) => {
-  let cleanUrl = '';
   try {
     const id = parseInt(req.params.id, 10);
     const provider = await dbHelpers.getExternalProviderById(id);
@@ -2409,69 +2469,33 @@ app.post('/api/admin/integrations/:id/sync', adminAuth, async (req, res) => {
       return res.status(404).json({ success: false, error: 'Bot integrado não encontrado.' });
     }
 
-    cleanUrl = String(provider.api_url || '').trim().replace(/\/+$/, '');
-    if (!cleanUrl || cleanUrl.includes('localhost') || cleanUrl.includes('127.0.0.1')) {
-      return res.status(400).json({
-        success: false,
-        error: `A URL da API deste bot está configurada como "${cleanUrl || 'vazia'}". Clique no botão de lápis (Editar) e informe a URL da API do bot fornecedor.`
-      });
-    }
+    const fetched = await fetchProviderProducts(provider.api_url, provider.api_key);
 
-    if (cleanUrl.includes('t.me') || cleanUrl.includes('telegram.me')) {
-      return res.status(400).json({
-        success: false,
-        error: `"${cleanUrl}" é o link para abrir o chat do bot no Telegram (t.me). Para a sincronização funcionar, você precisa clicar no lápis (Editar) e informar a URL da API web fornecida pelo bot (ex: https://api-fornecedor.com).`
-      });
-    }
-
-    const resExt = await fetch(`${cleanUrl}/api/v1/products`, {
-      headers: { 'X-API-Key': provider.api_key },
-      signal: AbortSignal.timeout(10000)
-    });
-    const textRaw = await resExt.text();
-    let dataExt;
-    try {
-      dataExt = JSON.parse(textRaw);
-    } catch (parseErr) {
-      return res.status(502).json({
-        success: false,
-        error: `O servidor em ${cleanUrl} respondeu com uma página HTML em vez de JSON (status HTTP ${resExt.status}). Verifique se a URL informada é a rota correta da API do bot.`
-      });
-    }
-
-    if (!resExt.ok || !dataExt.success || !Array.isArray(dataExt.data)) {
-      return res.status(502).json({
-        success: false,
-        error: (dataExt && dataExt.error) || `Falha ao buscar produtos em ${cleanUrl}. Verifique a Chave de API ou a rota do bot.`
-      });
+    if (fetched.resolvedUrl && fetched.resolvedUrl !== provider.api_url) {
+      await dbHelpers.updateExternalProvider(provider.id, { api_url: fetched.resolvedUrl });
     }
 
     let inserted = 0;
     let updated = 0;
-    for (const p of dataExt.data) {
-      const extId = String(p.id || p.product_id || p.name);
-      const costPrice = Number(p.sale_price || p.cost_price || p.price || 0);
-      const stock = (p.stock !== null && p.stock !== undefined) ? Number(p.stock) : null;
-
-      const existing = await dbHelpers.db.prepare('SELECT * FROM products WHERE provider_id = ? AND external_product_id = ?').get(provider.id, extId);
+    for (const p of fetched.products) {
+      const existing = await dbHelpers.db.prepare('SELECT * FROM products WHERE provider_id = ? AND external_product_id = ?').get(provider.id, p.external_product_id);
       if (existing) {
         // Atualiza custo e estoque, mas PRESERVA as personalizações do admin
-        await dbHelpers.db.prepare('UPDATE products SET cost_price = ?, stock = ? WHERE id = ?').run(costPrice, stock, existing.id);
+        await dbHelpers.db.prepare('UPDATE products SET cost_price = ?, stock = ? WHERE id = ?').run(p.cost_price, p.stock, existing.id);
         updated++;
       } else {
-        const defaultSalePrice = Number(p.sale_price || p.price || (costPrice * 1.3).toFixed(2));
         await dbHelpers.db.prepare(`
           INSERT INTO products (name, description, emoji, cost_price, price_type, price_value, active, visible_in_bot, sort_order, stock, provider_id, external_product_id, created_at)
           VALUES (?, ?, ?, ?, 'fixed', ?, 1, 1, 0, ?, ?, ?, ?)
         `).run(
-          String(p.name || 'Produto').trim(),
+          String(p.name).trim(),
           p.description ? String(p.description).trim() : null,
           p.emoji || '🎁',
-          costPrice,
-          defaultSalePrice,
-          stock,
+          p.cost_price,
+          p.sale_price,
+          p.stock,
           provider.id,
-          extId,
+          p.external_product_id,
           new Date().toISOString()
         );
         inserted++;
@@ -2483,9 +2507,10 @@ app.post('/api/admin/integrations/:id/sync', adminAuth, async (req, res) => {
 
     res.json({
       success: true,
-      message: `Sincronização concluída! ${inserted} novo(s) produto(s), ${updated} atualizado(s).`,
+      message: `Sincronização concluída! ${inserted} novo(s) produto(s), ${updated} atualizado(s). Total: ${fetched.products.length} produtos.`,
       inserted,
       updated,
+      total: fetched.products.length,
       last_sync: now
     });
   } catch (err) {
@@ -3162,27 +3187,60 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
         const provider = await dbHelpers.getExternalProviderById(pricing.product.provider_id);
         if (provider && provider.api_url && provider.api_key) {
           const cleanProviderUrl = String(provider.api_url).replace(/\/+$/, '');
-          const extRes = await fetch(`${cleanProviderUrl}/api/v1/generate`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-API-Key': provider.api_key
-            },
-            body: JSON.stringify({
-              customer_name: finalCustomerName,
-              customer_id: finalCustomerId,
-              customer_contact: finalContact,
-              product_id: pricing.product.external_product_id || undefined,
-              product: pricing.product.name
-            }),
-            signal: AbortSignal.timeout(15000)
-          });
-          const extData = await extRes.json();
-          if (extRes.ok && extData.success) {
-            if (extData.item) {
-              deliveredItem = extData.item;
-            } else if (extData.link) {
-              deliveredItem = { type: 'link', content: extData.link };
+          const isGgsoma = provider.api_key.startsWith('sk_live_') || cleanProviderUrl.includes('ggsoma');
+
+          if (isGgsoma) {
+            const extRes = await fetch(`${cleanProviderUrl}/orders`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${provider.api_key.trim()}`
+              },
+              body: JSON.stringify({
+                productSlug: pricing.product.external_product_id,
+                quantity: 1,
+                externalOrderId: `DF-${Date.now()}-${finalCustomerId || reseller.id}`
+              }),
+              signal: AbortSignal.timeout(20000)
+            });
+            const extData = await extRes.json();
+            if (extRes.ok && (extData.ok || extData.success)) {
+              const del = extData.delivery || {};
+              if (del.link) {
+                deliveredItem = { type: 'link', content: del.link };
+              } else if (del.code) {
+                deliveredItem = { type: 'account', content: del.code, password: del.code };
+              } else if (del.content) {
+                deliveredItem = { type: 'account', content: del.content };
+              } else {
+                deliveredItem = { type: 'link', content: `Pedido aprovado: ${extData.orderCode || 'sucesso'}` };
+              }
+            } else {
+              console.warn('[ggsoma-delivery] erro no pedido parceiro:', extData);
+            }
+          } else {
+            const extRes = await fetch(`${cleanProviderUrl}/api/v1/generate`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-API-Key': provider.api_key
+              },
+              body: JSON.stringify({
+                customer_name: finalCustomerName,
+                customer_id: finalCustomerId,
+                customer_contact: finalContact,
+                product_id: pricing.product.external_product_id || undefined,
+                product: pricing.product.name
+              }),
+              signal: AbortSignal.timeout(15000)
+            });
+            const extData = await extRes.json();
+            if (extRes.ok && extData.success) {
+              if (extData.item) {
+                deliveredItem = extData.item;
+              } else if (extData.link) {
+                deliveredItem = { type: 'link', content: extData.link };
+              }
             }
           }
         }

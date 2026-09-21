@@ -2840,16 +2840,23 @@ document.addEventListener('DOMContentLoaded', () => {
       const urlInput = document.getElementById('integration-url');
       const keyInput = document.getElementById('integration-key');
 
-      const id = idInput ? idInput.value.trim() : '';
-      const name = nameInput ? nameInput.value.trim() : '';
-      const api_url = urlInput ? urlInput.value.trim() : '';
-      const api_key = keyInput ? keyInput.value.trim() : '';
+      let id = idInput ? idInput.value.trim() : '';
+      let name = nameInput ? nameInput.value.trim() : '';
+      let api_url = urlInput ? urlInput.value.trim() : '';
+      let api_key = keyInput ? keyInput.value.trim() : '';
 
       if (!name) {
         showToast('Informe o nome do bot fornecedor.', 'error');
         nameInput?.focus();
         return;
       }
+
+      // Auto-detecção inteligente de chaves e links GGSoma
+      if (api_key.startsWith('sk_live_') || api_url.includes('ggsoma') || api_url.includes('Ggsomabot')) {
+        api_url = 'https://ggsoma.store/api/partner/v1';
+        if (urlInput) urlInput.value = api_url;
+      }
+
       if (!api_url) {
         showToast('Informe a URL da API do bot fornecedor.', 'error');
         urlInput?.focus();
