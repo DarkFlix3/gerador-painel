@@ -157,10 +157,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const titles = {
       dashboard: 'Dashboard Geral & Estatísticas',
-      'all-sales': 'Vendas Realizadas por Bots para Clientes',
+      'all-sales': 'Histórico Geral de Pedidos',
       products: 'Catálogo de Produtos',
       coupons: 'Cupons de Desconto',
       customers: 'Clientes do Bot',
+      financeiro: 'Extrato Financeiro e Movimentações',
+      'bot-control': 'Controle e Notificações do Bot DarkFlix',
       'error-logs': 'Monitoramento de Falhas e Erros',
       settings: 'Configurações do Link Alvo',
       'api-docs': 'Documentação da API para Bots de Revenda'
@@ -173,6 +175,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (tabId === 'products') loadProducts();
     if (tabId === 'coupons') loadCoupons();
     if (tabId === 'customers') loadCustomers();
+    if (tabId === 'financeiro') loadFinancialTransactions();
+    if (tabId === 'bot-control') loadBotControl();
     if (tabId === 'error-logs') loadErrorLogs();
     if (tabId === 'settings') loadSettings();
   }
@@ -306,20 +310,24 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ==============================================
-  // 3. TODAS AS VENDAS & CLIENTES (GLOBAL)
+  // 3. HISTÓRICO GERAL DE PEDIDOS (GLOBAL)
   // ==============================================
   async function loadAllSales() {
     const tbody = document.getElementById('all-sales-table-body');
     if (!tbody) return;
 
     try {
-      const res = await apiFetch('/api/admin/all-sales');
+      const searchInput = document.getElementById('sales-search');
+      const query = searchInput ? searchInput.value.trim() : '';
+      const url = query ? `/api/admin/all-sales?search=${encodeURIComponent(query)}` : '/api/admin/all-sales';
+
+      const res = await apiFetch(url);
       const data = await res.json();
       if (!data.success) return;
       window.__allSales = data.data || [];
 
       if (data.data.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="10" class="px-5 py-8 text-center text-slate-500">Nenhuma venda realizada por revendedores ainda.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" class="px-5 py-8 text-center text-slate-500">${query ? 'Nenhum pedido encontrado para a pesquisa.' : 'Nenhum pedido realizado ainda.'}</td></tr>`;
         return;
       }
 
@@ -392,7 +400,19 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnRefreshAllSales) {
     btnRefreshAllSales.addEventListener('click', () => {
       loadAllSales();
-      showToast('Vendas atualizadas.', 'info');
+      showToast('Pedidos atualizados.', 'info');
+    });
+  }
+
+  const btnSearchSales = document.getElementById('btn-search-sales');
+  if (btnSearchSales) {
+    btnSearchSales.addEventListener('click', () => loadAllSales());
+  }
+
+  const inputSearchSales = document.getElementById('sales-search');
+  if (inputSearchSales) {
+    inputSearchSales.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') loadAllSales();
     });
   }
 
@@ -687,6 +707,8 @@ document.addEventListener('DOMContentLoaded', () => {
     loadProducts();
     loadCoupons();
     loadCustomers();
+    loadFinancialTransactions();
+    loadBotControl();
   }
 
   // ==============================================
@@ -1459,6 +1481,287 @@ document.addEventListener('DOMContentLoaded', () => {
         loadCoupons();
       } catch (err) {
         showToast(err.message, 'error');
+      }
+    });
+  }
+
+  // ==============================================
+  // 7. EXTRATO FINANCEIRO (MOVIMENTAÇÕES)
+  // ==============================================
+  async function loadFinancialTransactions() {
+    const tbody = document.getElementById('financial-table-body');
+    if (!tbody) return;
+
+    try {
+      const typeFilter = document.getElementById('filter-finance-type')?.value || '';
+      const searchInput = document.getElementById('finance-search')?.value.trim() || '';
+
+      const params = new URLSearchParams();
+      if (typeFilter) params.append('type', typeFilter);
+      if (searchInput) params.append('search', searchInput);
+
+      const qs = params.toString();
+      const url = qs ? `/api/admin/financial-transactions?${qs}` : '/api/admin/financial-transactions';
+
+      const res = await apiFetch(url);
+      const data = await res.json();
+      if (!data.success) return;
+
+      // KPIs
+      const kpis = data.kpis || {};
+      const kpi = data.kpi || {};
+      const elDep = document.getElementById('kpi-fin-deposits');
+      const elPur = document.getElementById('kpi-fin-purchases');
+      const elRef = document.getElementById('kpi-fin-refunds');
+      const elWal = document.getElementById('kpi-fin-wallets');
+
+      const depVal = kpis.totalDeposits != null ? kpis.totalDeposits : (kpi.total_deposits != null ? Number(kpi.total_deposits).toFixed(2) : '0,00');
+      const purVal = kpis.totalPurchases != null ? kpis.totalPurchases : (kpi.total_purchases != null ? Number(kpi.total_purchases).toFixed(2) : '0,00');
+      const refVal = kpis.totalRefunds != null ? kpis.totalRefunds : (kpi.total_refunds != null ? Number(kpi.total_refunds).toFixed(2) : '0,00');
+      const walVal = kpis.totalInWallets != null ? kpis.totalInWallets : (kpi.total_in_wallets != null ? Number(kpi.total_in_wallets).toFixed(2) : '0,00');
+
+      if (elDep) elDep.innerText = `R$ ${String(depVal).replace('.', ',')}`;
+      if (elPur) elPur.innerText = `R$ ${String(purVal).replace('.', ',')}`;
+      if (elRef) elRef.innerText = `R$ ${String(refVal).replace('.', ',')}`;
+      if (elWal) elWal.innerText = `R$ ${String(walVal).replace('.', ',')}`;
+
+      // Table rows
+      const items = data.data || [];
+      if (items.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" class="px-5 py-8 text-center text-slate-500">Nenhuma movimentação financeira encontrada.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = items.map(tx => {
+        const d = new Date(tx.created_at);
+        const dateStr = !isNaN(d.getTime()) ? `${d.toLocaleDateString('pt-BR')} ${d.toLocaleTimeString('pt-BR')}` : (tx.created_at || '—');
+
+        let typeBadge = '';
+        let amountFormatted = '';
+        const amt = Number(tx.amount || 0).toFixed(2).replace('.', ',');
+
+        if (tx.type === 'deposit') {
+          typeBadge = `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950/60 text-emerald-400 border border-emerald-500/30"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Depósito (+)</span>`;
+          amountFormatted = `<span class="font-mono font-bold text-emerald-400">+ R$ ${amt}</span>`;
+        } else if (tx.type === 'purchase') {
+          typeBadge = `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-950/60 text-rose-400 border border-rose-500/30"><span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>Compra (−)</span>`;
+          amountFormatted = `<span class="font-mono font-bold text-rose-400">− R$ ${amt}</span>`;
+        } else if (tx.type === 'refund') {
+          typeBadge = `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-cyan-950/60 text-cyan-400 border border-cyan-500/30"><span class="w-1.5 h-1.5 rounded-full bg-cyan-400"></span>Reembolso (+)</span>`;
+          amountFormatted = `<span class="font-mono font-bold text-cyan-400">+ R$ ${amt}</span>`;
+        } else {
+          typeBadge = `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-800 text-slate-300 border border-white/10">${escapeHtml(tx.type || 'outro')}</span>`;
+          amountFormatted = `<span class="font-mono font-bold text-white">R$ ${amt}</span>`;
+        }
+
+        const orderInfo = tx.order_number ? `Pedido #${escapeHtml(tx.order_number)}` : '';
+        const prodInfo = tx.product_name ? escapeHtml(tx.product_name) : '';
+        const descInfo = tx.description ? escapeHtml(tx.description) : '';
+
+        return `
+          <tr class="hover:bg-white/[0.02] transition-colors whitespace-nowrap">
+            <td class="px-5 py-3 text-slate-400 font-mono text-[11px]">${dateStr}</td>
+            <td class="px-5 py-3">
+              <span class="font-bold text-white block">${escapeHtml(tx.customer_name || 'Cliente')}</span>
+              <span class="text-[10px] text-slate-400 font-mono">${escapeHtml(tx.customer_contact || (tx.customer_id ? 'ID ' + tx.customer_id : 'Via Bot'))}</span>
+            </td>
+            <td class="px-5 py-3">${typeBadge}</td>
+            <td class="px-5 py-3">
+              <span class="font-bold text-amber-300 block text-xs">${[orderInfo, prodInfo].filter(Boolean).join(' • ') || '—'}</span>
+              ${descInfo ? `<span class="text-[10px] text-slate-400 block">${descInfo}</span>` : ''}
+            </td>
+            <td class="px-5 py-3">${amountFormatted}</td>
+            <td class="px-5 py-3 font-mono text-slate-400 text-xs">R$ ${Number(tx.balance_before || 0).toFixed(2).replace('.', ',')}</td>
+            <td class="px-5 py-3 font-mono font-bold text-white text-xs">R$ ${Number(tx.balance_after || 0).toFixed(2).replace('.', ',')}</td>
+          </tr>
+        `;
+      }).join('');
+
+    } catch (e) {
+      console.warn('Erro ao carregar movimentações financeiras:', e);
+    }
+  }
+
+  const btnRefreshFinance = document.getElementById('btn-refresh-finance');
+  if (btnRefreshFinance) {
+    btnRefreshFinance.addEventListener('click', () => {
+      loadFinancialTransactions();
+      showToast('Extrato financeiro atualizado.', 'info');
+    });
+  }
+
+  const btnSearchFinance = document.getElementById('btn-search-finance');
+  if (btnSearchFinance) {
+    btnSearchFinance.addEventListener('click', () => loadFinancialTransactions());
+  }
+
+  const inputSearchFinance = document.getElementById('finance-search');
+  if (inputSearchFinance) {
+    inputSearchFinance.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') loadFinancialTransactions();
+    });
+  }
+
+  const selectFilterFinance = document.getElementById('filter-finance-type');
+  if (selectFilterFinance) {
+    selectFilterFinance.addEventListener('change', () => loadFinancialTransactions());
+  }
+
+  // ==============================================
+  // 8. CONTROLE DO BOT DARKFLIX
+  // ==============================================
+  let currentBotStatus = 'active';
+
+  window.setBotStatusValue = function(status) {
+    currentBotStatus = status;
+
+    const btnActive = document.getElementById('btn-status-active');
+    const btnMaint = document.getElementById('btn-status-maintenance');
+    const btnOff = document.getElementById('btn-status-offline');
+
+    const defaultClass = 'py-2.5 px-2 rounded-xl border text-xs font-bold flex flex-col items-center gap-1 transition-all bg-slate-800/60 border-white/10 text-slate-400 hover:text-slate-200';
+
+    if (btnActive) {
+      btnActive.className = status === 'active'
+        ? 'py-2.5 px-2 rounded-xl border text-xs font-bold flex flex-col items-center gap-1 transition-all bg-emerald-600/20 border-emerald-500 text-emerald-300'
+        : defaultClass;
+    }
+    if (btnMaint) {
+      btnMaint.className = status === 'maintenance'
+        ? 'py-2.5 px-2 rounded-xl border text-xs font-bold flex flex-col items-center gap-1 transition-all bg-amber-600/20 border-amber-500 text-amber-300'
+        : defaultClass;
+    }
+    if (btnOff) {
+      btnOff.className = status === 'offline'
+        ? 'py-2.5 px-2 rounded-xl border text-xs font-bold flex flex-col items-center gap-1 transition-all bg-rose-600/20 border-rose-500 text-rose-300'
+        : defaultClass;
+    }
+  };
+
+  async function loadBotControl() {
+    try {
+      const res = await fetch('/api/v1/bot-status');
+      const data = await res.json();
+      if (!data.success) return;
+
+      currentBotStatus = data.status || 'active';
+      setBotStatusValue(currentBotStatus);
+
+      const msgInput = document.getElementById('bot-maintenance-msg');
+      if (msgInput && data.maintenance_message) {
+        msgInput.value = data.maintenance_message;
+      }
+
+      const bannerInput = document.getElementById('bot-announcement-text');
+      if (bannerInput) {
+        bannerInput.value = data.announcement || '';
+      }
+    } catch (e) {
+      console.warn('Erro ao carregar status do bot:', e);
+    }
+  }
+
+  const btnSaveBotStatus = document.getElementById('btn-save-bot-status');
+  if (btnSaveBotStatus) {
+    btnSaveBotStatus.addEventListener('click', async () => {
+      try {
+        const maintenance_message = document.getElementById('bot-maintenance-msg')?.value.trim();
+        const notify_all = document.getElementById('bot-notify-all-maintenance')?.checked || false;
+
+        const res = await apiFetch('/api/admin/bot/status', {
+          method: 'POST',
+          body: JSON.stringify({
+            status: currentBotStatus,
+            maintenance_message,
+            notify_all
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao atualizar status.');
+
+        let msg = `Status do bot alterado para: ${currentBotStatus.toUpperCase()}`;
+        if (data.broadcast_result) {
+          msg += ` (${data.broadcast_result.sent} avisos enviados no Telegram)`;
+        }
+        showToast(msg, 'success');
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+  }
+
+  const btnSaveAnnouncement = document.getElementById('btn-save-announcement');
+  if (btnSaveAnnouncement) {
+    btnSaveAnnouncement.addEventListener('click', async () => {
+      try {
+        const announcement = document.getElementById('bot-announcement-text')?.value.trim();
+        const res = await apiFetch('/api/admin/bot/status', {
+          method: 'POST',
+          body: JSON.stringify({ announcement })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao salvar aviso.');
+        showToast('Aviso fixo do menu atualizado com sucesso!', 'success');
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+  }
+
+  const btnClearAnnouncement = document.getElementById('btn-clear-announcement');
+  if (btnClearAnnouncement) {
+    btnClearAnnouncement.addEventListener('click', async () => {
+      try {
+        const bannerInput = document.getElementById('bot-announcement-text');
+        if (bannerInput) bannerInput.value = '';
+
+        const res = await apiFetch('/api/admin/bot/status', {
+          method: 'POST',
+          body: JSON.stringify({ announcement: '' })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao limpar aviso.');
+        showToast('Aviso do menu removido.', 'info');
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+  }
+
+  const btnSendBroadcast = document.getElementById('btn-send-broadcast');
+  if (btnSendBroadcast) {
+    btnSendBroadcast.addEventListener('click', async () => {
+      const msgInput = document.getElementById('broadcast-message-text');
+      const message = msgInput ? msgInput.value.trim() : '';
+
+      if (!message) {
+        showToast('Digite a mensagem a ser disparada aos clientes.', 'error');
+        return;
+      }
+
+      if (!confirm('Deseja realmente disparar esta mensagem para TODOS os clientes cadastrados no bot DarkFlix?')) {
+        return;
+      }
+
+      try {
+        btnSendBroadcast.disabled = true;
+        btnSendBroadcast.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Disparando...`;
+
+        const res = await apiFetch('/api/admin/bot/broadcast', {
+          method: 'POST',
+          body: JSON.stringify({ message })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Falha no disparo.');
+
+        showToast(`Mensagem enviada com sucesso para ${data.sent} clientes! (${data.failed} falhas)`, 'success');
+        if (msgInput) msgInput.value = '';
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        btnSendBroadcast.disabled = false;
+        btnSendBroadcast.innerHTML = `<i data-lucide="send" class="w-4 h-4"></i> <span>Disparar Mensagem para Todos</span>`;
+        if (window.lucide) window.lucide.createIcons();
       }
     });
   }

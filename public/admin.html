@@ -74,11 +74,19 @@
             <span>Dashboard Geral</span>
           </button>
           <button data-tab="all-sales" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
-            <i data-lucide="shopping-cart" class="w-4 h-4 text-emerald-400"></i>
-            <span>Vendas & Clientes</span>
+            <i data-lucide="shopping-bag" class="w-4 h-4 text-emerald-400"></i>
+            <span>Pedidos</span>
+          </button>
+          <button data-tab="financeiro" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
+            <i data-lucide="landmark" class="w-4 h-4 text-amber-400"></i>
+            <span>Financeiro</span>
+          </button>
+          <button data-tab="bot-control" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
+            <i data-lucide="bot" class="w-4 h-4 text-cyan-400"></i>
+            <span>Bot DarkFlix</span>
           </button>
           <button data-tab="products" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
-            <i data-lucide="package" class="w-4 h-4 text-amber-400"></i>
+            <i data-lucide="package" class="w-4 h-4 text-indigo-400"></i>
             <span>Catálogo de Produtos</span>
           </button>
           <button data-tab="coupons" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all text-slate-400 hover:text-white hover:bg-white/5">
@@ -233,18 +241,30 @@
         </div>
 
         <!-- ============================================== -->
-        <!-- TAB 3: TODAS AS VENDAS & CLIENTES (GLOBAL) -->
+        <!-- TAB 3: PEDIDOS (HISTÓRICO GERAL) -->
         <!-- ============================================== -->
         <div id="tab-all-sales" class="tab-content hidden space-y-6">
           <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div>
-              <h2 class="text-xl font-black text-white">Histórico Geral de Vendas para Clientes</h2>
-              <p class="text-xs text-slate-400">Visualização de todos os clientes finais que compraram links em qualquer bot de revenda.</p>
+              <h2 class="text-xl font-black text-white">Histórico Geral de Pedidos</h2>
+              <p class="text-xs text-slate-400">Visualização completa de pedidos gerados, compras por clientes e status de entrega.</p>
             </div>
-            <button id="btn-refresh-all-sales" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5">
-              <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-indigo-400"></i>
-              <span>Atualizar Vendas</span>
-            </button>
+            <div class="flex items-center gap-2">
+              <div class="relative flex items-center">
+                <div class="absolute left-3 text-slate-400 pointer-events-none flex items-center">
+                  <i data-lucide="search" class="w-4 h-4"></i>
+                </div>
+                <input type="search" id="sales-search" placeholder="Buscar por @user, ID ou pedido..." class="bg-slate-900 border border-white/10 text-xs pl-9 pr-3 py-2 rounded-xl text-slate-200 focus:outline-none focus:border-sky-500 w-64 placeholder:text-slate-500">
+              </div>
+              <button id="btn-search-sales" class="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white rounded-xl shadow-lg shadow-emerald-600/20 flex items-center gap-1.5 transition-all" title="Buscar Pedidos">
+                <i data-lucide="search" class="w-3.5 h-3.5"></i>
+                <span>Buscar</span>
+              </button>
+              <button id="btn-refresh-all-sales" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5 transition-all" title="Atualizar">
+                <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-indigo-400"></i>
+                <span>Atualizar</span>
+              </button>
+            </div>
           </div>
 
           <div class="glass-panel overflow-hidden">
@@ -268,6 +288,220 @@
                   <!-- JS Data -->
                 </tbody>
               </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============================================== -->
+        <!-- TAB: FINANCEIRO (MOVIMENTAÇÕES & EXTRATO) -->
+        <!-- ============================================== -->
+        <div id="tab-financeiro" class="tab-content hidden space-y-6">
+          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div>
+              <h2 class="text-xl font-black text-white">Extrato Financeiro</h2>
+              <p class="text-xs text-slate-400">Movimentação completa em tempo real: depósitos, compras e reembolsos com saldos de cada cliente.</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <select id="filter-finance-type" class="bg-slate-900 border border-white/10 text-xs px-3 py-2 rounded-xl text-slate-300 focus:outline-none">
+                <option value="">Todos os Tipos</option>
+                <option value="deposit">🟢 Depósitos (+)</option>
+                <option value="purchase">🔴 Compras (-)</option>
+                <option value="refund">🔵 Reembolsos (+)</option>
+              </select>
+              <div class="relative flex items-center">
+                <div class="absolute left-3 text-slate-400 pointer-events-none flex items-center">
+                  <i data-lucide="search" class="w-4 h-4"></i>
+                </div>
+                <input type="search" id="finance-search" placeholder="Buscar @user, ID ou pedido..." class="bg-slate-900 border border-white/10 text-xs pl-9 pr-3 py-2 rounded-xl text-slate-200 focus:outline-none focus:border-amber-500 w-60 placeholder:text-slate-500">
+              </div>
+              <button id="btn-search-finance" class="px-3.5 py-2 bg-amber-600 hover:bg-amber-500 text-xs font-bold text-slate-950 rounded-xl shadow-lg shadow-amber-600/20 flex items-center gap-1.5 transition-all" title="Buscar">
+                <i data-lucide="search" class="w-3.5 h-3.5"></i>
+                <span>Buscar</span>
+              </button>
+              <button id="btn-refresh-finance" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5 transition-all" title="Atualizar">
+                <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+                <span>Atualizar</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Cards KPIs Financeiro -->
+          <div class="grid grid-cols-1 sm:grid-cols-4 gap-4">
+            <div class="glass-panel p-5 relative overflow-hidden">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Depositado</span>
+                <div class="w-8 h-8 rounded-lg bg-emerald-600/20 text-emerald-400 flex items-center justify-center">
+                  <i data-lucide="arrow-down-left" class="w-4 h-4"></i>
+                </div>
+              </div>
+              <div class="text-2xl font-black text-emerald-400 mt-2" id="kpi-fin-deposits">R$ 0,00</div>
+              <div class="text-[11px] text-slate-400 mt-1">recargas e créditos manuais</div>
+            </div>
+            <div class="glass-panel p-5 relative overflow-hidden">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total em Compras</span>
+                <div class="w-8 h-8 rounded-lg bg-rose-600/20 text-rose-400 flex items-center justify-center">
+                  <i data-lucide="shopping-bag" class="w-4 h-4"></i>
+                </div>
+              </div>
+              <div class="text-2xl font-black text-rose-400 mt-2" id="kpi-fin-purchases">R$ 0,00</div>
+              <div class="text-[11px] text-slate-400 mt-1">valor consumido em pedidos</div>
+            </div>
+            <div class="glass-panel p-5 relative overflow-hidden">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Reembolsado</span>
+                <div class="w-8 h-8 rounded-lg bg-cyan-600/20 text-cyan-400 flex items-center justify-center">
+                  <i data-lucide="rotate-ccw" class="w-4 h-4"></i>
+                </div>
+              </div>
+              <div class="text-2xl font-black text-cyan-400 mt-2" id="kpi-fin-refunds">R$ 0,00</div>
+              <div class="text-[11px] text-slate-400 mt-1">estornos devolvidos ao saldo</div>
+            </div>
+            <div class="glass-panel p-5 relative overflow-hidden">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Saldo em Carteiras</span>
+                <div class="w-8 h-8 rounded-lg bg-amber-600/20 text-amber-400 flex items-center justify-center">
+                  <i data-lucide="wallet" class="w-4 h-4"></i>
+                </div>
+              </div>
+              <div class="text-2xl font-black text-amber-400 mt-2" id="kpi-fin-wallets">R$ 0,00</div>
+              <div class="text-[11px] text-slate-400 mt-1">saldo total retido de clientes</div>
+            </div>
+          </div>
+
+          <!-- Tabela de Movimentações na mesma linha -->
+          <div class="glass-panel overflow-hidden">
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs whitespace-nowrap">
+                <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
+                  <tr>
+                    <th class="px-5 py-3">Data</th>
+                    <th class="px-5 py-3">Cliente</th>
+                    <th class="px-5 py-3">Tipo</th>
+                    <th class="px-5 py-3">Descrição / Pedido</th>
+                    <th class="px-5 py-3">Valor</th>
+                    <th class="px-5 py-3">Saldo Anterior</th>
+                    <th class="px-5 py-3">Saldo Final</th>
+                  </tr>
+                </thead>
+                <tbody id="financial-table-body" class="divide-y divide-white/5">
+                  <!-- JS Data -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============================================== -->
+        <!-- TAB: BOT DARKFLIX (STATUS, AVISOS & BROADCAST) -->
+        <!-- ============================================== -->
+        <div id="tab-bot-control" class="tab-content hidden space-y-6">
+          <div>
+            <h2 class="text-xl font-black text-white">Controle Operacional — Bot DarkFlix</h2>
+            <p class="text-xs text-slate-400">Controle o status do bot no Telegram, coloque em modo manutenção, envie avisos fixos no menu ou dispare comunicados para todos os clientes.</p>
+          </div>
+
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <!-- Card 1: Status do Bot & Manutenção -->
+            <div class="glass-panel p-6 space-y-5 border border-white/10">
+              <div class="flex items-center gap-3 pb-3 border-b border-white/5">
+                <div class="w-10 h-10 rounded-xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center">
+                  <i data-lucide="power" class="w-5 h-5"></i>
+                </div>
+                <div>
+                  <h3 class="text-sm font-bold text-white">Status do Bot</h3>
+                  <p class="text-xs text-slate-400">Defina se o bot aceita novas compras ou exibe aviso de manutenção.</p>
+                </div>
+              </div>
+
+              <!-- Seletor de Estado -->
+              <div>
+                <label class="block text-xs font-semibold text-slate-300 mb-2">Estado Atual:</label>
+                <div class="grid grid-cols-3 gap-2">
+                  <button type="button" id="btn-status-active" onclick="setBotStatusValue('active')" class="py-2.5 px-2 rounded-xl border text-xs font-bold flex flex-col items-center gap-1 transition-all bg-emerald-600/20 border-emerald-500 text-emerald-300">
+                    <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span>🟢 Online</span>
+                  </button>
+                  <button type="button" id="btn-status-maintenance" onclick="setBotStatusValue('maintenance')" class="py-2.5 px-2 rounded-xl border text-xs font-bold flex flex-col items-center gap-1 transition-all bg-slate-800/60 border-white/10 text-slate-400 hover:text-slate-200">
+                    <span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+                    <span>🟡 Manutenção</span>
+                  </button>
+                  <button type="button" id="btn-status-offline" onclick="setBotStatusValue('offline')" class="py-2.5 px-2 rounded-xl border text-xs font-bold flex flex-col items-center gap-1 transition-all bg-slate-800/60 border-white/10 text-slate-400 hover:text-slate-200">
+                    <span class="w-2.5 h-2.5 rounded-full bg-rose-400"></span>
+                    <span>🔴 Desligado</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Mensagem de Manutenção -->
+              <div id="maintenance-msg-container" class="space-y-2">
+                <label class="block text-xs font-semibold text-slate-300">Mensagem de Manutenção (enviada aos clientes):</label>
+                <textarea id="bot-maintenance-msg" rows="3" class="w-full bg-slate-950 border border-white/10 rounded-xl p-3 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-amber-500" placeholder="⚠️ Estamos realizando uma manutenção preventiva no sistema. Em breve o bot estará de volta ao normal!"></textarea>
+                <div class="flex items-center gap-2 pt-1">
+                  <input type="checkbox" id="bot-notify-all-maintenance" class="rounded border-white/20 bg-slate-950 text-amber-500 focus:ring-0">
+                  <label for="bot-notify-all-maintenance" class="text-xs text-amber-300/90 font-medium cursor-pointer">Disparar mensagem no Telegram para todos os clientes ao ativar manutenção</label>
+                </div>
+              </div>
+
+              <button id="btn-save-bot-status" class="w-full py-2.5 bg-gradient-to-r from-sky-500 to-sky-600 hover:from-sky-400 hover:to-sky-500 text-slate-950 rounded-xl text-xs font-black shadow-lg shadow-sky-500/20 transition-all flex items-center justify-center gap-1.5">
+                <i data-lucide="check" class="w-4 h-4"></i>
+                <span>Aplicar Configurações de Status</span>
+              </button>
+            </div>
+
+            <!-- Card 2: Comunicado Fixo no Menu (Banner) -->
+            <div class="glass-panel p-6 space-y-5 border border-white/10 flex flex-col justify-between">
+              <div class="space-y-4">
+                <div class="flex items-center gap-3 pb-3 border-b border-white/5">
+                  <div class="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center">
+                    <i data-lucide="megaphone" class="w-5 h-5"></i>
+                  </div>
+                  <div>
+                    <h3 class="text-sm font-bold text-white">Aviso Fixo no Menu do Bot</h3>
+                    <p class="text-xs text-slate-400">Aparece destacado no topo da mensagem de boas-vindas do DarkFlix.</p>
+                  </div>
+                </div>
+
+                <div>
+                  <label class="block text-xs font-semibold text-slate-300 mb-1.5">Texto do Comunicado:</label>
+                  <textarea id="bot-announcement-text" rows="4" class="w-full bg-slate-950 border border-white/10 rounded-xl p-3 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-amber-500" placeholder="Ex: 🔥 Promoção especial de fim de semana! Todos os acessos com entrega instantânea."></textarea>
+                  <p class="text-[11px] text-slate-500 mt-1">Deixe em branco se não quiser exibir nenhum banner fixo.</p>
+                </div>
+              </div>
+
+              <div class="flex gap-2">
+                <button id="btn-clear-announcement" class="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold border border-white/10 transition-colors">Limpar</button>
+                <button id="btn-save-announcement" class="flex-1 py-2.5 bg-amber-600 hover:bg-amber-500 text-slate-950 rounded-xl text-xs font-black shadow-lg shadow-amber-600/20 transition-all flex items-center justify-center gap-1.5">
+                  <i data-lucide="save" class="w-4 h-4"></i>
+                  <span>Salvar Aviso do Menu</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Card 3: Broadcast em Massa (Disparar Notificação) -->
+          <div class="glass-panel p-6 space-y-4 border border-cyan-500/30">
+            <div class="flex items-center gap-3 pb-3 border-b border-white/5">
+              <div class="w-10 h-10 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center">
+                <i data-lucide="send" class="w-5 h-5"></i>
+              </div>
+              <div>
+                <h3 class="text-sm font-bold text-white">Disparar Notificação para Todos os Clientes (Broadcast)</h3>
+                <p class="text-xs text-slate-400">Envia uma mensagem no chat privado do Telegram de cada cliente registrado no bot.</p>
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-xs font-semibold text-slate-300 mb-1.5">Mensagem a Ser Enviada (suporta HTML básico como &lt;b&gt;, &lt;i&gt;):</label>
+              <textarea id="broadcast-message-text" rows="4" class="w-full bg-slate-950 border border-white/10 rounded-xl p-3 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500 font-sans" placeholder="Olá! Temos uma novidade importante para você no DarkFlix..."></textarea>
+            </div>
+
+            <div class="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
+              <span class="text-[11px] text-slate-400">⚠️ Use com moderação para não gerar bloqueios por spam.</span>
+              <button id="btn-send-broadcast" class="w-full sm:w-auto px-6 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-xl text-xs font-black shadow-lg shadow-purple-600/30 flex items-center justify-center gap-2 transition-all">
+                <i data-lucide="send" class="w-4 h-4"></i>
+                <span>Disparar Mensagem para Todos</span>
+              </button>
             </div>
           </div>
         </div>

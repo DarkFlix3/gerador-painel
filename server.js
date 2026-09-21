@@ -2466,6 +2466,22 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
 
     const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
 
+    // Registra a transação de compra no livro financeiro
+    const balBefore = Math.round((Number(updated.credits || 0) + Number(costPrice)) * 100) / 100;
+    const balAfter = Math.round(Number(updated.credits || 0) * 100) / 100;
+    await dbHelpers.recordFinancialTransaction({
+      customerId: finalCustomerId,
+      customerName: finalCustomerName,
+      customerContact: finalContact,
+      type: 'purchase',
+      description: `Compra de ${finalProduct}`,
+      orderNumber: generation.token,
+      productName: finalProduct,
+      amount: -costPrice,
+      balanceBefore: balBefore,
+      balanceAfter: balAfter
+    });
+
     // Alerta de venda via bot (principal fonte de compras)
     notifyNewSale({
       service: 'Spotify Premium',
@@ -2620,6 +2636,22 @@ app.post('/api/v1/refund', resellerBotAuth, async (req, res) => {
     details: { sale_id: sale.id, token: sale.token, reseller_id: reseller.id, refund_amount: costPrice, reason: failReason, delivery_status: newStatus }
   });
   await dbHelpers.db.prepare('UPDATE sales SET delivery_status = ? WHERE id = ?').run(newStatus, sale.id);
+
+  const curReseller = await dbHelpers.db.prepare('SELECT credits, telegram_id FROM resellers WHERE id = ?').get(reseller.id);
+  const balAfter = Math.round(Number(curReseller ? curReseller.credits : 0) * 100) / 100;
+  const balBefore = Math.max(0, Math.round((balAfter - costPrice) * 100) / 100);
+  await dbHelpers.recordFinancialTransaction({
+    customerId: sale.customer_id || (curReseller ? curReseller.telegram_id : null),
+    customerName: sale.customer_name,
+    customerContact: sale.customer_contact,
+    type: 'refund',
+    description: `Reembolso: ${failReason}`,
+    orderNumber: sale.token || String(sale.id),
+    productName: sale.product,
+    amount: costPrice,
+    balanceBefore: balBefore,
+    balanceAfter: balAfter
+  });
 
   res.json({
     success: true,
@@ -3174,6 +3206,17 @@ app.delete('/api/admin/resellers/:id', adminAuth, async (req, res) => {
 // Relatório Global de Vendas de Todos os Revendedores
 app.get('/api/admin/all-sales', adminAuth, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || '100', 10), 200);
+  const search = (req.query.search || '').toString().trim();
+
+  let where = '';
+  const params = [];
+  if (search) {
+    const cleanSearch = search.replace(/^[@tg_]+/, '').trim();
+    where = ' WHERE (s.customer_contact LIKE ? OR s.customer_contact LIKE ? OR s.customer_id LIKE ? OR s.customer_id LIKE ? OR s.token LIKE ? OR CAST(s.id AS TEXT) = ? OR s.customer_name LIKE ? OR s.product LIKE ?)';
+    const likeRaw = `%${search}%`;
+    const likeClean = `%${cleanSearch}%`;
+    params.push(likeRaw, likeClean, likeRaw, likeClean, likeRaw, cleanSearch, likeRaw, likeRaw);
+  }
 
   // Compatibilidade com bancos legados que ainda não têm a tabela product_items.
   const hasProductItems = (await getTableColumns('product_items')).size > 0;
@@ -3187,9 +3230,10 @@ app.get('/api/admin/all-sales', adminAuth, async (req, res) => {
     FROM sales s
     JOIN resellers r ON s.reseller_id = r.id
     ${hasProductItems ? 'LEFT JOIN product_items pi ON pi.sale_id = s.id' : ''}
+    ${where}
     ORDER BY s.id DESC
     LIMIT ?
-  `).all(limit);
+  `).all(...params, limit);
 
   res.json({ success: true, data: sales });
 });
@@ -3299,6 +3343,19 @@ app.post('/api/admin/customers/:id/balance', adminAuth, async (req, res) => {
   }
 
   const label = customer.name || (customer.username ? '@' + customer.username : ('ID ' + (customer.telegram_id || id)));
+
+  // Registra movimentação no livro financeiro
+  await dbHelpers.recordFinancialTransaction({
+    customerId: customer.telegram_id || customer.id,
+    customerName: customer.name,
+    customerContact: customer.username ? '@' + customer.username : null,
+    type: amount > 0 ? 'deposit' : 'refund',
+    description: amount > 0 ? 'Depósito manual (Painel Admin)' : 'Retirada manual (Painel Admin)',
+    amount: amount,
+    balanceBefore: current,
+    balanceAfter: updated
+  });
+
   res.json({
     success: true,
     message: amount > 0
@@ -3356,6 +3413,214 @@ app.delete('/api/admin/customers/:id', adminAuth, async (req, res) => {
     return res.status(404).json({ success: false, error: 'Cliente não encontrado.' });
   }
   res.json({ success: true, message: 'Cliente removido com sucesso.' });
+});
+
+// ==========================================
+// CONTROLE DO BOT DARKFLIX (STATUS, AVISOS & BROADCAST)
+// ==========================================
+
+// Consulta pública de status do bot (para bot.js ou checagem rápida)
+app.get('/api/v1/bot-status', async (req, res) => {
+  try {
+    const settings = await dbHelpers.getSettings();
+    res.json({
+      success: true,
+      status: settings.bot_status || 'active', // 'active', 'maintenance', 'offline'
+      maintenance_message: settings.maintenance_message || '⚠️ Estamos realizando uma manutenção preventiva no sistema. Em breve o bot estará de volta ao normal!',
+      announcement: settings.bot_announcement || ''
+    });
+  } catch (e) {
+    res.json({ success: true, status: 'active', maintenance_message: '', announcement: '' });
+  }
+});
+
+// Admin atualiza o status, mensagem de manutenção e aviso fixo
+app.post('/api/admin/bot/status', adminAuth, async (req, res) => {
+  try {
+    const { status, maintenance_message, announcement, notify_all } = req.body || {};
+    if (status && ['active', 'maintenance', 'offline'].includes(status)) {
+      await dbHelpers.updateSetting('bot_status', status);
+    }
+    if (maintenance_message !== undefined) {
+      await dbHelpers.updateSetting('maintenance_message', String(maintenance_message).trim());
+    }
+    if (announcement !== undefined) {
+      await dbHelpers.updateSetting('bot_announcement', String(announcement).trim());
+    }
+
+    let broadcastResult = null;
+    // Se solicitou notificar todos os clientes ao ativar modo manutenção
+    if (notify_all && status === 'maintenance') {
+      const salesToken = process.env.TELEGRAM_BOT_TOKEN;
+      if (salesToken) {
+        const msg = (maintenance_message && String(maintenance_message).trim())
+          || '⚠️ <b>DarkFlix — Manutenção</b>\n\nEstamos realizando uma manutenção preventiva no sistema. Em breve o bot estará de volta ao normal!';
+        const rows = await dbHelpers.db.prepare(`
+          SELECT DISTINCT telegram_id FROM customers WHERE telegram_id IS NOT NULL AND telegram_id != '' AND blocked = 0
+        `).all();
+        let sent = 0;
+        for (const r of rows) {
+          const cleanId = String(r.telegram_id).replace(/^tg_/, '').trim();
+          try {
+            await fetch(`https://api.telegram.org/bot${salesToken}/sendMessage`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ chat_id: cleanId, text: msg, parse_mode: 'HTML' })
+            });
+            sent++;
+          } catch (e) {}
+        }
+        broadcastResult = { sent, total: rows.length };
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Configurações do bot atualizadas com sucesso.',
+      status: status || 'active',
+      broadcast: broadcastResult
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || 'Erro ao atualizar status do bot.' });
+  }
+});
+
+// Broadcast de mensagem para todos os clientes do bot
+app.post('/api/admin/bot/broadcast', adminAuth, async (req, res) => {
+  try {
+    const { message } = req.body || {};
+    if (!message || !String(message).trim()) {
+      return res.status(400).json({ success: false, error: 'A mensagem de aviso não pode ser vazia.' });
+    }
+
+    const salesToken = process.env.TELEGRAM_BOT_TOKEN;
+    if (!salesToken) {
+      return res.status(400).json({ success: false, error: 'TELEGRAM_BOT_TOKEN não configurado no servidor.' });
+    }
+
+    const rows = await dbHelpers.db.prepare(`
+      SELECT DISTINCT telegram_id FROM customers WHERE telegram_id IS NOT NULL AND telegram_id != '' AND blocked = 0
+    `).all();
+
+    let sent = 0;
+    let failed = 0;
+    const cleanMsg = String(message).trim();
+
+    for (const r of rows) {
+      const cleanId = String(r.telegram_id).replace(/^tg_/, '').trim();
+      try {
+        const resp = await fetch(`https://api.telegram.org/bot${salesToken}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: cleanId, text: cleanMsg, parse_mode: 'HTML' })
+        });
+        if (resp.ok) sent++;
+        else failed++;
+      } catch (e) {
+        failed++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Aviso enviado com sucesso para ${sent} cliente(s).${failed > 0 ? ` (${failed} falhas)` : ''}`,
+      total: rows.length,
+      sent,
+      failed
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || 'Erro ao enviar broadcast.' });
+  }
+});
+
+// ==========================================
+// MÓDULO FINANCEIRO (EXTRATO DE MOVIMENTAÇÕES)
+// ==========================================
+app.get('/api/admin/financial-transactions', adminAuth, async (req, res) => {
+  try {
+    const search = (req.query.search || '').toString().trim();
+    const type = (req.query.type || '').toString().trim();
+    const limit = Math.min(parseInt(req.query.limit || '100', 10), 300);
+    const offset = Math.max(parseInt(req.query.offset || '0', 10), 0);
+
+    // Auto-popula vendas prévias caso a tabela esteja vazia (primeira execução)
+    const countCheck = await dbHelpers.db.prepare('SELECT COUNT(*) AS count FROM financial_transactions').get();
+    if (Number(countCheck.count) === 0) {
+      try {
+        const sales = await dbHelpers.db.prepare('SELECT * FROM sales ORDER BY id ASC').all();
+        for (const s of sales) {
+          const cost = parseFloat(s.cost_price != null ? s.cost_price : 2.99);
+          await dbHelpers.recordFinancialTransaction({
+            customerId: s.customer_id,
+            customerName: s.customer_name,
+            customerContact: s.customer_contact,
+            type: String(s.delivery_status || '').toLowerCase().includes('falhou') ? 'refund' : 'purchase',
+            description: `Compra: ${s.product || 'Produto'}`,
+            orderNumber: s.token || String(s.id),
+            productName: s.product || 'Produto',
+            amount: -cost,
+            balanceBefore: cost,
+            balanceAfter: 0
+          });
+        }
+      } catch (e) {}
+    }
+
+    const clauses = [];
+    const params = [];
+
+    if (type) {
+      clauses.push('type = ?');
+      params.push(type);
+    }
+
+    if (search) {
+      const cleanSearch = search.replace(/^[@tg_]+/, '').trim();
+      clauses.push('(customer_contact LIKE ? OR customer_contact LIKE ? OR customer_id LIKE ? OR customer_id LIKE ? OR customer_name LIKE ? OR order_number LIKE ? OR description LIKE ? OR product_name LIKE ?)');
+      const likeRaw = `%${search}%`;
+      const likeClean = `%${cleanSearch}%`;
+      params.push(likeRaw, likeClean, likeRaw, likeClean, likeRaw, likeRaw, likeRaw, likeRaw);
+    }
+
+    const where = clauses.length > 0 ? ' WHERE ' + clauses.join(' AND ') : '';
+
+    const transactions = await dbHelpers.db.prepare(`
+      SELECT id, customer_id, customer_name, customer_contact, type, description, order_number, product_name, amount, balance_before, balance_after, created_at
+      FROM financial_transactions${where}
+      ORDER BY id DESC
+      LIMIT ? OFFSET ?
+    `).all(...params, limit, offset);
+
+    const totalRow = await dbHelpers.db.prepare(`SELECT COUNT(*) AS count FROM financial_transactions${where}`).get(...params);
+
+    // Métricas dos KPIs
+    const depositsRow = await dbHelpers.db.prepare("SELECT COALESCE(SUM(amount), 0) AS total FROM financial_transactions WHERE type = 'deposit'").get();
+    const purchasesRow = await dbHelpers.db.prepare("SELECT COALESCE(SUM(ABS(amount)), 0) AS total FROM financial_transactions WHERE type = 'purchase'").get();
+    const refundsRow = await dbHelpers.db.prepare("SELECT COALESCE(SUM(amount), 0) AS total FROM financial_transactions WHERE type = 'refund'").get();
+    const walletsRow = await dbHelpers.db.prepare("SELECT COALESCE(SUM(balance), 0) AS total FROM customers").get();
+
+    res.json({
+      success: true,
+      data: transactions,
+      total: Number(totalRow.count || 0),
+      kpi: {
+        total_deposits: Number(depositsRow.total || 0),
+        total_purchases: Number(purchasesRow.total || 0),
+        total_refunds: Number(refundsRow.total || 0),
+        total_in_wallets: Number(walletsRow.total || 0)
+      },
+      kpis: {
+        totalDeposits: Number(depositsRow.total || 0).toFixed(2),
+        totalPurchases: Number(purchasesRow.total || 0).toFixed(2),
+        totalRefunds: Number(refundsRow.total || 0).toFixed(2),
+        totalInWallets: Number(walletsRow.total || 0).toFixed(2)
+      },
+      limit,
+      offset
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || 'Erro ao carregar transações financeiras.' });
+  }
 });
 
 // Logs de Erros

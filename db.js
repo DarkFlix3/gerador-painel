@@ -341,6 +341,23 @@ const SQLITE_DDL = `
     notes TEXT,
     created_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS financial_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_id TEXT,
+    customer_name TEXT,
+    customer_contact TEXT,
+    type TEXT NOT NULL,
+    description TEXT,
+    order_number TEXT,
+    product_name TEXT,
+    amount REAL NOT NULL,
+    balance_before REAL NOT NULL,
+    balance_after REAL NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_fin_tx_cust ON financial_transactions(customer_id);
+  CREATE INDEX IF NOT EXISTS idx_fin_tx_created ON financial_transactions(created_at);
 `;
 
 const POSTGRES_DDL = `
@@ -552,6 +569,23 @@ const POSTGRES_DDL = `
     notes TEXT,
     created_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS financial_transactions (
+    id BIGSERIAL PRIMARY KEY,
+    customer_id TEXT,
+    customer_name TEXT,
+    customer_contact TEXT,
+    type TEXT NOT NULL,
+    description TEXT,
+    order_number TEXT,
+    product_name TEXT,
+    amount DOUBLE PRECISION NOT NULL,
+    balance_before DOUBLE PRECISION NOT NULL,
+    balance_after DOUBLE PRECISION NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_fin_tx_cust ON financial_transactions(customer_id);
+  CREATE INDEX IF NOT EXISTS idx_fin_tx_created ON financial_transactions(created_at);
 `;
 
 // Colunas adicionadas em versões posteriores (migração segura)
@@ -604,7 +638,10 @@ const defaultSettings = [
   { key: 'default_expiry_hours', value: '24' },
   { key: 'public_generation_enabled', value: '0' },
   { key: 'admin_cost_per_link', value: '2.99' },
-  { key: 'min_recharge_amount', value: '15.00' }
+  { key: 'min_recharge_amount', value: '15.00' },
+  { key: 'bot_status', value: 'active' }, // 'active', 'maintenance', 'offline'
+  { key: 'maintenance_message', value: '⚠️ Estamos realizando uma manutenção preventiva no sistema. Em breve o bot estará de volta ao normal!' },
+  { key: 'bot_announcement', value: '' }
 ];
 
 // ==========================================
@@ -916,6 +953,43 @@ const helpers = {
       expiresAt,
       generatedBy
     };
+  },
+
+  recordFinancialTransaction: async ({
+    customerId,
+    customerName,
+    customerContact,
+    type,
+    description,
+    orderNumber,
+    productName,
+    amount,
+    balanceBefore,
+    balanceAfter
+  }) => {
+    try {
+      const now = new Date().toISOString();
+      await db.prepare(`
+        INSERT INTO financial_transactions (
+          customer_id, customer_name, customer_contact, type, description,
+          order_number, product_name, amount, balance_before, balance_after, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        customerId ? String(customerId).replace(/^tg_/, '') : null,
+        customerName || null,
+        customerContact || null,
+        type || 'adjustment',
+        description || null,
+        orderNumber || null,
+        productName || null,
+        Number(amount) || 0,
+        Number(balanceBefore) || 0,
+        Number(balanceAfter) || 0,
+        now
+      );
+    } catch (e) {
+      console.warn('Erro ao registrar transação financeira:', e && e.message ? e.message : e);
+    }
   }
 };
 

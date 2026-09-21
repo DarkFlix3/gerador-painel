@@ -145,12 +145,53 @@ async function pingCustomer(user) {
   }
 }
 
+// Consulta status operacional do bot (com cache de 5s para não sobrecarregar a API)
+let _botStatusCache = null;
+let _botStatusLastFetch = 0;
+
+async function getBotStatus() {
+  const now = Date.now();
+  if (_botStatusCache && (now - _botStatusLastFetch < 5000)) {
+    return _botStatusCache;
+  }
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/bot-status`, { signal: AbortSignal.timeout(4000) });
+    const data = await res.json();
+    if (data && data.success) {
+      _botStatusCache = data;
+      _botStatusLastFetch = now;
+      return _botStatusCache;
+    }
+  } catch (e) {}
+  return _botStatusCache || { status: 'active', maintenance_message: '', announcement: '' };
+}
+
+// Verifica se o bot está em manutenção ou desligado
+async function isMaintenanceBlocked(chatId, user) {
+  try {
+    const info = await getBotStatus();
+    if (info && (info.status === 'maintenance' || info.status === 'offline')) {
+      const msg = info.maintenance_message || '⚠️ <b>DarkFlix — Modo Manutenção</b>\n\nEstamos realizando melhorias preventivas no sistema. Em breve o bot estará de volta ao normal!';
+      await bot.sendMessage(chatId, msg, { parse_mode: 'HTML' });
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
 // Envia o Menu Principal (boas-vindas + saldo). Se messageId for informado,
 // EDITA a mensagem atual no lugar (vira o menu) em vez de enviar outra.
 async function sendMainMenu(chatId, messageId, user) {
+  if (await isMaintenanceBlocked(chatId, user)) return;
+
   const firstName = user && user.first_name ? escapeHtml(user.first_name) : 'Cliente';
+  const statusInfo = await getBotStatus();
+  const banner = statusInfo && statusInfo.announcement
+    ? `📢 <b>COMUNICADO OFICIAL:</b>\n${escapeHtml(statusInfo.announcement)}\n\n`
+    : '';
 
   const welcomeText =
+    banner +
     `👋 Olá, <b>${firstName}</b>! Seja muito bem-vindo(a) ao <b>DarkFlix</b>!
 
 ` +
@@ -611,6 +652,8 @@ bot.on('callback_query', async (query) => {
 async function handleCallback(query) {
   const chatId = query.message.chat.id;
   const action = query.data;
+
+  if (await isMaintenanceBlocked(chatId, query.from)) return;
 
   if (action === 'buy_now' || action === 'catalog') {
     await showCatalog(chatId, query.message.message_id);

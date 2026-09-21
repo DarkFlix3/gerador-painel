@@ -437,12 +437,24 @@
 
       // 9. ADMIN ALL SALES
       if (cleanUrl.startsWith('/api/admin/all-sales')) {
+        const urlObj = new URL(cleanUrl, window.location.origin);
+        const search = (urlObj.searchParams.get('search') || '').trim().toLowerCase();
         const sales = getSales();
         const resellers = getResellers();
-        const data = sales.map(s => {
+        let data = sales.map(s => {
           const r = resellers.find(x => x.id === s.reseller_id) || { name: 'Demo', email: 'demo@revenda.com' };
           return { ...s, reseller_name: r.name, reseller_email: r.email };
         });
+        if (search) {
+          data = data.filter(s =>
+            String(s.customer_contact || '').toLowerCase().includes(search) ||
+            String(s.customer_id || '').toLowerCase().includes(search) ||
+            String(s.customer_name || '').toLowerCase().includes(search) ||
+            String(s.token || '').toLowerCase().includes(search) ||
+            String(s.id || '').toLowerCase().includes(search) ||
+            String(s.product || '').toLowerCase().includes(search)
+          );
+        }
         return mockResponse(200, { success: true, data });
       }
 
@@ -1008,6 +1020,98 @@
             total_profit: c.total_profit.toFixed(2)
           }));
         return mockResponse(200, { success: true, data: customersList });
+      }
+
+      // 21. BOT STATUS (PUBLIC/BOT)
+      if (cleanUrl.startsWith('/api/v1/bot-status') && method === 'GET') {
+        const stored = JSON.parse(localStorage.getItem('quantum_mock_bot_status') || '{}');
+        return mockResponse(200, {
+          success: true,
+          status: stored.status || 'active',
+          maintenance_message: stored.maintenance_message || '⚠️ Estamos realizando uma manutenção preventiva no sistema. Em breve o bot estará de volta ao normal!',
+          announcement: stored.announcement || ''
+        });
+      }
+
+      // 22. BOT STATUS UPDATE (ADMIN)
+      if (cleanUrl.startsWith('/api/admin/bot/status') && method === 'POST') {
+        const stored = JSON.parse(localStorage.getItem('quantum_mock_bot_status') || '{}');
+        const updated = { ...stored, ...body };
+        localStorage.setItem('quantum_mock_bot_status', JSON.stringify(updated));
+        return mockResponse(200, {
+          success: true,
+          message: 'Status do bot atualizado.',
+          bot_status: updated.status,
+          broadcast_result: body.notify_all ? { sent: getCustomers().length, failed: 0 } : null
+        });
+      }
+
+      // 23. BOT BROADCAST (ADMIN)
+      if (cleanUrl.startsWith('/api/admin/bot/broadcast') && method === 'POST') {
+        const customers = getCustomers();
+        return mockResponse(200, {
+          success: true,
+          sent: customers.length,
+          failed: 0,
+          total: customers.length
+        });
+      }
+
+      // 24. FINANCIAL TRANSACTIONS (ADMIN)
+      if (cleanUrl.startsWith('/api/admin/financial-transactions') && method === 'GET') {
+        const urlObj = new URL(cleanUrl, window.location.origin);
+        const typeFilter = urlObj.searchParams.get('type') || '';
+        const search = (urlObj.searchParams.get('search') || '').trim().toLowerCase();
+
+        let rawTxs = JSON.parse(localStorage.getItem('quantum_mock_financial_txs') || '[]');
+        if (rawTxs.length === 0) {
+          // Generate demo transactions from sales and customers
+          const sales = getSales();
+          rawTxs = sales.map((s, idx) => ({
+            id: idx + 1,
+            customer_id: s.customer_id || 'tg_100',
+            customer_name: s.customer_name || 'Cliente Demo',
+            customer_contact: s.customer_contact || '@cliente',
+            type: 'purchase',
+            description: `Compra do produto ${s.product || 'Acesso'}`,
+            order_number: s.token || `PED-${idx + 100}`,
+            product_name: s.product || 'Spotify Premium',
+            amount: parseFloat(s.cost_price || 2.99),
+            balance_before: 15.00,
+            balance_after: 15.00 - parseFloat(s.cost_price || 2.99),
+            created_at: s.created_at || new Date().toISOString()
+          }));
+        }
+
+        let filtered = rawTxs.slice();
+        if (typeFilter) {
+          filtered = filtered.filter(t => t.type === typeFilter);
+        }
+        if (search) {
+          filtered = filtered.filter(t =>
+            String(t.customer_name || '').toLowerCase().includes(search) ||
+            String(t.customer_contact || '').toLowerCase().includes(search) ||
+            String(t.customer_id || '').toLowerCase().includes(search) ||
+            String(t.order_number || '').toLowerCase().includes(search) ||
+            String(t.product_name || '').toLowerCase().includes(search)
+          );
+        }
+
+        const totalDeposits = rawTxs.filter(t => t.type === 'deposit').reduce((acc, t) => acc + Number(t.amount || 0), 0).toFixed(2);
+        const totalPurchases = rawTxs.filter(t => t.type === 'purchase').reduce((acc, t) => acc + Number(t.amount || 0), 0).toFixed(2);
+        const totalRefunds = rawTxs.filter(t => t.type === 'refund').reduce((acc, t) => acc + Number(t.amount || 0), 0).toFixed(2);
+        const totalInWallets = getCustomers().reduce((acc, c) => acc + Number(c.balance || 0), 0).toFixed(2);
+
+        return mockResponse(200, {
+          success: true,
+          data: filtered,
+          kpis: {
+            totalDeposits,
+            totalPurchases,
+            totalRefunds,
+            totalInWallets
+          }
+        });
       }
     }
 
