@@ -275,15 +275,34 @@ async function notifyRecharge({ reseller, amountPaid, method = 'PIX' }) {
 // MERCADO PAGO — HELPERS
 // ==========================================
 
+// Obtém o Access Token efetivo do Mercado Pago (configuração do painel tem prioridade sobre o .env)
+async function getEffectiveMpAccessToken() {
+  try {
+    const s = await dbHelpers.getSettings();
+    if (s.payment_gateway_active === '0') {
+      const err = new Error('O gateway de pagamentos está desativado pelo administrador.');
+      err.paymentDisabled = true;
+      throw err;
+    }
+    if (s.payment_mp_access_token && s.payment_mp_access_token.trim()) {
+      return s.payment_mp_access_token.trim();
+    }
+  } catch (e) {
+    if (e.paymentDisabled) throw e;
+  }
+  return MERCADOPAGO_ACCESS_TOKEN;
+}
+
 // Chama a API do Mercado Pago com o Access Token (fetch global do Node 22)
 async function mpFetch(path, { method = 'GET', body = null, idempotencyKey = null } = {}) {
-  if (!MERCADOPAGO_ACCESS_TOKEN) {
-    const err = new Error('MERCADOPAGO_ACCESS_TOKEN não configurado no .env');
+  const token = await getEffectiveMpAccessToken();
+  if (!token) {
+    const err = new Error('Access Token do Mercado Pago não configurado. Configure no painel admin ou no .env');
     err.mpNotConfigured = true;
     throw err;
   }
   const headers = {
-    Authorization: `Bearer ${MERCADOPAGO_ACCESS_TOKEN}`
+    Authorization: `Bearer ${token}`
   };
   if (body) headers['Content-Type'] = 'application/json';
   if (idempotencyKey) headers['X-Idempotency-Key'] = idempotencyKey;
@@ -360,7 +379,7 @@ function mpPixExpiration(minutes) {
 // Cria uma cobrança PIX (pagamento imediato, sem redirecionamento) e registra no banco como pendente.
 // Retorna o QR Code (imagem base64 para o Telegram), o código copia-e-cola e o link do comprovante.
 // Usada pelo bot do Telegram (pagamento direto no chat) e pelo painel web.
-async function mpCreatePixPayment({ resellerId, amount, reseller }) {
+async function mpCreatePixPayment({ resellerId, amount, reseller, telegramId, customerName, customerContact }) {
   const externalReference = `mp_recharge_${resellerId}_${crypto.randomBytes(6).toString('hex')}`;
   const baseUrl = (process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
   const roundedAmount = Math.round(parseFloat(amount) * 100) / 100;
@@ -387,9 +406,20 @@ async function mpCreatePixPayment({ resellerId, amount, reseller }) {
 
   const now = new Date().toISOString();
   await dbHelpers.db.prepare(`
-    INSERT INTO mp_payments (payment_id, preference_id, external_reference, reseller_id, amount, status, payment_method, processed, created_at, updated_at)
-    VALUES (?, NULL, ?, ?, ?, ?, 'PIX', 0, ?, ?)
-  `).run(String(payment.id), externalReference, resellerId, roundedAmount, payment.status || 'pending', now, now);
+    INSERT INTO mp_payments (payment_id, preference_id, external_reference, reseller_id, amount, status, payment_method, processed, telegram_id, customer_name, customer_contact, created_at, updated_at)
+    VALUES (?, NULL, ?, ?, ?, ?, 'PIX', 0, ?, ?, ?, ?, ?)
+  `).run(
+    String(payment.id),
+    externalReference,
+    resellerId,
+    roundedAmount,
+    payment.status || 'pending',
+    telegramId || null,
+    customerName || null,
+    customerContact || null,
+    now,
+    now
+  );
 
   return {
     payment_id: String(payment.id),
@@ -473,6 +503,32 @@ async function mpProcessApprovedPayment(paymentId) {
     INSERT INTO recharges (reseller_id, credits, amount_paid, status, payment_method, created_at)
     VALUES (?, ?, ?, 'approved', ?, ?)
   `).run(record.reseller_id, Math.floor(amount / parseFloat(reseller.cost_per_link || 2.99)), amount, methodLabel, now);
+
+  // Se houver telegram_id associado a esse pagamento, credita a carteira do cliente e lança no extrato
+  if (record.telegram_id) {
+    const cleanTg = String(record.telegram_id).replace(/^tg_/, '').trim();
+    try {
+      const customer = await dbHelpers.db.prepare('SELECT id, name, username, balance FROM customers WHERE telegram_id = ? OR telegram_id = ?').get(cleanTg, 'tg_' + cleanTg);
+      if (customer) {
+        const cur = parseFloat(customer.balance || 0);
+        const upd = Math.round((cur + amount) * 100) / 100;
+        await dbHelpers.db.prepare('UPDATE customers SET balance = ? WHERE id = ?').run(upd.toFixed(2), customer.id);
+        await dbHelpers.recordFinancialTransaction({
+          customerId: cleanTg,
+          customerName: customer.name || record.customer_name,
+          customerContact: customer.username ? '@' + customer.username : record.customer_contact,
+          type: 'deposit',
+          description: 'Depósito PIX aprovado (Bot DarkFlix)',
+          orderNumber: ref,
+          amount: amount,
+          balanceBefore: cur,
+          balanceAfter: upd
+        });
+      }
+    } catch (e) {
+      console.error('Falha ao creditar cliente na recarga:', e.message);
+    }
+  }
 
   // Marca como processado + grava o payment_id (idempotência definitiva)
   await dbHelpers.db.prepare('UPDATE mp_payments SET payment_id = ?, status = ?, payment_method = ?, processed = 1, updated_at = ? WHERE id = ?')
@@ -1384,7 +1440,17 @@ app.post('/api/v1/mp/create-pix', resellerBotAuth, async (req, res) => {
     return res.status(400).json({ success: false, error: parsed.error });
   }
   try {
-    const pix = await mpCreatePixPayment({ resellerId: req.reseller.id, amount: parsed.amount, reseller: req.reseller });
+    const tgId = (req.headers['x-telegram-id'] || (req.body && req.body.telegram_id) || '').toString().trim();
+    const tgName = (req.headers['x-telegram-name'] || (req.body && req.body.customer_name) || '').toString().trim();
+    const tgUser = (req.headers['x-telegram-username'] || (req.body && req.body.customer_contact) || '').toString().trim();
+    const pix = await mpCreatePixPayment({
+      resellerId: req.reseller.id,
+      amount: parsed.amount,
+      reseller: req.reseller,
+      telegramId: tgId,
+      customerName: tgName,
+      customerContact: tgUser
+    });
     res.json({ success: true, ...pix });
   } catch (err) {
     dbHelpers.logError({
@@ -1668,6 +1734,7 @@ app.get('/api/admin/products', adminAuth, async (req, res) => {
     data: products.map((p) => ({
       ...p,
       id: Number(p.id),
+      emoji: p.emoji || '🎁',
       cost_price: Number(p.cost_price || 0),
       price_value: Number(p.price_value || 0),
       active: Number(p.active || 0),
@@ -1679,7 +1746,7 @@ app.get('/api/admin/products', adminAuth, async (req, res) => {
 });
 
 app.post('/api/admin/products', adminAuth, async (req, res) => {
-  const { name, description, target_url, cost_price, price_type, price_value, active, sort_order, stock: stockInput } = req.body || {};
+  const { name, description, emoji, target_url, cost_price, price_type, price_value, active, sort_order, stock: stockInput } = req.body || {};
 
   if (!name || !String(name).trim()) {
     return res.status(400).json({ success: false, error: 'Informe o nome do produto.' });
@@ -1703,11 +1770,12 @@ app.post('/api/admin/products', adminAuth, async (req, res) => {
   }
 
   const result = await dbHelpers.db.prepare(`
-    INSERT INTO products (name, description, target_url, cost_price, price_type, price_value, active, sort_order, stock, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO products (name, description, emoji, target_url, cost_price, price_type, price_value, active, sort_order, stock, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     String(name).trim(),
     description ? String(description).trim() : null,
+    (emoji && String(emoji).trim()) ? String(emoji).trim() : '🎁',
     target_url ? String(target_url).trim() : null,
     cost,
     type,
@@ -1736,6 +1804,7 @@ app.put('/api/admin/products/:id', adminAuth, async (req, res) => {
     return res.status(400).json({ success: false, error: 'Informe o nome do produto.' });
   }
   const description = body.description !== undefined ? (body.description ? String(body.description).trim() : null) : product.description;
+  const emoji = body.emoji !== undefined ? ((body.emoji && String(body.emoji).trim()) ? String(body.emoji).trim() : '🎁') : (product.emoji || '🎁');
   const targetUrl = body.target_url !== undefined ? (body.target_url ? String(body.target_url).trim() : null) : product.target_url;
   const cost = body.cost_price !== undefined ? parseFloat(body.cost_price) : parseFloat(product.cost_price || 0);
   if (isNaN(cost) || cost < 0) {
@@ -1757,9 +1826,9 @@ app.put('/api/admin/products/:id', adminAuth, async (req, res) => {
   }
 
   await dbHelpers.db.prepare(`
-    UPDATE products SET name = ?, description = ?, target_url = ?, cost_price = ?, price_type = ?, price_value = ?, active = ?, sort_order = ?, stock = ?
+    UPDATE products SET name = ?, description = ?, emoji = ?, target_url = ?, cost_price = ?, price_type = ?, price_value = ?, active = ?, sort_order = ?, stock = ?
     WHERE id = ?
-  `).run(name, description, targetUrl, cost, type, price, active, sortOrder, stock, id);
+  `).run(name, description, emoji, targetUrl, cost, type, price, active, sortOrder, stock, id);
 
   const updated = await dbHelpers.db.prepare('SELECT * FROM products WHERE id = ?').get(id);
   res.json({ success: true, message: 'Produto atualizado com sucesso!', data: updated });
@@ -3560,10 +3629,12 @@ app.get('/api/v1/bot-status', async (req, res) => {
       success: true,
       status: settings.bot_status || 'active', // 'active', 'maintenance', 'offline'
       maintenance_message: settings.maintenance_message || '⚠️ Estamos realizando uma manutenção preventiva no sistema. Em breve o bot estará de volta ao normal!',
-      announcement: settings.bot_announcement || ''
+      announcement: settings.bot_announcement || '',
+      start_message: settings.bot_start_message || '',
+      sales_name: settings.bot_sales_name || 'DarkFlix'
     });
   } catch (e) {
-    res.json({ success: true, status: 'active', maintenance_message: '', announcement: '' });
+    res.json({ success: true, status: 'active', maintenance_message: '', announcement: '', start_message: '', sales_name: 'DarkFlix' });
   }
 });
 
@@ -3663,6 +3734,365 @@ app.post('/api/admin/bot/broadcast', adminAuth, async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message || 'Erro ao enviar broadcast.' });
+  }
+});
+
+// ==========================================
+// CONFIGURAÇÃO DOS BOTS (PERFIL, COMANDOS & START)
+// ==========================================
+
+// Consulta dados dos perfis de ambos os bots, comandos e mensagem inicial
+app.get('/api/admin/bot/profiles', adminAuth, async (req, res) => {
+  try {
+    const settings = await dbHelpers.getSettings();
+    let commands = [];
+    try {
+      commands = settings.bot_commands ? JSON.parse(settings.bot_commands) : [];
+    } catch (e) {
+      commands = [];
+    }
+    res.json({
+      success: true,
+      data: {
+        bot_sales_name: settings.bot_sales_name || 'DarkFlix',
+        bot_sales_bio: settings.bot_sales_bio || '',
+        bot_notify_name: settings.bot_notify_name || 'Dark Vendas',
+        bot_notify_bio: settings.bot_notify_bio || '',
+        bot_commands: commands,
+        bot_start_message: settings.bot_start_message || '',
+        tokens: {
+          sales_configured: !!process.env.TELEGRAM_BOT_TOKEN,
+          notify_configured: !!(process.env.NOTIFIER_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN)
+        }
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || 'Erro ao consultar perfis dos bots.' });
+  }
+});
+
+// Atualiza nomes e bios dos dois bots no banco e sincroniza com o Telegram
+app.post('/api/admin/bot/profiles', adminAuth, async (req, res) => {
+  try {
+    const { bot_sales_name, bot_sales_bio, bot_notify_name, bot_notify_bio } = req.body || {};
+    const salesToken = process.env.TELEGRAM_BOT_TOKEN;
+    const notifyToken = process.env.NOTIFIER_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
+
+    const results = { sales: { name: false, bio: false }, notify: { name: false, bio: false } };
+
+    if (bot_sales_name !== undefined) {
+      const cleanName = String(bot_sales_name).trim();
+      await dbHelpers.updateSetting('bot_sales_name', cleanName);
+      if (salesToken && cleanName) {
+        try {
+          const resp = await fetch(`https://api.telegram.org/bot${salesToken}/setMyName`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: cleanName })
+          });
+          const d = await resp.json();
+          results.sales.name = !!d.ok;
+        } catch (e) {}
+      }
+    }
+
+    if (bot_sales_bio !== undefined) {
+      const cleanBio = String(bot_sales_bio).trim();
+      await dbHelpers.updateSetting('bot_sales_bio', cleanBio);
+      if (salesToken) {
+        try {
+          await fetch(`https://api.telegram.org/bot${salesToken}/setMyDescription`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ description: cleanBio })
+          });
+          await fetch(`https://api.telegram.org/bot${salesToken}/setMyShortDescription`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ short_description: cleanBio.slice(0, 120) })
+          });
+          results.sales.bio = true;
+        } catch (e) {}
+      }
+    }
+
+    if (bot_notify_name !== undefined) {
+      const cleanName = String(bot_notify_name).trim();
+      await dbHelpers.updateSetting('bot_notify_name', cleanName);
+      if (notifyToken && cleanName) {
+        try {
+          const resp = await fetch(`https://api.telegram.org/bot${notifyToken}/setMyName`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: cleanName })
+          });
+          const d = await resp.json();
+          results.notify.name = !!d.ok;
+        } catch (e) {}
+      }
+    }
+
+    if (bot_notify_bio !== undefined) {
+      const cleanBio = String(bot_notify_bio).trim();
+      await dbHelpers.updateSetting('bot_notify_bio', cleanBio);
+      if (notifyToken) {
+        try {
+          await fetch(`https://api.telegram.org/bot${notifyToken}/setMyDescription`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ description: cleanBio })
+          });
+          await fetch(`https://api.telegram.org/bot${notifyToken}/setMyShortDescription`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ short_description: cleanBio.slice(0, 120) })
+          });
+          results.notify.bio = true;
+        } catch (e) {}
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Perfis dos bots atualizados com sucesso e sincronizados com o Telegram.',
+      results
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || 'Erro ao atualizar perfis dos bots.' });
+  }
+});
+
+// Atualiza comandos do bot DarkFlix e envia setMyCommands para o Telegram
+app.post('/api/admin/bot/commands', adminAuth, async (req, res) => {
+  try {
+    const { commands } = req.body || {};
+    if (!Array.isArray(commands)) {
+      return res.status(400).json({ success: false, error: 'Lista de comandos inválida.' });
+    }
+
+    // Sanitiza comandos (apenas a-z, 0-9 e _)
+    const cleanCommands = commands
+      .filter((c) => c && c.command)
+      .map((c) => ({
+        command: String(c.command).replace(/^\//, '').toLowerCase().replace(/[^a-z0-9_]/g, '').trim(),
+        description: String(c.description || '').trim() || 'Comando'
+      }))
+      .filter((c) => c.command.length >= 1 && c.command.length <= 32);
+
+    await dbHelpers.updateSetting('bot_commands', JSON.stringify(cleanCommands));
+
+    const salesToken = process.env.TELEGRAM_BOT_TOKEN;
+    let tgSynced = false;
+    let tgError = null;
+
+    if (salesToken) {
+      try {
+        const resp = await fetch(`https://api.telegram.org/bot${salesToken}/setMyCommands`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ commands: cleanCommands })
+        });
+        const d = await resp.json();
+        tgSynced = !!d.ok;
+        if (!d.ok) tgError = d.description;
+      } catch (e) {
+        tgError = e.message;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: tgSynced
+        ? 'Comandos salvos e sincronizados com o Telegram com sucesso!'
+        : 'Comandos salvos no banco de dados com sucesso.',
+      commands: cleanCommands,
+      tg_synced: tgSynced,
+      tg_error: tgError
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || 'Erro ao salvar comandos do bot.' });
+  }
+});
+
+// Atualiza mensagem inicial (/start)
+app.post('/api/admin/bot/start-message', adminAuth, async (req, res) => {
+  try {
+    const { start_message } = req.body || {};
+    if (start_message === undefined) {
+      return res.status(400).json({ success: false, error: 'start_message não informado.' });
+    }
+    await dbHelpers.updateSetting('bot_start_message', String(start_message).trim());
+    res.json({ success: true, message: 'Mensagem inicial (/start) atualizada com sucesso!' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || 'Erro ao atualizar mensagem inicial.' });
+  }
+});
+
+// ==========================================
+// CONFIGURAÇÃO DA API DE PAGAMENTO
+// ==========================================
+
+// Consulta configuração atual de gateway de pagamento
+app.get('/api/admin/payment-config', adminAuth, async (req, res) => {
+  try {
+    const settings = await dbHelpers.getSettings();
+    const active = settings.payment_gateway_active !== '0';
+    const type = settings.payment_gateway_type || 'mercadopago';
+    const rawToken = settings.payment_mp_access_token || '';
+    const rawPublicKey = settings.payment_mp_public_key || '';
+
+    // Mascara token se existir para segurança
+    const maskedToken = rawToken
+      ? (rawToken.length > 10 ? `${rawToken.slice(0, 7)}...${rawToken.slice(-4)}` : '••••••••')
+      : (process.env.MERCADOPAGO_ACCESS_TOKEN ? 'Configurado via .env' : '');
+
+    res.json({
+      success: true,
+      data: {
+        active,
+        gateway_type: type,
+        mp_access_token_masked: maskedToken,
+        has_custom_token: !!(rawToken && rawToken.trim()),
+        mp_public_key: rawPublicKey,
+        env_configured: !!process.env.MERCADOPAGO_ACCESS_TOKEN
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || 'Erro ao carregar configurações de pagamento.' });
+  }
+});
+
+// Atualiza configuração de pagamento (ativação, tipo, credenciais)
+app.post('/api/admin/payment-config', adminAuth, async (req, res) => {
+  try {
+    const { active, gateway_type, mp_access_token, mp_public_key } = req.body || {};
+
+    if (active !== undefined) {
+      await dbHelpers.updateSetting('payment_gateway_active', active ? '1' : '0');
+    }
+    if (gateway_type !== undefined) {
+      await dbHelpers.updateSetting('payment_gateway_type', String(gateway_type).trim().toLowerCase());
+    }
+    if (mp_access_token !== undefined) {
+      // Se não for mascara '••••' ou 'Configurado via .env', salva o novo token
+      const cleanToken = String(mp_access_token).trim();
+      if (!cleanToken.includes('••••') && !cleanToken.includes('via .env')) {
+        await dbHelpers.updateSetting('payment_mp_access_token', cleanToken);
+      }
+    }
+    if (mp_public_key !== undefined) {
+      await dbHelpers.updateSetting('payment_mp_public_key', String(mp_public_key).trim());
+    }
+
+    res.json({
+      success: true,
+      message: 'Configurações da API de pagamento salvas com sucesso!'
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || 'Erro ao salvar configurações de pagamento.' });
+  }
+});
+
+// ==========================================
+// FINANCEIRO: DEPÓSITOS PIX
+// ==========================================
+
+// Lista todos os depósitos PIX gerados e status de compensação
+app.get('/api/admin/pix-deposits', adminAuth, async (req, res) => {
+  try {
+    const payments = await dbHelpers.db.prepare(`
+      SELECT p.id, p.payment_id, p.external_reference, p.amount, p.status, p.payment_method, p.processed,
+             p.telegram_id, p.customer_name, p.customer_contact, p.created_at, p.updated_at,
+             r.name AS reseller_name
+      FROM mp_payments p
+      LEFT JOIN resellers r ON r.id = p.reseller_id
+      ORDER BY p.id DESC
+      LIMIT 150
+    `).all();
+
+    const data = payments.map((p) => {
+      const isApproved = p.status === 'approved' || Number(p.processed) === 1;
+      let clientDisplay = p.customer_name || (p.customer_contact ? p.customer_contact : (p.telegram_id ? `ID: ${p.telegram_id}` : (p.reseller_name || 'Cliente Bot')));
+      return {
+        id: p.id,
+        date: p.created_at,
+        client: clientDisplay,
+        telegram_id: p.telegram_id || null,
+        amount: Number(p.amount),
+        status: isApproved ? 'approved' : (p.status || 'pending'),
+        credited: isApproved,
+        payment_method: p.payment_method || 'PIX',
+        external_reference: p.external_reference
+      };
+    });
+
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || 'Erro ao consultar depósitos PIX.' });
+  }
+});
+
+// Aprova manualmente um depósito PIX e credita a conta do cliente imediatamente
+app.post('/api/admin/pix-deposits/:id/approve', adminAuth, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const payment = await dbHelpers.db.prepare('SELECT * FROM mp_payments WHERE id = ?').get(id);
+    if (!payment) {
+      return res.status(404).json({ success: false, error: 'Depósito PIX não encontrado.' });
+    }
+    if (Number(payment.processed) === 1 && payment.status === 'approved') {
+      return res.json({ success: true, message: 'Este pagamento já foi aprovado e creditado anteriormente.' });
+    }
+
+    const amount = Number(payment.amount);
+    const now = new Date().toISOString();
+
+    // Atualiza status do mp_payments para approved
+    await dbHelpers.db.prepare("UPDATE mp_payments SET status = 'approved', processed = 1, updated_at = ? WHERE id = ?").run(now, id);
+
+    // Atualiza saldo do revendedor
+    if (payment.reseller_id) {
+      await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits + ? AS NUMERIC), 2) WHERE id = ?').run(amount, payment.reseller_id);
+      await dbHelpers.db.prepare(`
+        INSERT INTO recharges (reseller_id, credits, amount_paid, status, payment_method, created_at)
+        VALUES (?, ?, ?, 'approved', 'PIX Manual (Admin)', ?)
+      `).run(payment.reseller_id, Math.floor(amount / 2.99), amount, now);
+    }
+
+    // Se houver telegram_id, credita o saldo do cliente na tabela customers e registra no extrato
+    let clientCredited = false;
+    let newCustomerBalance = null;
+    if (payment.telegram_id) {
+      const cleanTg = String(payment.telegram_id).replace(/^tg_/, '').trim();
+      const customer = await dbHelpers.db.prepare('SELECT id, name, username, balance FROM customers WHERE telegram_id = ? OR telegram_id = ?').get(cleanTg, 'tg_' + cleanTg);
+      if (customer) {
+        const cur = parseFloat(customer.balance || 0);
+        const upd = Math.round((cur + amount) * 100) / 100;
+        await dbHelpers.db.prepare('UPDATE customers SET balance = ? WHERE id = ?').run(upd.toFixed(2), customer.id);
+        await dbHelpers.recordFinancialTransaction({
+          customerId: cleanTg,
+          customerName: customer.name || payment.customer_name,
+          customerContact: customer.username ? '@' + customer.username : payment.customer_contact,
+          type: 'deposit',
+          description: 'Aprovação manual de PIX (Painel Admin)',
+          orderNumber: payment.external_reference || `PIX-${id}`,
+          amount: amount,
+          balanceBefore: cur,
+          balanceAfter: upd
+        });
+        clientCredited = true;
+        newCustomerBalance = upd;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Depósito PIX de R$ ${amount.toFixed(2).replace('.', ',')} aprovado com sucesso! Saldo creditado.`,
+      client_credited: clientCredited,
+      new_balance: newCustomerBalance
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || 'Erro ao aprovar depósito PIX manualmente.' });
   }
 });
 

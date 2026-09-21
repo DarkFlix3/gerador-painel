@@ -145,6 +145,45 @@ async function pingCustomer(user) {
   }
 }
 
+// Cache de banimento por cliente (5s para resposta instantânea)
+const _banStatusCache = new Map();
+
+async function checkCustomerBan(chatId, user) {
+  if (!user || !user.id) return false;
+  const userId = String(user.id);
+  const now = Date.now();
+  const cached = _banStatusCache.get(userId);
+  if (cached && (now - cached.timestamp < 5000)) {
+    if (cached.blocked) {
+      const reasonMsg = cached.reason ? `\n<b>Motivo:</b> ${escapeHtml(cached.reason)}` : '';
+      await bot.sendMessage(chatId, `🚫 <b>ACESSO BLOQUEADO</b>\n\nVocê foi banido pelo administrador do bot.${reasonMsg}\n\nEntre em contato com o suporte caso ache que isso foi um engano.`, { parse_mode: 'HTML' }).catch(() => {});
+      return true;
+    }
+    return false;
+  }
+
+  try {
+    const headers = { 'X-API-Key': RESELLER_API_KEY, 'X-Telegram-Id': userId };
+    if (user.username) headers['X-Telegram-Username'] = String(user.username);
+    if (user.first_name) headers['X-Telegram-Name'] = String(user.first_name);
+    const res = await fetch(`${API_BASE_URL}/api/v1/customer-ping`, {
+      method: 'POST',
+      headers,
+      signal: AbortSignal.timeout(4000)
+    });
+    const data = await res.json();
+    const isBlocked = !!(data && data.blocked);
+    const reason = (data && data.blocked_reason) || '';
+    _banStatusCache.set(userId, { blocked: isBlocked, reason, timestamp: now });
+    if (isBlocked) {
+      const reasonMsg = reason ? `\n<b>Motivo:</b> ${escapeHtml(reason)}` : '';
+      await bot.sendMessage(chatId, `🚫 <b>ACESSO BLOQUEADO</b>\n\nVocê foi banido pelo administrador do bot.${reasonMsg}\n\nEntre em contato com o suporte caso ache que isso foi um engano.`, { parse_mode: 'HTML' }).catch(() => {});
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
 // Consulta status operacional do bot (com cache de 5s para não sobrecarregar a API)
 let _botStatusCache = null;
 let _botStatusLastFetch = 0;
@@ -163,11 +202,12 @@ async function getBotStatus() {
       return _botStatusCache;
     }
   } catch (e) {}
-  return _botStatusCache || { status: 'active', maintenance_message: '', announcement: '' };
+  return _botStatusCache || { status: 'active', maintenance_message: '', announcement: '', start_message: '', sales_name: 'DarkFlix' };
 }
 
-// Verifica se o bot está em manutenção ou desligado
+// Verifica se o usuário está banido ou se o bot está em manutenção/desligado
 async function isMaintenanceBlocked(chatId, user) {
+  if (await checkCustomerBan(chatId, user)) return true;
   try {
     const info = await getBotStatus();
     if (info && (info.status === 'maintenance' || info.status === 'offline')) {
@@ -190,18 +230,18 @@ async function sendMainMenu(chatId, messageId, user) {
     ? `📢 <b>COMUNICADO OFICIAL:</b>\n${escapeHtml(statusInfo.announcement)}\n\n`
     : '';
 
-  const welcomeText =
-    banner +
-    `👋 Olá, <b>${firstName}</b>! Seja muito bem-vindo(a) ao <b>DarkFlix</b>!
+  let bodyText = '';
+  if (statusInfo && statusInfo.start_message && statusInfo.start_message.trim()) {
+    bodyText = statusInfo.start_message.replace(/\{nome\}/gi, firstName).replace(/\{name\}/gi, firstName);
+  } else {
+    bodyText =
+      `👋 Olá, <b>${firstName}</b>! Seja muito bem-vindo(a) ao <b>${escapeHtml((statusInfo && statusInfo.sales_name) || 'DarkFlix')}</b>!\n\n` +
+      `⚡ <b>Entrega 100% Automática e Instantânea</b>\n` +
+      `🎧 Receba seu link exclusivo na hora direto aqui no chat.\n` +
+      `💰 Preço Especial: <b>R$ ${DEFAULT_SALE_PRICE.toFixed(2).replace('.', ',')}</b>\n`;
+  }
 
-` +
-    `⚡ <b>Entrega 100% Automática e Instantânea</b>
-` +
-    `🎧 Receba seu link exclusivo na hora direto aqui no chat.
-` +
-    `💰 Preço Especial: <b>R$ ${DEFAULT_SALE_PRICE.toFixed(2).replace('.', ',')}</b>
-
-`;
+  const welcomeText = banner + bodyText + '\n\n';
 
   const keyboard = getMainKeyboard();
   const buildMainText = (balanceLine) => welcomeText + balanceLine + '\n\nSelecione uma das opções abaixo para começar:';
@@ -352,17 +392,20 @@ bot.onText(/\/start/, (msg) => {
 
 // Comando /comprar
 bot.onText(/\/comprar/, async (msg) => {
+  if (await isMaintenanceBlocked(msg.chat.id, msg.from)) return;
   await showCatalog(msg.chat.id, null);
 });
 
 // Comando /saldo (saldo da conta vinculada ao ID de perfil)
 bot.onText(/\/saldo/, async (msg) => {
+  if (await isMaintenanceBlocked(msg.chat.id, msg.from)) return;
   await handleCheckBalance(msg.chat.id, msg.from);
 });
 
 // Comando /recarga [valor] — gera link de pagamento Mercado Pago para recarregar saldo
 bot.onText(/\/recarga(?:\s+(\d+(?:[.,]\d{1,2})?))?/, async (msg, match) => {
   const chatId = msg.chat.id;
+  if (await isMaintenanceBlocked(chatId, msg.from)) return;
   const rawAmount = match[1];
   if (rawAmount) {
     const amount = parseFloat(rawAmount.replace(',', '.'));
@@ -376,13 +419,15 @@ bot.onText(/\/recarga(?:\s+(\d+(?:[.,]\d{1,2})?))?/, async (msg, match) => {
 });
 
 // Comando /me (e alias /perfil) — mostra o ID de perfil da pessoa
-bot.onText(/\/(me|perfil|id)/, (msg) => {
+bot.onText(/\/(me|perfil|id)/, async (msg) => {
+  if (await isMaintenanceBlocked(msg.chat.id, msg.from)) return;
   console.log('[recv] /me de', msg.chat.id, msg.from && msg.from.first_name);
   sendProfileId(msg.chat.id, msg.from);
 });
 
 // Comando /ajuda
-bot.onText(/\/ajuda/, (msg) => {
+bot.onText(/\/ajuda/, async (msg) => {
+  if (await isMaintenanceBlocked(msg.chat.id, msg.from)) return;
   sendHelpMessage(msg.chat.id);
 });
 
@@ -453,6 +498,8 @@ async function handleMpRecharge(chatId, user, amount, messageId) {
   try {
     const headers = { 'X-API-Key': RESELLER_API_KEY, 'Content-Type': 'application/json' };
     if (user && user.id) headers['X-Telegram-Id'] = String(user.id);
+    if (user && user.username) headers['X-Telegram-Username'] = String(user.username);
+    if (user && user.first_name) headers['X-Telegram-Name'] = String(user.first_name);
 
     const res = await fetch(`${API_BASE_URL}/api/v1/mp/create-pix`, {
       method: 'POST',

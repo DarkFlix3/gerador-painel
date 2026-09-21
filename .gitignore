@@ -13,3 +13,4 @@ PENTEST_REPORT.md
 # Pasta de ferramentas locais (binários e scripts com acesso ao .env)
 tools/
 pixval_*.json
+__pycache__/

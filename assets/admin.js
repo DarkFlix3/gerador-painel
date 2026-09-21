@@ -814,6 +814,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadCoupons();
     loadCustomers();
     loadFinancialTransactions();
+    loadPixDeposits();
     loadBotControl();
   }
 
@@ -899,15 +900,15 @@ document.addEventListener('DOMContentLoaded', () => {
             </td>
             <td class="px-5 py-3.5">
               ${isBlocked
-                ? `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-950/60 text-rose-400 border border-rose-500/30"><span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>Bloqueado</span>`
-                : `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950/60 text-emerald-400 border border-emerald-500/30"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Ativo</span>`}
+                ? `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-950/60 text-rose-400 border border-rose-500/30"><span class="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse"></span>🔴 Banido</span>`
+                : `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950/60 text-emerald-400 border border-emerald-500/30"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>🟢 Ativo</span>`}
             </td>
             <td class="px-5 py-3.5">
               <div class="flex items-center gap-1.5">
                 <button onclick="openCustomerBalanceModal(${c.id})" class="p-2 rounded-lg bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 transition-all" title="Colocar / Retirar Saldo"><i data-lucide="coins" class="w-3.5 h-3.5"></i></button>
                 ${isBlocked
-                  ? `<button onclick="toggleBlockCustomer(${c.id})" class="p-2 rounded-lg bg-emerald-950/50 hover:bg-emerald-800/50 text-emerald-400 border border-emerald-500/20" title="Desbloquear"><i data-lucide="unlock" class="w-3.5 h-3.5"></i></button>`
-                  : `<button onclick="toggleBlockCustomer(${c.id})" class="p-2 rounded-lg bg-rose-950/50 hover:bg-rose-800/50 text-rose-400 border border-rose-500/20" title="Bloquear"><i data-lucide="ban" class="w-3.5 h-3.5"></i></button>`}
+                  ? `<button onclick="toggleBlockCustomer(${c.id})" class="px-2.5 py-1.5 rounded-lg bg-emerald-950/60 hover:bg-emerald-800/60 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold flex items-center gap-1 transition-all" title="Desbanir cliente do bot"><i data-lucide="unlock" class="w-3 h-3"></i><span>Desbanir</span></button>`
+                  : `<button onclick="toggleBlockCustomer(${c.id})" class="px-2.5 py-1.5 rounded-lg bg-rose-950/60 hover:bg-rose-800/60 text-rose-300 border border-rose-500/30 text-[10px] font-bold flex items-center gap-1 transition-all" title="Banir cliente do bot"><i data-lucide="ban" class="w-3 h-3"></i><span>Banir</span></button>`}
                 <button onclick="showCustomerPurchases(${c.id})" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300" title="Ver compras"><i data-lucide="shopping-bag" class="w-3.5 h-3.5"></i></button>
                 <button onclick="deleteCustomer(${c.id})" class="p-2 rounded-lg bg-slate-800 hover:bg-rose-900/60 text-slate-400 hover:text-rose-400" title="Excluir ficha"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
               </div>
@@ -922,27 +923,69 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // Modal de Banimento de Clientes
+  const banModal = document.getElementById('customer-ban-modal');
+  const banClientName = document.getElementById('customer-ban-client-name');
+  const banIdInput = document.getElementById('customer-ban-id');
+  const banReasonInput = document.getElementById('customer-ban-reason');
+  const btnCloseBan = document.getElementById('customer-ban-close');
+  const btnCancelBan = document.getElementById('btn-cancel-ban');
+  const btnConfirmBan = document.getElementById('btn-confirm-ban');
+
+  function closeBanModal() {
+    if (banModal) banModal.classList.add('hidden');
+  }
+  if (btnCloseBan) btnCloseBan.addEventListener('click', closeBanModal);
+  if (btnCancelBan) btnCancelBan.addEventListener('click', closeBanModal);
+
+  if (btnConfirmBan) {
+    btnConfirmBan.addEventListener('click', async () => {
+      const id = banIdInput ? banIdInput.value : '';
+      const reason = banReasonInput ? banReasonInput.value.trim() : '';
+      if (!id) return;
+      try {
+        btnConfirmBan.disabled = true;
+        const res = await apiFetch('/api/admin/customers/' + id + '/toggle-block', {
+          method: 'POST',
+          body: JSON.stringify({ reason })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Falha ao banir cliente.');
+        showToast(data.message || 'Cliente banido do bot com sucesso!', 'info');
+        closeBanModal();
+        loadCustomers();
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        btnConfirmBan.disabled = false;
+      }
+    });
+  }
+
   window.toggleBlockCustomer = async function (id) {
     const c = __adminCustomers.find(x => String(x.id) === String(id));
     const name = c ? (c.name || 'Cliente') : 'Cliente';
     const isBlocked = c ? Number(c.blocked) === 1 : false;
-    let reason = null;
-    if (!isBlocked) {
-      reason = prompt('Bloquear &quot;' + name + '&quot;?\nMotivo (opcional):', '');
-      if (reason === null) return; // cancelou
-      reason = reason.trim() || null;
-    }
-    try {
-      const res = await apiFetch('/api/admin/customers/' + id + '/toggle-block', {
-        method: 'POST',
-        body: JSON.stringify({ reason })
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || 'Falha ao atualizar bloqueio.');
-      showToast(data.message, data.blocked ? 'info' : 'success');
-      loadCustomers();
-    } catch (err) {
-      showToast(err.message, 'error');
+
+    if (isBlocked) {
+      if (!confirm(`Deseja realmente desbanir "${name}"? O cliente voltará a ter acesso ao bot.`)) return;
+      try {
+        const res = await apiFetch('/api/admin/customers/' + id + '/toggle-block', {
+          method: 'POST',
+          body: JSON.stringify({})
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Falha ao desbanir.');
+        showToast(data.message || 'Cliente desbanido com sucesso!', 'success');
+        loadCustomers();
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    } else {
+      if (banIdInput) banIdInput.value = id;
+      if (banClientName) banClientName.innerText = name + (c && c.username ? ` (@${c.username})` : '');
+      if (banReasonInput) banReasonInput.value = '';
+      if (banModal) banModal.classList.remove('hidden');
     }
   };
 
@@ -1219,8 +1262,13 @@ document.addEventListener('DOMContentLoaded', () => {
           : '<span class="text-[10px] text-slate-600">—</span>';
         return `<tr class="hover:bg-white/[0.02] transition-colors">
             <td class="px-5 py-3.5">
-              <span class="font-bold text-white block text-xs">${escapeHtml(p.name)}</span>
-              ${p.description ? `<span class="text-[10px] text-slate-400 block">${escapeHtml(p.description)}</span>` : ''}
+              <div class="flex items-center gap-2.5">
+                <span class="text-xl shrink-0 w-8 h-8 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center">${escapeHtml(p.emoji || '🎁')}</span>
+                <div>
+                  <span class="font-bold text-white block text-xs">${escapeHtml(p.name)}</span>
+                  ${p.description ? `<span class="text-[10px] text-slate-400 block">${escapeHtml(p.description)}</span>` : ''}
+                </div>
+              </div>
             </td>
             <td class="px-5 py-3.5 font-mono font-bold text-slate-300">R$ ${Number(p.cost_price).toFixed(2).replace('.', ',')}</td>
             <td class="px-5 py-3.5 font-mono font-bold text-emerald-400">R$ ${salePrice.toFixed(2).replace('.', ',')}</td>
@@ -1253,6 +1301,8 @@ document.addEventListener('DOMContentLoaded', () => {
     card.classList.remove('hidden');
     document.getElementById('product-form-title').innerText = p ? 'Editar Produto' : 'Novo Produto';
     document.getElementById('product-id').value = p ? p.id : '';
+    const emojiInput = document.getElementById('product-emoji');
+    if (emojiInput) emojiInput.value = p ? (p.emoji || '🎁') : '🎁';
     document.getElementById('product-name').value = p ? p.name : '';
     document.getElementById('product-description').value = p ? (p.description || '') : '';
     document.getElementById('product-target-url').value = p ? (p.target_url || '') : '';
@@ -1324,8 +1374,10 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnSaveProduct) {
     btnSaveProduct.addEventListener('click', async () => {
       const id = document.getElementById('product-id').value;
+      const emojiInput = document.getElementById('product-emoji');
       const payload = {
         name: document.getElementById('product-name').value,
+        emoji: emojiInput ? emojiInput.value.trim() || '🎁' : '🎁',
         description: document.getElementById('product-description').value,
         target_url: document.getElementById('product-target-url').value,
         cost_price: document.getElementById('product-cost').value,
@@ -1688,10 +1740,94 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // ----------------------------------------------
+  // DEPÓSITOS PIX (RECARGAS DO BOT)
+  // ----------------------------------------------
+  let __pixDeposits = [];
+
+  async function loadPixDeposits() {
+    const tbody = document.getElementById('pix-deposits-table-body');
+    if (!tbody) return;
+    try {
+      const res = await apiFetch('/api/admin/pix-deposits');
+      const data = await res.json();
+      if (!data.success) return;
+      __pixDeposits = data.data || [];
+
+      if (__pixDeposits.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" class="px-5 py-8 text-center text-slate-500">Nenhum depósito PIX registrado até o momento.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = __pixDeposits.map(d => {
+        const isApproved = d.status === 'approved' || d.credited;
+        const dateStr = d.date ? new Date(d.date).toLocaleString('pt-BR') : '—';
+        const statusBadge = isApproved
+          ? `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950/60 text-emerald-400 border border-emerald-500/30"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Aprovado</span>`
+          : `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-950/60 text-amber-400 border border-amber-500/30"><span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>Pendente</span>`;
+
+        const creditedBadge = d.credited
+          ? `<span class="text-xs font-bold text-emerald-400">✓ Sim</span>`
+          : `<span class="text-xs font-bold text-slate-500">Não</span>`;
+
+        const actionBtn = isApproved
+          ? `<span class="text-[11px] text-slate-500 font-medium">✓ Concluído</span>`
+          : `<button onclick="approvePixDeposit(${d.id})" class="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow-md shadow-emerald-600/20 flex items-center gap-1 transition-all ml-auto">
+               <i data-lucide="check" class="w-3.5 h-3.5"></i>
+               <span>Aprovar Manualmente</span>
+             </button>`;
+
+        return `
+          <tr class="hover:bg-white/[0.02] transition-colors whitespace-nowrap">
+            <td class="px-5 py-3.5 font-mono text-[11px] text-slate-400">${dateStr}</td>
+            <td class="px-5 py-3.5">
+              <span class="font-bold text-white block text-xs">${escapeHtml(d.client)}</span>
+              ${d.external_reference ? `<span class="text-[10px] text-slate-500 font-mono block">${escapeHtml(d.external_reference)}</span>` : ''}
+            </td>
+            <td class="px-5 py-3.5 font-mono font-bold text-emerald-400 text-xs">${__brl(d.amount)}</td>
+            <td class="px-5 py-3.5">${statusBadge}</td>
+            <td class="px-5 py-3.5">${creditedBadge}</td>
+            <td class="px-5 py-3.5 text-right">${actionBtn}</td>
+          </tr>
+        `;
+      }).join('');
+
+      if (window.lucide) window.lucide.createIcons();
+    } catch (err) {
+      console.warn('Erro ao carregar depósitos PIX:', err);
+    }
+  }
+
+  window.approvePixDeposit = async function(id) {
+    if (!confirm('Deseja realmente aprovar este depósito PIX manualmente e creditar o saldo na conta do cliente?')) return;
+    try {
+      const res = await apiFetch('/api/admin/pix-deposits/' + id + '/approve', {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Falha ao aprovar depósito.');
+      showToast(data.message || 'Depósito PIX aprovado com sucesso!', 'success');
+      loadPixDeposits();
+      loadFinancialTransactions();
+      loadCustomers();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const btnRefreshPixDeposits = document.getElementById('btn-refresh-pix-deposits');
+  if (btnRefreshPixDeposits) {
+    btnRefreshPixDeposits.addEventListener('click', () => {
+      loadPixDeposits();
+      showToast('Depósitos PIX atualizados.', 'info');
+    });
+  }
+
   const btnRefreshFinance = document.getElementById('btn-refresh-finance');
   if (btnRefreshFinance) {
     btnRefreshFinance.addEventListener('click', () => {
       loadFinancialTransactions();
+      loadPixDeposits();
       showToast('Extrato financeiro atualizado.', 'info');
     });
   }
@@ -1714,9 +1850,36 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ==============================================
-  // 8. CONTROLE DO BOT DARKFLIX
+  // 8. CONTROLE DO BOT DARKFLIX & BOT DARK VENDAS
   // ==============================================
   let currentBotStatus = 'active';
+  let __botCommands = [];
+
+  function renderBotCommandsTable() {
+    const tbody = document.getElementById('bot-commands-table-body');
+    if (!tbody) return;
+    if (__botCommands.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="3" class="px-4 py-4 text-center text-slate-500">Nenhum comando configurado. Use o formulário acima para adicionar.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = __botCommands.map((c, idx) => `
+      <tr class="hover:bg-white/[0.02] transition-colors">
+        <td class="px-4 py-2.5 font-mono font-bold text-amber-300">/${escapeHtml(c.command)}</td>
+        <td class="px-4 py-2.5 text-slate-300 text-xs">${escapeHtml(c.description || '—')}</td>
+        <td class="px-4 py-2.5 text-right">
+          <button onclick="removeBotCommand(${idx})" class="p-1.5 text-slate-400 hover:text-rose-400 rounded-lg hover:bg-rose-950/40 transition-colors" title="Remover comando">
+            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+          </button>
+        </td>
+      </tr>
+    `).join('');
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  window.removeBotCommand = function(index) {
+    __botCommands.splice(index, 1);
+    renderBotCommandsTable();
+  };
 
   window.setBotStatusValue = function(status) {
     currentBotStatus = status;
@@ -1746,25 +1909,246 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function loadBotControl() {
     try {
-      const res = await fetch('/api/v1/bot-status');
-      const data = await res.json();
-      if (!data.success) return;
+      // 1. Status operacional (online/manutenção/offline) e aviso fixo
+      const resStatus = await fetch('/api/v1/bot-status');
+      const dataStatus = await resStatus.json();
+      if (dataStatus.success) {
+        currentBotStatus = dataStatus.status || 'active';
+        setBotStatusValue(currentBotStatus);
 
-      currentBotStatus = data.status || 'active';
-      setBotStatusValue(currentBotStatus);
+        const msgInput = document.getElementById('bot-maintenance-msg');
+        if (msgInput && dataStatus.maintenance_message) {
+          msgInput.value = dataStatus.maintenance_message;
+        }
 
-      const msgInput = document.getElementById('bot-maintenance-msg');
-      if (msgInput && data.maintenance_message) {
-        msgInput.value = data.maintenance_message;
+        const bannerInput = document.getElementById('bot-announcement-text');
+        if (bannerInput) {
+          bannerInput.value = dataStatus.announcement || '';
+        }
       }
 
-      const bannerInput = document.getElementById('bot-announcement-text');
-      if (bannerInput) {
-        bannerInput.value = data.announcement || '';
+      // 2. Perfis dos bots (DarkFlix e Dark Vendas), comandos e mensagem /start
+      const resProfiles = await apiFetch('/api/admin/bot/profiles');
+      const dataProfiles = await resProfiles.json();
+      if (dataProfiles.success && dataProfiles.data) {
+        const p = dataProfiles.data;
+        const salesName = document.getElementById('bot-sales-name');
+        const salesBio = document.getElementById('bot-sales-bio');
+        const notifyName = document.getElementById('bot-notify-name');
+        const notifyBio = document.getElementById('bot-notify-bio');
+        const startMsg = document.getElementById('bot-start-message-text');
+
+        if (salesName) salesName.value = p.bot_sales_name || '';
+        if (salesBio) salesBio.value = p.bot_sales_bio || '';
+        if (notifyName) notifyName.value = p.bot_notify_name || '';
+        if (notifyBio) notifyBio.value = p.bot_notify_bio || '';
+        if (startMsg) startMsg.value = p.bot_start_message || '';
+
+        __botCommands = Array.isArray(p.bot_commands) ? p.bot_commands : [];
+        renderBotCommandsTable();
+      }
+
+      // 3. Configurações da API de Pagamento
+      const resPayment = await apiFetch('/api/admin/payment-config');
+      const dataPayment = await resPayment.json();
+      if (dataPayment.success && dataPayment.data) {
+        const pay = dataPayment.data;
+        const toggleActive = document.getElementById('payment-gateway-active');
+        const selectType = document.getElementById('payment-gateway-type');
+        const inputToken = document.getElementById('payment-mp-access-token');
+        const inputKey = document.getElementById('payment-mp-public-key');
+        const descStatus = document.getElementById('payment-gateway-status-desc');
+
+        if (toggleActive) {
+          toggleActive.checked = pay.active !== false;
+          if (descStatus) {
+            descStatus.innerText = pay.active !== false
+              ? 'Pagamentos e geração de PIX estão ativos'
+              : 'Pagamentos estão desativados pelo administrador';
+          }
+        }
+        if (selectType) selectType.value = pay.gateway_type || 'mercadopago';
+        if (inputToken) {
+          inputToken.value = '';
+          inputToken.placeholder = pay.mp_access_token_masked || (pay.env_configured ? 'Configurado via .env' : 'Cole aqui seu Access Token');
+        }
+        if (inputKey) inputKey.value = pay.mp_public_key || '';
       }
     } catch (e) {
-      console.warn('Erro ao carregar status do bot:', e);
+      console.warn('Erro ao carregar dados do bot:', e);
     }
+  }
+
+  // Listener para toggle da API de Pagamento
+  const togglePayActive = document.getElementById('payment-gateway-active');
+  if (togglePayActive) {
+    togglePayActive.addEventListener('change', () => {
+      const descStatus = document.getElementById('payment-gateway-status-desc');
+      if (descStatus) {
+        descStatus.innerText = togglePayActive.checked
+          ? 'Pagamentos e geração de PIX estão ativos'
+          : 'Pagamentos estão desativados pelo administrador';
+      }
+    });
+  }
+
+  // Listener para visibilidade do token
+  const btnToggleTokenVis = document.getElementById('btn-toggle-token-visibility');
+  if (btnToggleTokenVis) {
+    btnToggleTokenVis.addEventListener('click', () => {
+      const tokenInput = document.getElementById('payment-mp-access-token');
+      if (!tokenInput) return;
+      tokenInput.type = tokenInput.type === 'password' ? 'text' : 'password';
+    });
+  }
+
+  // Salvar Identidade dos Bots no Telegram
+  const btnSyncBotProfiles = document.getElementById('btn-sync-bot-profiles');
+  if (btnSyncBotProfiles) {
+    btnSyncBotProfiles.addEventListener('click', async () => {
+      try {
+        const bot_sales_name = document.getElementById('bot-sales-name')?.value.trim();
+        const bot_sales_bio = document.getElementById('bot-sales-bio')?.value.trim();
+        const bot_notify_name = document.getElementById('bot-notify-name')?.value.trim();
+        const bot_notify_bio = document.getElementById('bot-notify-bio')?.value.trim();
+
+        btnSyncBotProfiles.disabled = true;
+        btnSyncBotProfiles.innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> <span>Sincronizando...</span>`;
+
+        const res = await apiFetch('/api/admin/bot/profiles', {
+          method: 'POST',
+          body: JSON.stringify({
+            bot_sales_name,
+            bot_sales_bio,
+            bot_notify_name,
+            bot_notify_bio
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao sincronizar com Telegram.');
+
+        showToast('Nomes e Bios dos bots salvos e sincronizados com o Telegram!', 'success');
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        btnSyncBotProfiles.disabled = false;
+        btnSyncBotProfiles.innerHTML = `<i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> <span>Salvar Nomes e Bios no Telegram</span>`;
+        if (window.lucide) window.lucide.createIcons();
+      }
+    });
+  }
+
+  // Salvar Mensagem Inicial (/start)
+  const btnSaveStartMsg = document.getElementById('btn-save-start-message');
+  if (btnSaveStartMsg) {
+    btnSaveStartMsg.addEventListener('click', async () => {
+      try {
+        const start_message = document.getElementById('bot-start-message-text')?.value;
+        const res = await apiFetch('/api/admin/bot/start-message', {
+          method: 'POST',
+          body: JSON.stringify({ start_message })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao salvar mensagem inicial.');
+        showToast('Mensagem inicial (/start) do menu atualizada com sucesso!', 'success');
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+  }
+
+  // Adicionar Comando
+  const btnAddBotCmd = document.getElementById('btn-add-bot-command');
+  if (btnAddBotCmd) {
+    btnAddBotCmd.addEventListener('click', () => {
+      const nameInput = document.getElementById('new-cmd-name');
+      const descInput = document.getElementById('new-cmd-desc');
+      const cmdName = nameInput ? nameInput.value.replace(/^\//, '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '') : '';
+      const cmdDesc = descInput ? descInput.value.trim() : '';
+
+      if (!cmdName) {
+        showToast('Informe o nome do comando (sem a barra).', 'error');
+        return;
+      }
+
+      if (__botCommands.some(c => c.command === cmdName)) {
+        showToast(`O comando /${cmdName} já existe na lista.`, 'error');
+        return;
+      }
+
+      __botCommands.push({ command: cmdName, description: cmdDesc || 'Comando' });
+      renderBotCommandsTable();
+      if (nameInput) nameInput.value = '';
+      if (descInput) descInput.value = '';
+      showToast(`Comando /${cmdName} adicionado à lista. Clique em "Sincronizar Comandos no Telegram" para salvar.`, 'info');
+    });
+  }
+
+  // Salvar Comandos no Telegram
+  const btnSaveBotCmds = document.getElementById('btn-save-bot-commands');
+  if (btnSaveBotCmds) {
+    btnSaveBotCmds.addEventListener('click', async () => {
+      try {
+        btnSaveBotCmds.disabled = true;
+        btnSaveBotCmds.innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> <span>Sincronizando...</span>`;
+
+        const res = await apiFetch('/api/admin/bot/commands', {
+          method: 'POST',
+          body: JSON.stringify({ commands: __botCommands })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao salvar comandos.');
+
+        showToast(data.message || 'Comandos sincronizados com o Telegram com sucesso!', 'success');
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        btnSaveBotCmds.disabled = false;
+        btnSaveBotCmds.innerHTML = `<i data-lucide="upload-cloud" class="w-3.5 h-3.5"></i> <span>Sincronizar Comandos no Telegram</span>`;
+        if (window.lucide) window.lucide.createIcons();
+      }
+    });
+  }
+
+  // Salvar Configuração da API de Pagamento
+  const btnSavePaymentConfig = document.getElementById('btn-save-payment-config');
+  if (btnSavePaymentConfig) {
+    btnSavePaymentConfig.addEventListener('click', async () => {
+      try {
+        const active = document.getElementById('payment-gateway-active')?.checked !== false;
+        const gateway_type = document.getElementById('payment-gateway-type')?.value;
+        const mp_access_token = document.getElementById('payment-mp-access-token')?.value.trim();
+        const mp_public_key = document.getElementById('payment-mp-public-key')?.value.trim();
+
+        btnSavePaymentConfig.disabled = true;
+        btnSavePaymentConfig.innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> <span>Salvando...</span>`;
+
+        const res = await apiFetch('/api/admin/payment-config', {
+          method: 'POST',
+          body: JSON.stringify({
+            active,
+            gateway_type,
+            mp_access_token: mp_access_token || undefined,
+            mp_public_key: mp_public_key !== undefined ? mp_public_key : undefined
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao salvar configurações de pagamento.');
+
+        showToast('Configurações da API de pagamento atualizadas com sucesso!', 'success');
+        const inputToken = document.getElementById('payment-mp-access-token');
+        if (inputToken && mp_access_token) {
+          inputToken.value = '';
+          inputToken.placeholder = 'Token atualizado com sucesso';
+        }
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        btnSavePaymentConfig.disabled = false;
+        btnSavePaymentConfig.innerHTML = `<i data-lucide="save" class="w-3.5 h-3.5"></i> <span>Salvar Configuração de Pagamento</span>`;
+        if (window.lucide) window.lucide.createIcons();
+      }
+    });
   }
 
   const btnSaveBotStatus = document.getElementById('btn-save-bot-status');

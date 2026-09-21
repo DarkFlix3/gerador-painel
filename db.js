@@ -612,7 +612,13 @@ const EXTRA_COLUMNS = {
     // Vazio = usa o target_link global das Configurações.
     'target_url TEXT',
     // Estoque do produto. NULL = ilimitado, 0 = esgotado. Decrementado a cada venda.
-    'stock INTEGER'
+    'stock INTEGER',
+    "emoji TEXT DEFAULT '🎁'"
+  ],
+  mp_payments: [
+    'telegram_id TEXT',
+    'customer_name TEXT',
+    'customer_contact TEXT'
   ],
   customers: [
     // Saldo da conta do comprador final (usuário do bot): o produto só é
@@ -642,8 +648,22 @@ const defaultSettings = [
   { key: 'bot_status', value: 'active' }, // 'active', 'maintenance', 'offline'
   { key: 'maintenance_message', value: '⚠️ Estamos realizando uma manutenção preventiva no sistema. Em breve o bot estará de volta ao normal!' },
   { key: 'bot_announcement', value: '' },
-  { key: 'ggsoma_balance', value: '13.02' },
-  { key: 'ggsoma_status', value: 'connected' }
+  { key: 'bot_sales_name', value: 'DarkFlix' },
+  { key: 'bot_sales_bio', value: 'DarkFlix • A melhor plataforma de streaming e assinaturas digitais com entrega automática 24/7.' },
+  { key: 'bot_notify_name', value: 'Dark Vendas' },
+  { key: 'bot_notify_bio', value: 'Bot oficial de notificações de vendas DarkFlix.' },
+  { key: 'bot_commands', value: JSON.stringify([
+    { command: 'start', description: 'Menu Principal' },
+    { command: 'saldo', description: 'Consultar Saldo' },
+    { command: 'perfil', description: 'Meu ID de Perfil' },
+    { command: 'ajuda', description: 'Como Funciona' },
+    { command: 'recarga', description: 'Adicionar Saldo via PIX' }
+  ]) },
+  { key: 'bot_start_message', value: '👋 Olá! Bem-vindo ao <b>DarkFlix</b>!\n\nAqui você encontra os melhores planos, canais e assinaturas digitais com entrega automática e segura.\n\nEscolha uma opção no menu abaixo para continuar:' },
+  { key: 'payment_gateway_active', value: '1' },
+  { key: 'payment_gateway_type', value: 'mercadopago' },
+  { key: 'payment_mp_access_token', value: '' },
+  { key: 'payment_mp_public_key', value: '' }
 ];
 
 // ==========================================

@@ -501,6 +501,43 @@
               </table>
             </div>
           </div>
+
+          <!-- Sub-seção: Depósitos PIX (Recargas geradas pelo bot) -->
+          <div class="space-y-4 pt-6 border-t border-white/5">
+            <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div>
+                <h3 class="text-base font-black text-white flex items-center gap-2">
+                  <i data-lucide="qr-code" class="w-4 h-4 text-emerald-400"></i>
+                  <span>Depósitos PIX (Recargas do Bot)</span>
+                </h3>
+                <p class="text-xs text-slate-400">Recargas geradas pelo bot e seus respectivos status de compensação e crédito.</p>
+              </div>
+              <button id="btn-refresh-pix-deposits" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 rounded-xl border border-white/10 flex items-center gap-1.5 transition-all">
+                <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-emerald-400"></i>
+                <span>Atualizar Depósitos</span>
+              </button>
+            </div>
+
+            <div class="glass-panel overflow-hidden">
+              <div class="overflow-x-auto">
+                <table class="w-full text-left text-xs whitespace-nowrap">
+                  <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
+                    <tr>
+                      <th class="px-5 py-3">Data</th>
+                      <th class="px-5 py-3">Cliente</th>
+                      <th class="px-5 py-3">Valor</th>
+                      <th class="px-5 py-3">Status</th>
+                      <th class="px-5 py-3">Creditado</th>
+                      <th class="px-5 py-3 text-right">Ação</th>
+                    </tr>
+                  </thead>
+                  <tbody id="pix-deposits-table-body" class="divide-y divide-white/5">
+                    <!-- JS Data -->
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- ============================================== -->
@@ -615,6 +652,197 @@
               </button>
             </div>
           </div>
+
+          <!-- Card 4: Identidade dos Bots no Telegram (DarkFlix & Dark Vendas) -->
+          <div class="glass-panel p-6 space-y-5 border border-sky-500/30">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-white/5 gap-3">
+              <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-sky-500/20 text-sky-400 flex items-center justify-center shrink-0">
+                  <i data-lucide="badge-check" class="w-5 h-5"></i>
+                </div>
+                <div>
+                  <h3 class="text-sm font-bold text-white">Identidade dos Bots no Telegram</h3>
+                  <p class="text-xs text-slate-400">Altere o nome e a bio/descrição do Bot de Vendas e do Bot de Notificações com sincronização direta no Telegram.</p>
+                </div>
+              </div>
+              <button id="btn-sync-bot-profiles" class="px-4 py-2 bg-gradient-to-r from-sky-500 to-sky-600 hover:from-sky-400 hover:to-sky-500 text-slate-950 font-black text-xs rounded-xl shadow-lg shadow-sky-500/20 flex items-center gap-1.5 transition-all shrink-0">
+                <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+                <span>Salvar Nomes e Bios no Telegram</span>
+              </button>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <!-- Bot de Vendas (DarkFlix) -->
+              <div class="p-4 rounded-xl bg-slate-950/70 border border-cyan-500/20 space-y-3">
+                <div class="flex items-center gap-2 text-cyan-400 font-bold text-xs uppercase tracking-wider">
+                  <i data-lucide="shopping-cart" class="w-4 h-4"></i>
+                  <span>Bot de Produtos (DarkFlix)</span>
+                </div>
+                <div>
+                  <label class="block text-[11px] font-semibold text-slate-300 mb-1">Nome de Exibição no Telegram:</label>
+                  <input type="text" id="bot-sales-name" placeholder="Ex: DarkFlix" class="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500">
+                </div>
+                <div>
+                  <label class="block text-[11px] font-semibold text-slate-300 mb-1">Bio / Descrição (O que este bot faz?):</label>
+                  <textarea id="bot-sales-bio" rows="3" placeholder="Ex: DarkFlix • A melhor plataforma de streaming e assinaturas digitais com entrega automática 24/7." class="w-full bg-slate-900 border border-white/10 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-cyan-500"></textarea>
+                </div>
+              </div>
+
+              <!-- Bot de Notificações (Dark Vendas) -->
+              <div class="p-4 rounded-xl bg-slate-950/70 border border-emerald-500/20 space-y-3">
+                <div class="flex items-center gap-2 text-emerald-400 font-bold text-xs uppercase tracking-wider">
+                  <i data-lucide="bell-ring" class="w-4 h-4"></i>
+                  <span>Bot de Notificação (Dark Vendas)</span>
+                </div>
+                <div>
+                  <label class="block text-[11px] font-semibold text-slate-300 mb-1">Nome de Exibição no Telegram:</label>
+                  <input type="text" id="bot-notify-name" placeholder="Ex: Dark Vendas" class="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500">
+                </div>
+                <div>
+                  <label class="block text-[11px] font-semibold text-slate-300 mb-1">Bio / Descrição (O que este bot faz?):</label>
+                  <textarea id="bot-notify-bio" rows="3" placeholder="Ex: Bot oficial de notificações e relatórios de vendas DarkFlix." class="w-full bg-slate-900 border border-white/10 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-emerald-500"></textarea>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Card 5: Mensagem Inicial (/start) do Bot DarkFlix -->
+          <div class="glass-panel p-6 space-y-4 border border-indigo-500/30">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-white/5 gap-3">
+              <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center shrink-0">
+                  <i data-lucide="message-square" class="w-5 h-5"></i>
+                </div>
+                <div>
+                  <h3 class="text-sm font-bold text-white">Mensagem Inicial (/start) que Aparece no Menu</h3>
+                  <p class="text-xs text-slate-400">Texto principal de boas-vindas do bot. Você pode usar a tag <code>{nome}</code> para incluir o nome do cliente automaticamente.</p>
+                </div>
+              </div>
+              <button id="btn-save-start-message" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-indigo-600/20 flex items-center gap-1.5 transition-all shrink-0">
+                <i data-lucide="save" class="w-3.5 h-3.5"></i>
+                <span>Salvar Mensagem do Menu</span>
+              </button>
+            </div>
+            <div>
+              <textarea id="bot-start-message-text" rows="4" class="w-full bg-slate-950 border border-white/10 rounded-xl p-3.5 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 font-sans" placeholder="👋 Olá, {nome}! Seja muito bem-vindo ao DarkFlix..."></textarea>
+            </div>
+          </div>
+
+          <!-- Card 6: Gerenciador de Comandos do Bot DarkFlix -->
+          <div class="glass-panel p-6 space-y-5 border border-amber-500/30">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-white/5 gap-3">
+              <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                  <i data-lucide="terminal" class="w-5 h-5"></i>
+                </div>
+                <div>
+                  <h3 class="text-sm font-bold text-white">Comandos do Bot de Produtos (DarkFlix)</h3>
+                  <p class="text-xs text-slate-400">Adicione ou remova comandos oficiais visíveis no menu inferior do Telegram (/start, /saldo, /planos, etc.).</p>
+                </div>
+              </div>
+              <button id="btn-save-bot-commands" class="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-slate-950 font-black text-xs rounded-xl shadow-lg shadow-amber-600/20 flex items-center gap-1.5 transition-all shrink-0">
+                <i data-lucide="upload-cloud" class="w-3.5 h-3.5"></i>
+                <span>Sincronizar Comandos no Telegram</span>
+              </button>
+            </div>
+
+            <!-- Formulário para Adicionar Comando -->
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 bg-slate-950/60 rounded-xl border border-white/5 items-end">
+              <div>
+                <label class="block text-[11px] font-semibold text-slate-300 mb-1">Comando (sem a barra):</label>
+                <div class="relative">
+                  <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 font-bold text-xs">/</span>
+                  <input type="text" id="new-cmd-name" placeholder="ex: planos" class="w-full bg-slate-900 border border-white/10 rounded-xl pl-7 pr-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500">
+                </div>
+              </div>
+              <div>
+                <label class="block text-[11px] font-semibold text-slate-300 mb-1">Descrição do Comando:</label>
+                <input type="text" id="new-cmd-desc" placeholder="ex: Ver catálogo de planos" class="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500">
+              </div>
+              <div>
+                <button type="button" id="btn-add-bot-command" class="w-full py-2 bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold text-xs rounded-xl border border-amber-400/30 flex items-center justify-center gap-1.5 transition-all">
+                  <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                  <span>Adicionar Comando</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Tabela de Comandos Atuais -->
+            <div class="overflow-x-auto rounded-xl border border-white/5">
+              <table class="w-full text-left text-xs">
+                <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[10px] border-b border-white/5">
+                  <tr>
+                    <th class="px-4 py-2.5">Comando</th>
+                    <th class="px-4 py-2.5">Descrição</th>
+                    <th class="px-4 py-2.5 text-right">Ação</th>
+                  </tr>
+                </thead>
+                <tbody id="bot-commands-table-body" class="divide-y divide-white/5">
+                  <!-- JS Data -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Card 7: Configuração da API de Pagamento -->
+          <div class="glass-panel p-6 space-y-5 border border-emerald-500/30">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-white/5 gap-3">
+              <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
+                  <i data-lucide="credit-card" class="w-5 h-5"></i>
+                </div>
+                <div>
+                  <h3 class="text-sm font-bold text-white">API de Pagamento & Gateway do Bot</h3>
+                  <p class="text-xs text-slate-400">Ative ou desative pagamentos no bot, altere a API de pagamento ou configure os tokens de acesso.</p>
+                </div>
+              </div>
+              <button id="btn-save-payment-config" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-emerald-600/20 flex items-center gap-1.5 transition-all shrink-0">
+                <i data-lucide="save" class="w-3.5 h-3.5"></i>
+                <span>Salvar Configuração de Pagamento</span>
+              </button>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <!-- Ativação Geral -->
+              <div class="p-4 rounded-xl bg-slate-950/60 border border-white/5 flex items-center justify-between">
+                <div>
+                  <span class="text-xs font-bold text-white block">Status dos Pagamentos</span>
+                  <span class="text-[11px] text-slate-400" id="payment-gateway-status-desc">Pagamentos e geração de PIX estão ativos</span>
+                </div>
+                <label class="relative inline-flex items-center cursor-pointer">
+                  <input type="checkbox" id="payment-gateway-active" checked class="sr-only peer">
+                  <div class="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                </label>
+              </div>
+
+              <!-- Tipo de Gateway -->
+              <div class="p-4 rounded-xl bg-slate-950/60 border border-white/5 space-y-1.5">
+                <label class="block text-xs font-bold text-white">Gateway de Pagamento:</label>
+                <select id="payment-gateway-type" class="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500">
+                  <option value="mercadopago">Mercado Pago (PIX Automático & Imediato)</option>
+                  <option value="manual">PIX Manual (Chave direta)</option>
+                </select>
+              </div>
+
+              <!-- Access Token -->
+              <div class="sm:col-span-2 space-y-1.5">
+                <label class="block text-xs font-bold text-slate-200">Access Token do Mercado Pago:</label>
+                <div class="relative">
+                  <input type="password" id="payment-mp-access-token" placeholder="APP_USR-... ou TEST-..." class="w-full bg-slate-950 border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white font-mono focus:outline-none focus:border-emerald-500 pr-10">
+                  <button type="button" id="btn-toggle-token-visibility" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white">
+                    <i data-lucide="eye" class="w-4 h-4"></i>
+                  </button>
+                </div>
+                <p class="text-[11px] text-slate-500">Deixe em branco para manter o token configurado atualmente.</p>
+              </div>
+
+              <!-- Public Key -->
+              <div class="sm:col-span-2 space-y-1.5">
+                <label class="block text-xs font-bold text-slate-200">Public Key do Mercado Pago (opcional):</label>
+                <input type="text" id="payment-mp-public-key" placeholder="APP_USR-... ou TEST-..." class="w-full bg-slate-950 border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white font-mono focus:outline-none focus:border-emerald-500">
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- ============================================== -->
@@ -636,6 +864,27 @@
             <h3 class="text-sm font-black text-amber-300 uppercase tracking-wider" id="product-form-title">Novo Produto</h3>
             <input type="hidden" id="product-id">
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div class="sm:col-span-2 flex flex-col sm:flex-row gap-3 items-start p-3 bg-slate-950/60 rounded-xl border border-white/5">
+                <div class="w-full sm:w-28">
+                  <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Emoji do Produto</label>
+                  <input type="text" id="product-emoji" value="🎁" maxlength="4" class="w-full text-center text-xl py-2 bg-slate-900 border border-white/10 rounded-xl text-white focus:outline-none focus:border-amber-500">
+                </div>
+                <div class="flex-1">
+                  <label class="block text-xs font-semibold text-slate-400 mb-1">Seletor Rápido de Emoji:</label>
+                  <div class="flex flex-wrap gap-1.5 pt-0.5">
+                    <button type="button" onclick="document.getElementById('product-emoji').value='🎁'" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm border border-white/5">🎁</button>
+                    <button type="button" onclick="document.getElementById('product-emoji').value='🎧'" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm border border-white/5">🎧</button>
+                    <button type="button" onclick="document.getElementById('product-emoji').value='🎬'" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm border border-white/5">🎬</button>
+                    <button type="button" onclick="document.getElementById('product-emoji').value='🍿'" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm border border-white/5">🍿</button>
+                    <button type="button" onclick="document.getElementById('product-emoji').value='🎵'" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm border border-white/5">🎵</button>
+                    <button type="button" onclick="document.getElementById('product-emoji').value='📺'" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm border border-white/5">📺</button>
+                    <button type="button" onclick="document.getElementById('product-emoji').value='⚡'" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm border border-white/5">⚡</button>
+                    <button type="button" onclick="document.getElementById('product-emoji').value='💎'" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm border border-white/5">💎</button>
+                    <button type="button" onclick="document.getElementById('product-emoji').value='🔑'" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm border border-white/5">🔑</button>
+                    <button type="button" onclick="document.getElementById('product-emoji').value='🔥'" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm border border-white/5">🔥</button>
+                  </div>
+                </div>
+              </div>
               <div>
                 <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Nome *</label>
                 <input type="text" id="product-name" required placeholder="Ex: Spotify Premium" class="w-full px-4 py-2.5 bg-slate-900 border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500">
@@ -1225,6 +1474,45 @@
       </div>
 
       <p class="text-center text-[10px] text-slate-600" id="receipt-generated-at">—</p>
+    </div>
+  </div>
+
+  <!-- Modal: Banir Cliente -->
+  <div id="customer-ban-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+    <div class="glass-panel w-full max-w-md p-6 space-y-5 border border-rose-500/30">
+      <div class="flex items-center justify-between pb-3 border-b border-white/10">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-rose-500/20 text-rose-400 flex items-center justify-center">
+            <i data-lucide="ban" class="w-5 h-5"></i>
+          </div>
+          <div>
+            <h3 class="text-base font-black text-white">Banir Cliente do Bot</h3>
+            <p id="customer-ban-client-name" class="text-xs text-slate-400 font-mono">Cliente</p>
+          </div>
+        </div>
+        <button id="customer-ban-close" class="p-2 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 transition-colors">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <input type="hidden" id="customer-ban-id">
+
+      <p class="text-xs text-slate-300">
+        O cliente perderá totalmente o acesso ao bot e não conseguirá executar comandos ou realizar compras até ser desbanido.
+      </p>
+
+      <div>
+        <label class="block text-xs font-semibold text-slate-300 mb-1.5">Motivo do Banimento (opcional):</label>
+        <textarea id="customer-ban-reason" rows="3" class="w-full bg-slate-950 border border-white/10 rounded-xl p-3 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-rose-500" placeholder="Ex: Violação das regras / comprovante inválido..."></textarea>
+      </div>
+
+      <div class="flex gap-3 pt-2">
+        <button type="button" id="btn-cancel-ban" class="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold border border-white/10 transition-colors">Cancelar</button>
+        <button type="button" id="btn-confirm-ban" class="flex-1 py-2.5 bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white rounded-xl text-xs font-black shadow-lg shadow-rose-600/30 transition-all flex items-center justify-center gap-1.5">
+          <i data-lucide="ban" class="w-4 h-4"></i>
+          <span>Confirmar Banimento</span>
+        </button>
+      </div>
     </div>
   </div>
 
