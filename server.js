@@ -2286,6 +2286,13 @@ app.post('/api/admin/integrations', adminAuth, async (req, res) => {
     const cleanUrl = String(api_url).trim().replace(/\/+$/, '');
     const cleanKey = String(api_key).trim();
 
+    if (cleanUrl.includes('t.me') || cleanUrl.includes('telegram.me')) {
+      return res.status(400).json({
+        success: false,
+        error: `"${cleanUrl}" é o link para abrir o bot no aplicativo do Telegram (t.me). Para a integração funcionar via API, você precisa colocar a URL da API web fornecida pelo bot (ex: https://api-fornecedor.com), e não o link do chat do Telegram.`
+      });
+    }
+
     // Testa a conexão antes de salvar
     let testSuccess = false;
     let fetchedProducts = [];
@@ -2295,12 +2302,18 @@ app.post('/api/admin/integrations', adminAuth, async (req, res) => {
         headers: { 'X-API-Key': cleanKey },
         signal: AbortSignal.timeout(10000)
       });
-      const testData = await testRes.json();
-      if (testRes.ok && testData.success && Array.isArray(testData.data)) {
+      const textRaw = await testRes.text();
+      let testData;
+      try {
+        testData = JSON.parse(textRaw);
+      } catch (pe) {
+        testErrorMessage = `O servidor respondeu com uma página HTML em vez de JSON da API (status ${testRes.status}).`;
+      }
+      if (testData && testRes.ok && testData.success && Array.isArray(testData.data)) {
         testSuccess = true;
         fetchedProducts = testData.data;
-      } else {
-        testErrorMessage = (testData && testData.error) || `Status HTTP ${testRes.status}`;
+      } else if (testData) {
+        testErrorMessage = testData.error || `Status HTTP ${testRes.status}`;
       }
     } catch (testErr) {
       testErrorMessage = testErr.message;
@@ -2404,11 +2417,28 @@ app.post('/api/admin/integrations/:id/sync', adminAuth, async (req, res) => {
       });
     }
 
+    if (cleanUrl.includes('t.me') || cleanUrl.includes('telegram.me')) {
+      return res.status(400).json({
+        success: false,
+        error: `"${cleanUrl}" é o link para abrir o chat do bot no Telegram (t.me). Para a sincronização funcionar, você precisa clicar no lápis (Editar) e informar a URL da API web fornecida pelo bot (ex: https://api-fornecedor.com).`
+      });
+    }
+
     const resExt = await fetch(`${cleanUrl}/api/v1/products`, {
       headers: { 'X-API-Key': provider.api_key },
       signal: AbortSignal.timeout(10000)
     });
-    const dataExt = await resExt.json();
+    const textRaw = await resExt.text();
+    let dataExt;
+    try {
+      dataExt = JSON.parse(textRaw);
+    } catch (parseErr) {
+      return res.status(502).json({
+        success: false,
+        error: `O servidor em ${cleanUrl} respondeu com uma página HTML em vez de JSON (status HTTP ${resExt.status}). Verifique se a URL informada é a rota correta da API do bot.`
+      });
+    }
+
     if (!resExt.ok || !dataExt.success || !Array.isArray(dataExt.data)) {
       return res.status(502).json({
         success: false,

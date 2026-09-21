@@ -2447,9 +2447,10 @@ document.addEventListener('DOMContentLoaded', () => {
                   <div class="w-8 h-8 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 shrink-0">
                     <i data-lucide="server" class="w-4 h-4"></i>
                   </div>
-                  <div>
+                  <div class="space-y-0.5">
                     <h4 class="text-sm font-bold text-white leading-tight">${escapeHtml(p.name)}</h4>
-                    <span class="text-[10px] text-slate-400 font-mono truncate block max-w-[200px]" title="${escapeHtml(p.api_url || '')}">${escapeHtml(p.api_url || 'Sem URL')}</span>
+                    <span class="text-[10px] text-slate-400 font-mono truncate block max-w-[200px]" title="${escapeHtml(p.api_url || '')}">🌐 ${escapeHtml(p.api_url || 'Sem URL')}</span>
+                    <span class="text-[10px] text-emerald-400 font-mono truncate block max-w-[200px]" title="${escapeHtml(p.api_key || '')}">🔑 API: ${escapeHtml(p.api_key ? (p.api_key.substring(0, 10) + '••••••••') : 'Não configurada')}</span>
                   </div>
                 </div>
                 <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${Number(p.active) ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-500/30' : 'bg-slate-800 text-slate-400 border border-white/10'}">
@@ -2758,8 +2759,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (nameInput) nameInput.value = provider.name || '';
     if (urlInput) urlInput.value = provider.api_url || '';
     if (keyInput) {
-      keyInput.value = '';
-      keyInput.placeholder = 'Deixe em branco para manter a API atual';
+      keyInput.value = provider.api_key || '';
+      keyInput.placeholder = 'rk_live_... ou sk_live_...';
     }
 
     if (formCard) {
