@@ -831,7 +831,8 @@ async function showCatalog(chatId, messageId) {
         let suffix = '';
         if (isSoldOut(p)) suffix = ' — ❌ ESGOTADO';
         else if (p.stock !== null && p.stock !== undefined) suffix = ` (${Number(p.stock)})`;
-        return [{ text: `${productIcon(p.name)} ${p.name} — ${brl(p.sale_price)}${suffix}`, callback_data: `prod_${p.id}` }];
+        const icon = (p && p.emoji && String(p.emoji).trim()) ? String(p.emoji).trim() : productIcon(p);
+        return [{ text: `${icon} ${p.name} — ${brl(p.sale_price)}${suffix}`, callback_data: `prod_${p.id}` }];
       });
       rows.push([{ text: '🏠 Menu Principal', callback_data: 'back_to_menu' }]);
       keyboard = { reply_markup: { inline_keyboard: rows } };
@@ -855,8 +856,9 @@ async function showProductDetail(chatId, messageId, pid) {
     if (!p) throw new Error('Produto não encontrado ou inativo.');
     const desc = p.description && String(p.description).trim() ? `\n${escapeHtml(p.description)}` : '';
     const stockLine = (p.stock === null || p.stock === undefined) ? '' : `📦 <b>Estoque:</b> ${isSoldOut(p) ? 'Esgotado ❌' : Number(p.stock) + ' restante(s)'}\n`;
+    const icon = (p && p.emoji && String(p.emoji).trim()) ? String(p.emoji).trim() : productIcon(p);
     const text =
-      `🛒 <b>${escapeHtml(p.name)}</b>${desc}\n\n` +
+      `${icon} <b>${escapeHtml(p.name)}</b>${desc}\n\n` +
       `${stockLine}` +
       `💵 <b>Preço:</b> ${brl(p.sale_price)}\n` +
       `⚡ Entrega automática e imediata após a confirmação.`;
@@ -880,13 +882,16 @@ async function showProductDetail(chatId, messageId, pid) {
 
 // Compra direta de um produto do catálogo (sem cupom)
 async function buyProduct(chatId, user, messageId, pid) {
-  let productName;
+  let productName, productEmoji;
   try {
     const products = await fetchProducts();
     const p = products.find((x) => x.id === pid);
-    if (p) productName = p.name;
+    if (p) {
+      productName = p.name;
+      productEmoji = (p.emoji && String(p.emoji).trim()) ? String(p.emoji).trim() : productIcon(p);
+    }
   } catch (e) { /* segue com nome genérico */ }
-  await handlePurchase(chatId, user, messageId, { productId: pid, productName });
+  await handlePurchase(chatId, user, messageId, { productId: pid, productName, productEmoji });
 }
 
 // ==========================================
@@ -900,10 +905,11 @@ async function askCouponCode(chatId, menuMessageId, pid) {
     const products = await fetchProducts();
     const p = products.find((x) => x.id === pid);
     if (!p) throw new Error('Produto não encontrado ou inativo.');
-    couponPending.set(String(chatId), { productId: pid, productName: p.name, couponCode: null, menuMessageId });
+    const icon = (p && p.emoji && String(p.emoji).trim()) ? String(p.emoji).trim() : productIcon(p);
+    couponPending.set(String(chatId), { productId: pid, productName: p.name, productEmoji: icon, couponCode: null, menuMessageId });
     const text =
       `🎟 <b>CUPOM DE DESCONTO</b>\n\n` +
-      `Produto: <b>${escapeHtml(p.name)}</b> — ${brl(p.sale_price)}\n\n` +
+      `Produto: ${icon} <b>${escapeHtml(p.name)}</b> — ${brl(p.sale_price)}\n\n` +
       `Envie o <b>código do cupom</b> como mensagem neste chat:\n\n` +
       `<i>Ex.:</i> <code>BEMVINDO10</code>`;
     const keyboard = { reply_markup: { inline_keyboard: [[{ text: '❌ Cancelar', callback_data: 'cancel_coupon' }]] } };
@@ -931,9 +937,11 @@ bot.on('message', async (msg) => {
     if (res.status === 200 && data.success && data.data) {
       const d = data.data;
       couponPending.set(key, { ...pending, couponCode: code });
+      const prodName = d.product || pending.productName;
+      const icon = pending.productEmoji || productIcon(prodName);
       const text =
         `🎟 <b>CUPOM VÁLIDO!</b>\n\n` +
-        `Produto: <b>${escapeHtml(d.product || pending.productName)}</b>\n` +
+        `Produto: ${icon} <b>${escapeHtml(prodName)}</b>\n` +
         `Preço normal: ${brl(d.base_price != null ? d.base_price : 0)}\n` +
         `Desconto: −${brl(d.discount != null ? d.discount : 0)} (<code>${escapeHtml(code)}</code>)\n` +
         `━━━━━━━━━━━━━━━\n` +
@@ -975,6 +983,7 @@ async function confirmCouponBuy(chatId, user, messageId) {
   await handlePurchase(chatId, user, messageId, {
     productId: pending.productId,
     productName: pending.productName,
+    productEmoji: pending.productEmoji,
     couponCode: pending.couponCode
   });
 }
@@ -1037,6 +1046,7 @@ async function handlePurchase(chatId, user, messageId, opts) {
       invalidateProductsCache();
       console.log('[venda] link gerado:', data.token, 'saldo restante:', data.balance_remaining);
       const productLabel = data.product || opts.productName || 'Spotify Premium';
+      const prodIcon = (data && data.emoji && String(data.emoji).trim()) || opts.productEmoji || productIcon(productLabel);
       const discountInfo = (data.discount && data.discount > 0)
         ? `🎟 <b>Cupom aplicado:</b> <code>${escapeHtml(data.coupon_code || '')}</code> (− ${brl(data.discount)})\n`
         : '';
@@ -1050,7 +1060,7 @@ async function handlePurchase(chatId, user, messageId, opts) {
             `🔒 <b>Senha:</b> <code>${escapeHtml(item.password || '')}</code>\n\n`;
         deliveryText = 
           `🎉 <b>PAGAMENTO CONFIRMADO & ACESSO LIBERADO!</b>\n\n` +
-          `🎧 <b>Produto:</b> ${escapeHtml(productLabel)}\n` +
+          `${prodIcon} <b>Produto:</b> ${escapeHtml(productLabel)}\n` +
           `👤 <b>Cliente:</b> ${customerName}\n` +
           `${discountInfo}` +
           `📦 <b>Sua entrega:</b>\n` +
@@ -1074,7 +1084,7 @@ async function handlePurchase(chatId, user, messageId, opts) {
       } else {
         deliveryText = 
           `🎉 <b>PAGAMENTO CONFIRMADO & ACESSO LIBERADO!</b>\n\n` +
-          `🎧 <b>Produto:</b> ${escapeHtml(productLabel)}\n` +
+          `${prodIcon} <b>Produto:</b> ${escapeHtml(productLabel)}\n` +
           `👤 <b>Cliente:</b> ${customerName}\n` +
           `${discountInfo}` +
           `🔑 <b>Sua Chave Única:</b> <code>${data.token}</code>\n` +
@@ -1339,14 +1349,26 @@ function isSoldOut(p) {
 }
 
 function productIcon(product) {
-  const p = String(product || '').toLowerCase();
+  if (product && typeof product === 'object') {
+    if (product.emoji && String(product.emoji).trim()) return String(product.emoji).trim();
+    product = product.name || product.product || '';
+  }
+  const str = String(product || '').trim();
+  if (productsCache && Array.isArray(productsCache.items)) {
+    const found = productsCache.items.find(x => x.name && x.name.toLowerCase() === str.toLowerCase());
+    if (found && found.emoji && String(found.emoji).trim()) {
+      return String(found.emoji).trim();
+    }
+  }
+  const p = str.toLowerCase();
+  if (p.includes('canva')) return '🎨';
   if (p.includes('spotify')) return '🎧';
   if (p.includes('netflix')) return '🎬';
   if (p.includes('gemin')) return '🤖';
   if (p.includes('disney')) return '🏰';
   if (p.includes('prime')) return '📺';
   if (p.includes('apple')) return '🍎';
-  return '📦';
+  return '🎁';
 }
 
 // Formata a data ISO (UTC) para pt-BR no fuso de Brasília

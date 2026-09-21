@@ -617,10 +617,7 @@ async function notifyNewSale(opts = {}) {
     return;
   }
 
-  // Custo exibido: SEMPRE o valor do produto definido pelo admin (nunca o do revendedor)
-  const adminCost = await getAdminCost();
-
-  // Mensagem pública: sem revendedor, sem lucro — o usuário que comprou é marcado pelo nome
+  // Mensagem pública: sem revendedor, sem custo, sem lucro — o usuário que comprou é marcado pelo nome
   const base = [
     '🎉 Nova Compra!',
     '',
@@ -629,8 +626,7 @@ async function notifyNewSale(opts = {}) {
     `🛍️ Plano: ${escHtml(plan)}`,
     `🔖 Nº do Pedido: ${escHtml(orderNumber)}`,
     `   Qtd.: ${qty}`,
-    `📈 Total da Compra: ${salePrice != null && salePrice > 0 ? formatMoneyBr(salePrice) : 'Grátis'}`,
-    `💸 Custo: ${formatMoneyBr(adminCost)}`
+    `📈 Total da Compra: ${salePrice != null && salePrice > 0 ? formatMoneyBr(salePrice) : 'Grátis'}`
   ];
   const stamp = `🕒 ${new Date().toLocaleString('pt-BR')}`;
   const publicLines = [...base, stamp];
@@ -2162,6 +2158,7 @@ app.get('/api/v1/products', resellerBotAuth, async (req, res) => {
         id: Number(p.id),
         name: p.name,
         description: p.description,
+        emoji: (p.emoji && String(p.emoji).trim()) ? String(p.emoji).trim() : '🎁',
         price_type: priceType,
         sale_price: salePrice,
         stock: (p.stock === null || p.stock === undefined) ? null : Number(p.stock)
@@ -2598,11 +2595,11 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
 
     // Alerta de venda via bot (principal fonte de compras)
     notifyNewSale({
-      service: 'Spotify Premium',
+      service: finalProduct,
       customerName: finalCustomerName,
       customerId: finalCustomerId,
       customerContact: finalContact,
-      plan: String((req.body && (req.body.plan || req.body.product)) || '3 Meses (Acesso Individual)').trim(),
+      plan: String((req.body && (req.body.plan || req.body.product)) || finalProduct).trim(),
       orderNumber: generation.token,
       qty: 1,
       salePrice: finalSalePrice,
@@ -2628,6 +2625,7 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
       profit_generated: profit,
       cost_deducted: costPrice,
       product: finalProduct,
+      emoji: (pricing.product && pricing.product.emoji) || '🎁',
       base_price: pricing.baseSalePrice,
       discount: pricing.discount,
       coupon_code: pricing.couponCode,
