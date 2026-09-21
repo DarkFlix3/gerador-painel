@@ -334,6 +334,7 @@ const SQLITE_DDL = `
     last_seen TEXT,
     orders_count INTEGER DEFAULT 0,
     total_spent REAL DEFAULT 0,
+    balance REAL DEFAULT 0,
     blocked INTEGER DEFAULT 0,
     blocked_reason TEXT,
     blocked_at TEXT,
@@ -544,6 +545,7 @@ const POSTGRES_DDL = `
     last_seen TEXT,
     orders_count INTEGER DEFAULT 0,
     total_spent DOUBLE PRECISION DEFAULT 0,
+    balance DOUBLE PRECISION DEFAULT 0,
     blocked INTEGER DEFAULT 0,
     blocked_reason TEXT,
     blocked_at TEXT,
@@ -577,6 +579,11 @@ const EXTRA_COLUMNS = {
     'target_url TEXT',
     // Estoque do produto. NULL = ilimitado, 0 = esgotado. Decrementado a cada venda.
     'stock INTEGER'
+  ],
+  customers: [
+    // Saldo da conta do comprador final (usuário do bot): o produto só é
+    // liberado se houver saldo suficiente. Administrador adiciona via painel.
+    'balance DOUBLE PRECISION DEFAULT 0'
   ]
 };
 

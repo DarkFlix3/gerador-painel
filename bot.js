@@ -112,6 +112,25 @@ async function fetchBalance(user) {
   }
 }
 
+// Consulta o saldo da CONTA DO CLIENTE (comprador final): saldo adicionado
+// pelo administrador. É ele que libera a compra (saldo >= preço do produto).
+async function fetchCustomerBalance(user) {
+  if (!RESELLER_API_KEY) {
+    return { status: 0, data: { success: false, error: 'Chave de revendedor não configurada.' } };
+  }
+  const headers = { 'X-API-Key': RESELLER_API_KEY };
+  if (user && user.id) headers['X-Telegram-Id'] = String(user.id);
+  if (user && user.username) headers['X-Telegram-Username'] = String(user.username);
+  if (user && user.first_name) headers['X-Telegram-Name'] = String(user.first_name);
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/customer/balance`, { headers, signal: AbortSignal.timeout(8000) });
+    const data = await res.json();
+    return { status: res.status, data };
+  } catch (e) {
+    return { status: 0, data: { success: false, error: e && e.message ? e.message : 'Erro de conexão' } };
+  }
+}
+
 // Ping silencioso do usuário final no servidor: registra/atualiza a ficha
 // do cliente (cadastro + last_seen) e detecta bloqueio. Fire-and-forget:
 // qualquer falha de rede é ignorada — nunca atrapalha o /start.
@@ -160,12 +179,22 @@ async function sendMainMenu(chatId, messageId, user) {
   (async () => {
     let balanceLine = '💰 <b>Saldo:</b> indisponível no momento';
     try {
-      const { data } = await fetchBalance(user);
-      if (data) {
-        if (data.needs_link) {
-          balanceLine = '🔗 <b>Perfil não vinculado</b> — use <code>/saldo</code> para vincular seu ID de perfil';
-        } else if (data.success) {
-          const balance = parseFloat(data.credits != null ? data.credits : (data.balance || 0));
+      const { data } = await fetchCustomerBalance(user);
+      if (data && data.success) {
+        const cBalance = parseFloat(data.balance || 0);
+        balanceLine = `💰 <b>Seu Saldo:</b> R$ ${cBalance.toFixed(2).replace('.', ',')}`;
+        const resellerRes = await fetchBalance(user);
+        if (resellerRes.data && resellerRes.data.success) {
+          const rBalance = parseFloat(resellerRes.data.credits != null ? resellerRes.data.credits : (resellerRes.data.balance || 0));
+          balanceLine += `\n💼 <b>Saldo Revendedor:</b> R$ ${rBalance.toFixed(2).replace('.', ',')}`;
+        }
+      } else if (data && data.needs_link) {
+        balanceLine = '🔗 <b>Perfil não vinculado</b> — use <code>/saldo</code> para vincular seu ID de perfil';
+      } else {
+        // Fallback: revendedor vinculado sem ficha de cliente (fluxo antigo)
+        const { data: resellerData } = await fetchBalance(user);
+        if (resellerData && resellerData.success) {
+          const balance = parseFloat(resellerData.credits != null ? resellerData.credits : (resellerData.balance || 0));
           balanceLine = `💰 <b>Seu Saldo:</b> R$ ${balance.toFixed(2).replace('.', ',')}`;
         }
       }
@@ -177,8 +206,10 @@ async function sendMainMenu(chatId, messageId, user) {
     try {
       await bot.editMessageText(buildMainText(balanceLine), payload);
     } catch (e) {
-      // painel virou mídia (ex.: foto do PIX): edita a legenda; senao ignora
-      await bot.editMessageCaption(buildMainText(balanceLine), payload).catch(() => {});
+      if (e && e.message && String(e.message).includes('message is not modified')) return;
+      try {
+        await bot.editMessageCaption(buildMainText(balanceLine), payload);
+      } catch (e2) { /* falha silenciosa: mantém a tela já exibida */ }
     }
   })();
 
@@ -979,14 +1010,27 @@ async function handlePurchase(chatId, user, messageId, opts) {
       sendOrEdit(chatId, messageId, deliveryText, { parse_mode: 'HTML', ...linkKeyboard });
 
     } else if (response.status === 402) {
-      // Saldo Insuficiente (custo do produto)
-      const outOfBalanceMsg = (data && data.error) || 'O saldo do revendedor na central está abaixo do custo do produto.';
-      sendOrEdit(chatId, messageId, 
-        `⚠️ <b>Saldo Insuficiente!</b>\n\n` +
-        `${escapeHtml(outOfBalanceMsg)}\n\n` +
-        `💼 <b>Para recarregar, use o comando /recarga <valor> (mínimo R$ 15,00).</b>`,
-        { parse_mode: 'HTML', ...backToMenuKeyboard() }
-      );
+      if (data && data.error_code === 'CUSTOMER_BALANCE_INSUFFICIENT') {
+        // Saldo insuficiente da CONTA DO CLIENTE (comprador final)
+        const custBalanceMsg = (data && data.error) || 'Seu saldo é insuficiente para comprar este produto.';
+        const required = data.required ? ` (necessário: R$ ${String(data.required).replace('.', ',')})` : '';
+        sendOrEdit(chatId, messageId, 
+          `⚠️ <b>Saldo Insuficiente na sua conta!</b>\n\n` +
+          `${escapeHtml(custBalanceMsg)}\n\n` +
+          `📌 Seu saldo atual: <b>${data.balance ? 'R$ ' + String(data.balance).replace('.', ',') : 'R$ 0,00'}</b>${required}\n\n` +
+          `💰 <b>Como adicionar saldo?</b> Fale com nosso atendimento: ${SUPPORT_USER} — o saldo é liberado na sua conta e você já pode comprar.`,
+          { parse_mode: 'HTML', ...backToMenuKeyboard() }
+        );
+      } else {
+        // Saldo Insuficiente (custo do produto) — conta do revendedor
+        const outOfBalanceMsg = (data && data.error) || 'O saldo do revendedor na central está abaixo do custo do produto.';
+        sendOrEdit(chatId, messageId, 
+          `⚠️ <b>Saldo Insuficiente!</b>\n\n` +
+          `${escapeHtml(outOfBalanceMsg)}\n\n` +
+          `💼 <b>Para recarregar, use o comando /recarga <valor> (mínimo R$ 15,00).</b>`,
+          { parse_mode: 'HTML', ...backToMenuKeyboard() }
+        );
+      }
     } else if (response.status === 409) {
       // Produto esgotado ou conflito de estoque (venda simultanea)
       const outOfStockMsg = (data && data.error) || 'Produto esgotado no momento. Tente novamente mais tarde.';
@@ -1313,13 +1357,19 @@ function sendOrEdit(chatId, messageId, text, options) {
     return bot.editMessageText(text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML', ...opts })
       .catch((e) => {
         if (isNotModified(e)) return null; // ja esta com esse conteudo: sucesso
-        // Mensagem com midia (foto do QR PIX / arquivo .txt): edita a LEGENDA mantendo a midia
-        return Promise.resolve().then(() => bot.editMessageCaption(text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML', ...opts }))
-          .catch((e2) => {
-            if (isNotModified(e2)) return null;
-            // Ultimo recurso: apaga a mensagem antiga (nao deixa menu pra tras) e envia a nova
-            return deletePanel(chatId).then(sendFresh);
-          });
+        // Se for especificamente a foto do PIX (QR Code), edita a legenda mantendo a foto
+        const isPixPhoto = lastPixMsg.get(chatId) === messageId;
+        if (isPixPhoto) {
+          return Promise.resolve().then(() => bot.editMessageCaption(text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML', ...opts }))
+            .catch((e2) => {
+              if (isNotModified(e2)) return null;
+              return deletePanel(chatId).then(sendFresh);
+            });
+        }
+        // Se for um arquivo/documento (.txt) ou outro tipo de mídia: NUNCA edita a legenda
+        // para não grudar o menu no arquivo. Remove os botões do arquivo e envia o menu limpo!
+        bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId }).catch(() => {});
+        return deletePanel(chatId).then(sendFresh);
       });
   }
   // Sem mensagem de referencia (ex.: comando): limpa o painel anterior e envia a tela nova
@@ -1417,15 +1467,12 @@ async function handleMyPurchasesProductTxt(chatId, user, index, messageId) {
     // para o chat nao ficar com um menu orfao atras do arquivo.
     await deletePanel(chatId);
     if (messageId) await bot.deleteMessage(chatId, messageId).catch(() => {});
-    const sentDoc = await bot.sendDocument(chatId, Buffer.from(content, 'utf-8'), {
-      caption,
-      parse_mode: 'HTML',
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '📦 Voltar às Minhas Compras', callback_data: 'my_purchases' }],
-          [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
-        ]
-      }
+
+    // Envia o arquivo .txt como documento limpo (SEM teclado inline nele,
+    // para que o documento nunca seja confundido com um menu nem fique grudado nele)
+    await bot.sendDocument(chatId, Buffer.from(content, 'utf-8'), {
+      caption: `📄 <b>${escapeHtml(product.product)}</b> — ${product.total} acesso(s) entregue(s).`,
+      parse_mode: 'HTML'
     }, {
       filename: fileName,
       contentType: 'text/plain'
@@ -1434,7 +1481,21 @@ async function handleMyPurchasesProductTxt(chatId, user, index, messageId) {
       // Fallback: entrega o conteúdo como mensagem de texto comum
       await bot.sendMessage(chatId, '❌ Envio de arquivo falhou — seguem os acessos em texto:\n\n' + content.slice(0, 3800), { ...backToMenuKeyboard() }).catch(() => {});
     });
-    if (sentDoc && sentDoc.message_id) trackPanel(chatId, sentDoc.message_id);
+
+    // Envia o painel de navegação logo abaixo do arquivo como mensagem oficial de menu
+    const doneText =
+      `📦 <b>MINHAS COMPRAS — ${escapeHtml(product.product)}</b>\n\n` +
+      `✅ <i>Arquivo <code>${escapeHtml(fileName)}</code> entregue acima com sucesso!</i>\n\n` +
+      `Escolha o que deseja fazer a seguir:`;
+    const doneKeyboard = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '📦 Baixar Outro Produto', callback_data: 'my_purchases' }],
+          [{ text: '🏠 Menu Principal', callback_data: 'back_to_menu' }]
+        ]
+      }
+    };
+    await sendTracked(chatId, doneText, { parse_mode: 'HTML', ...doneKeyboard });
   } catch (e) {
     console.error('[minhas compras txt] falha:', e && e.message ? e.message : e);
     sendOrEdit(chatId, messageId, `❌ <b>Erro de Conexão:</b> não foi possível gerar o arquivo (${API_BASE_URL}).`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
