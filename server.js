@@ -534,10 +534,9 @@ async function notifyNewSale(opts = {}) {
   const stamp = `🕒 ${new Date().toLocaleString('pt-BR')}`;
   const publicLines = [...base, stamp];
 
-  // Versão do admin: inclui o revendedor (lucro NUNCA aparece)
+  // Versão do admin: sem revendedor (lucro NUNCA aparece)
   const adminLines = [
     ...base,
-    `🧑‍💼 Revendedor: ${escHtml(resellerName || '—')}`,
     balanceRemaining != null ? `💰 Saldo Restante: ${formatMoneyBr(balanceRemaining)}` : null,
     stamp
   ].filter(Boolean);
