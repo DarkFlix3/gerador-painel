@@ -6,16 +6,56 @@ const TelegramBot = require('node-telegram-bot-api');
 
 // Configurações do Bot
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-// No Render, se API_BASE_URL não for definida, usa a URL pública automática do serviço
-const API_BASE_URL = process.env.API_BASE_URL || process.env.RENDER_EXTERNAL_URL || 'http://localhost:3000';
+const LOCAL_PORT = process.env.PORT || 3000;
+// No Render ou local, o server.js roda no mesmo host/container. Loopback direto garante 100% de estabilidade.
+let API_BASE_URL = process.env.API_BASE_URL || process.env.RENDER_EXTERNAL_URL || `http://127.0.0.1:${LOCAL_PORT}`;
 // URL pública exibida ao cliente nos botões inline (Telegram exige HTTPS)
-const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || API_BASE_URL).replace(/\/+$/, '');
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || API_BASE_URL).replace(/\/+$/, '');
 const RESELLER_API_KEY = process.env.RESELLER_API_KEY;
 const DEFAULT_SALE_PRICE = parseFloat(process.env.DEFAULT_SALE_PRICE || '15.00');
 const SUPPORT_USER = process.env.SUPPORT_USER || '@seu_suporte';
 // Intervalo (em minutos) do keep-alive que pinga a própria API para evitar que
 // o serviço gratuito do Render "durma" por inatividade. 0 desliga o ping.
 const KEEP_ALIVE_MINUTES = parseInt(process.env.KEEP_ALIVE_INTERVAL_MINUTES || '5', 10);
+
+// Comunicação robusta com a API local / remota
+// Tenta candidatos com failover automático: loopback local direto (127.0.0.1:PORT) -> RENDER_EXTERNAL_URL -> API_BASE_URL
+async function botApiFetch(path, options = {}) {
+  const candidates = [];
+  // 1. Conexão interna direta no mesmo container/máquina (zero lag, sem depender de túneis ou DNS)
+  candidates.push(`http://127.0.0.1:${LOCAL_PORT}`);
+  candidates.push(`http://localhost:${LOCAL_PORT}`);
+  if (LOCAL_PORT !== 3000) {
+    candidates.push('http://127.0.0.1:3000');
+    candidates.push('http://localhost:3000');
+  }
+  // 2. URL externa do Render (se configurada)
+  if (process.env.RENDER_EXTERNAL_URL) {
+    candidates.push(process.env.RENDER_EXTERNAL_URL.replace(/\/+$/, ''));
+  }
+  // 3. API_BASE_URL explícita
+  if (process.env.API_BASE_URL && !process.env.API_BASE_URL.includes('trycloudflare.com')) {
+    candidates.push(process.env.API_BASE_URL.replace(/\/+$/, ''));
+  }
+
+  const uniqueUrls = [...new Set(candidates)];
+  let lastError = null;
+
+  for (const base of uniqueUrls) {
+    try {
+      const fullUrl = `${base}${path.startsWith('/') ? path : '/' + path}`;
+      const res = await fetch(fullUrl, {
+        ...options,
+        signal: options.signal || AbortSignal.timeout(10000)
+      });
+      API_BASE_URL = base;
+      return res;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error(`Falha de conexão com a API (${uniqueUrls.join(', ')})`);
+}
 
 if (!BOT_TOKEN) {
   console.error('\n❌ ERRO: O TELEGRAM_BOT_TOKEN não foi configurado!');
@@ -118,7 +158,7 @@ async function fetchBalance(user) {
   const headers = { 'X-API-Key': RESELLER_API_KEY };
   if (user && user.id) headers['X-Telegram-Id'] = String(user.id);
   try {
-    const res = await fetch(`${API_BASE_URL}/api/v1/balance`, { headers, signal: AbortSignal.timeout(8000) });
+    const res = await botApiFetch('/api/v1/balance', { headers, signal: AbortSignal.timeout(8000) });
     const data = await res.json();
     return { status: res.status, data };
   } catch (e) {
@@ -136,7 +176,7 @@ async function pingCustomer(user) {
     const headers = { 'X-API-Key': RESELLER_API_KEY, 'X-Telegram-Id': String(user.id) };
     if (user.username) headers['X-Telegram-Username'] = String(user.username);
     if (user.first_name) headers['X-Telegram-Name'] = String(user.first_name);
-    await fetch(`${API_BASE_URL}/api/v1/customer-ping`, {
+    await botApiFetch('/api/v1/customer-ping', {
       method: 'POST',
       headers,
       signal: AbortSignal.timeout(8000)
@@ -167,7 +207,7 @@ async function checkCustomerBan(chatId, user) {
     const headers = { 'X-API-Key': RESELLER_API_KEY, 'X-Telegram-Id': userId };
     if (user.username) headers['X-Telegram-Username'] = String(user.username);
     if (user.first_name) headers['X-Telegram-Name'] = String(user.first_name);
-    const res = await fetch(`${API_BASE_URL}/api/v1/customer-ping`, {
+    const res = await botApiFetch('/api/v1/customer-ping', {
       method: 'POST',
       headers,
       signal: AbortSignal.timeout(4000)
@@ -195,7 +235,7 @@ async function getBotStatus() {
     return _botStatusCache;
   }
   try {
-    const res = await fetch(`${API_BASE_URL}/api/v1/bot-status`, { signal: AbortSignal.timeout(4000) });
+    const res = await botApiFetch('/api/v1/bot-status', { signal: AbortSignal.timeout(4000) });
     const data = await res.json();
     if (data && data.success) {
       _botStatusCache = data;
@@ -338,7 +378,7 @@ function startKeepAlive() {
   }
   const ping = async () => {
     try {
-      const r = await fetch(`${API_BASE_URL}/health`, { signal: AbortSignal.timeout(10000) });
+      const r = await botApiFetch('/health', { signal: AbortSignal.timeout(10000) });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       console.log(`[keep-alive] ${new Date().toISOString()} -> /health OK (${API_BASE_URL})`);
     } catch (err) {
@@ -453,7 +493,7 @@ async function handleShowNotifications(chatId, user, messageId) {
     const statusInfo = await getBotStatus();
     const notifyUrl = (statusInfo && (statusInfo.notify_bot_url || statusInfo.notify_bot_link)) || '';
 
-    const res = await fetch(`${API_BASE_URL}/api/v1/notifications/subscribe`, {
+    const res = await botApiFetch('/api/v1/notifications/subscribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -495,7 +535,7 @@ async function handleShowNotifications(chatId, user, messageId) {
 // Atualiza o feed de notificações na mesma mensagem
 async function handleRefreshNotifications(chatId, messageId) {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/v1/notifications/feed`, { signal: AbortSignal.timeout(6000) });
+    const res = await botApiFetch('/api/v1/notifications/feed', { signal: AbortSignal.timeout(6000) });
     const data = await res.json();
     const feed = (data && data.feed) || '<i>Nenhuma notificação recente registrada no momento.</i>';
     const text =
@@ -588,7 +628,7 @@ async function handleMpRecharge(chatId, user, amount, messageId) {
     if (user && user.username) headers['X-Telegram-Username'] = String(user.username);
     if (user && user.first_name) headers['X-Telegram-Name'] = String(user.first_name);
 
-    const res = await fetch(`${API_BASE_URL}/api/v1/mp/create-pix`, {
+    const res = await botApiFetch('/api/v1/mp/create-pix', {
       method: 'POST',
       headers,
       body: JSON.stringify({ amount: amountValue })
@@ -668,7 +708,7 @@ async function handleMpRecharge(chatId, user, amount, messageId) {
   } catch (e) {
     console.error('[recarga] falha:', e && e.message ? e.message : e);
     dropWaiting();
-    sendOrEdit(chatId, messageId, `❌ <b>Erro de Conexão:</b> não foi possível gerar o PIX (${API_BASE_URL}).`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
+    sendOrEdit(chatId, messageId, `❌ <b>Erro de Conexão:</b> não foi possível gerar o PIX. Tente novamente em instantes.`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
   }
 }
 
@@ -708,7 +748,7 @@ async function checkPixStatus(chatId, user, externalReference, messageId) {
     if (user && user.username) headers['X-Telegram-Username'] = String(user.username);
     if (user && user.first_name) headers['X-Telegram-Name'] = String(user.first_name);
 
-    const res = await fetch(`${API_BASE_URL}/api/v1/mp/payment-status?external_reference=${encodeURIComponent(externalReference)}`, { headers });
+    const res = await botApiFetch(`/api/v1/mp/payment-status?external_reference=${encodeURIComponent(externalReference)}`, { headers });
     const data = await res.json();
 
     if (!data.success) {
@@ -894,7 +934,7 @@ function invalidateProductsCache() {
 async function fetchProducts() {
   const now = Date.now();
   if (productsCache.items.length && now - productsCache.at < 15000) return productsCache.items;
-  const res = await fetch(`${API_BASE_URL}/api/v1/products`, {
+  const res = await botApiFetch('/api/v1/products', {
     headers: { 'X-API-Key': RESELLER_API_KEY },
     signal: AbortSignal.timeout(8000)
   });
@@ -931,7 +971,7 @@ async function showCatalog(chatId, messageId) {
     }
     sendOrEdit(chatId, messageId, text, { parse_mode: 'HTML', ...keyboard });
   } catch (err) {
-    sendOrEdit(chatId, messageId, `❌ <b>Erro de Conexão:</b> não foi possível carregar o catálogo (${API_BASE_URL}). Verifique se o servidor está rodando!`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
+    sendOrEdit(chatId, messageId, `❌ <b>Erro de Conexão:</b> não foi possível carregar o catálogo. Verifique se o servidor está rodando!`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
   }
 }
 
@@ -1019,7 +1059,7 @@ bot.on('message', async (msg) => {
   if (!msg.text || msg.text.trim() === '' || msg.text.startsWith('/')) return;
   const code = msg.text.trim();
   try {
-    const res = await fetch(`${API_BASE_URL}/api/v1/validate-coupon`, {
+    const res = await botApiFetch('/api/v1/validate-coupon', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-API-Key': RESELLER_API_KEY },
       body: JSON.stringify({ product_id: pending.productId, coupon_code: code }),
@@ -1059,7 +1099,7 @@ bot.on('message', async (msg) => {
     }
   } catch (err) {
     sendOrEdit(msg.chat.id, pending.menuMessageId,
-      `❌ <b>Erro de Conexão:</b> não foi possível validar o cupom (${API_BASE_URL}). Verifique se o servidor está rodando!`,
+      `❌ <b>Erro de Conexão:</b> não foi possível validar o cupom. Verifique se o servidor está rodando!`,
       { parse_mode: 'HTML', ...backToMenuKeyboard() }
     );
   }
@@ -1113,7 +1153,7 @@ async function handlePurchase(chatId, user, messageId, opts) {
     if (opts.productName) payload.product = opts.productName;
     if (opts.couponCode) payload.coupon_code = opts.couponCode;
 
-    const response = await fetch(`${API_BASE_URL}/api/v1/generate`, {
+    const response = await botApiFetch('/api/v1/generate', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1251,7 +1291,7 @@ async function handlePurchase(chatId, user, messageId, opts) {
   } catch (err) {
     if (loadingMsg) bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
     sendOrEdit(chatId, messageId,
-      `❌ <b>Erro de Conexão:</b> Não foi possível conectar ao servidor da API (${API_BASE_URL}). Verifique se o servidor está rodando!`,
+      `❌ <b>Erro de Conexão:</b> Não foi possível conectar ao servidor da API. Verifique se o servidor está rodando!`,
       { parse_mode: 'HTML' }
     );
   }
@@ -1271,7 +1311,7 @@ async function handleCheckBalance(chatId, user, messageId) {
     if (user && user.username) headers['X-Telegram-Username'] = String(user.username);
     if (user && user.first_name) headers['X-Telegram-Name'] = String(user.first_name);
 
-    const res = await fetch(`${API_BASE_URL}/api/v1/balance`, { headers });
+    const res = await botApiFetch('/api/v1/balance', { headers });
     const data = await res.json();
 
     if (res.status === 404 && data.needs_link) {
@@ -1328,7 +1368,7 @@ async function handleMyApi(chatId, user, messageId) {
     const headers = { 'X-API-Key': RESELLER_API_KEY };
     if (user && user.id) headers['X-Telegram-Id'] = String(user.id);
 
-    const res = await fetch(`${API_BASE_URL}/api/v1/my-api`, { headers });
+    const res = await botApiFetch('/api/v1/my-api', { headers });
     const data = await res.json();
 
     if (res.status === 404 && data.needs_link) {
@@ -1381,7 +1421,7 @@ async function handleMyApiRotate(chatId, user, messageId) {
     const headers = { 'X-API-Key': RESELLER_API_KEY };
     if (user && user.id) headers['X-Telegram-Id'] = String(user.id);
 
-    const res = await fetch(`${API_BASE_URL}/api/v1/my-api/rotate`, {
+    const res = await botApiFetch('/api/v1/my-api/rotate', {
       method: 'POST',
       headers
     });
@@ -1433,7 +1473,7 @@ async function fetchMyPurchases(user) {
   const headers = { 'X-API-Key': RESELLER_API_KEY };
   if (user && user.id) headers['X-Telegram-Id'] = String(user.id);
   if (user && user.username) headers['X-Telegram-Username'] = user.username;
-  const res = await fetch(`${API_BASE_URL}/api/v1/my-purchases`, { headers });
+  const res = await botApiFetch('/api/v1/my-purchases', { headers });
   return { status: res.status, data: await res.json() };
 }
 
@@ -1608,7 +1648,7 @@ async function handleMyPurchases(chatId, user, messageId) {
     sendOrEdit(chatId, messageId, title, { reply_markup: { inline_keyboard: keyboard } });
   } catch (e) {
     console.error('[minhas compras] falha:', e && e.message ? e.message : e);
-    sendOrEdit(chatId, messageId, `❌ <b>Erro de Conexão:</b> não foi possível consultar suas compras (${API_BASE_URL}).`, backToMenuKeyboard());
+    sendOrEdit(chatId, messageId, `❌ <b>Erro de Conexão:</b> não foi possível consultar suas compras.`, backToMenuKeyboard());
   }
 }
 
@@ -1696,7 +1736,7 @@ async function handleMyPurchasesProductTxt(chatId, user, index, messageId) {
     await sendTracked(chatId, doneText, { parse_mode: 'HTML', ...doneKeyboard });
   } catch (e) {
     console.error('[minhas compras txt] falha:', e && e.message ? e.message : e);
-    sendOrEdit(chatId, messageId, `❌ <b>Erro de Conexão:</b> não foi possível gerar o arquivo (${API_BASE_URL}).`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
+    sendOrEdit(chatId, messageId, `❌ <b>Erro de Conexão:</b> não foi possível gerar o arquivo.`, { parse_mode: 'HTML', ...backToMenuKeyboard() });
   }
 }
 

@@ -498,6 +498,8 @@ async function mpCreatePreference({ resellerId, amount }) {
   const baseUrl = (process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
   const roundedAmount = Math.round(parseFloat(amount) * 100) / 100;
 
+  const notificationUrl = (baseUrl && baseUrl.startsWith('https://')) ? `${baseUrl}/api/v1/mp/webhook` : undefined;
+
   const pref = await mpFetch('/checkout/preferences', {
     method: 'POST',
     idempotencyKey: externalReference,
@@ -509,7 +511,7 @@ async function mpCreatePreference({ resellerId, amount }) {
         currency_id: 'BRL'
       }],
       external_reference: externalReference,
-      notification_url: `${baseUrl}/api/v1/mp/webhook`,
+      ...(notificationUrl ? { notification_url: notificationUrl } : {}),
       back_urls: {
         success: `${baseUrl}/#mp_ok`,
         pending: `${baseUrl}/#mp_pending`,
@@ -561,6 +563,8 @@ async function mpCreatePixPayment({ resellerId, amount, reseller, telegramId, cu
     : 'pagamento.darkflix@gmail.com';
   const payerName = 'Cliente';
 
+  const notificationUrl = (baseUrl && baseUrl.startsWith('https://')) ? `${baseUrl}/api/v1/mp/webhook` : undefined;
+
   const payment = await mpFetch('/v1/payments', {
     method: 'POST',
     idempotencyKey: externalReference,
@@ -569,7 +573,7 @@ async function mpCreatePixPayment({ resellerId, amount, reseller, telegramId, cu
       description: `Recarga de saldo - ${(reseller && reseller.name) || 'DarkFlix'}`,
       payment_method_id: 'pix',
       external_reference: externalReference,
-      notification_url: `${baseUrl}/api/v1/mp/webhook`,
+      ...(notificationUrl ? { notification_url: notificationUrl } : {}),
       date_of_expiration: mpPixExpiration(expirationMinutes),
       payer: {
         email: payerEmail,
