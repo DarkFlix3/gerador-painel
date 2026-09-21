@@ -3821,6 +3821,20 @@ app.delete('/api/admin/customers/:id', adminAuth, async (req, res) => {
 // CONTROLE DO BOT DARKFLIX (STATUS, AVISOS & BROADCAST)
 // ==========================================
 
+function resolveNotifyBotUrl(settings) {
+  let link = (settings && settings.bot_notify_link ? String(settings.bot_notify_link).trim() : '') || (process.env.NOTIFIER_BOT_LINK || '').trim();
+  if (link) {
+    if (link.startsWith('@')) return 'https://t.me/' + link.slice(1);
+    if (!link.startsWith('http')) return 'https://t.me/' + link.replace(/^\/+/, '');
+    return link;
+  }
+  const username = (settings && settings.bot_notify_username ? String(settings.bot_notify_username).trim() : '') || (process.env.NOTIFIER_BOT_USERNAME || '').trim();
+  if (username) {
+    return 'https://t.me/' + username.replace(/^@/, '');
+  }
+  return '';
+}
+
 // Consulta pública de status do bot (para bot.js ou checagem rápida)
 app.get('/api/v1/bot-status', async (req, res) => {
   try {
@@ -3831,10 +3845,11 @@ app.get('/api/v1/bot-status', async (req, res) => {
       maintenance_message: settings.maintenance_message || '⚠️ Estamos realizando uma manutenção preventiva no sistema. Em breve o bot estará de volta ao normal!',
       announcement: settings.bot_announcement || '',
       start_message: settings.bot_start_message || '',
-      sales_name: settings.bot_sales_name || 'DarkFlix'
+      sales_name: settings.bot_sales_name || 'DarkFlix',
+      notify_bot_url: resolveNotifyBotUrl(settings)
     });
   } catch (e) {
-    res.json({ success: true, status: 'active', maintenance_message: '', announcement: '', start_message: '', sales_name: 'DarkFlix' });
+    res.json({ success: true, status: 'active', maintenance_message: '', announcement: '', start_message: '', sales_name: 'DarkFlix', notify_bot_url: '' });
   }
 });
 
@@ -4059,6 +4074,7 @@ app.get('/api/admin/bot/profiles', adminAuth, async (req, res) => {
         bot_sales_bio: salesBio,
         bot_notify_name: notifyName,
         bot_notify_bio: notifyBio,
+        bot_notify_link: settings.bot_notify_link || '',
         bot_commands: commands,
         bot_start_message: startMessage,
         tokens: {
@@ -4151,6 +4167,16 @@ app.post('/api/admin/bot/profiles', adminAuth, async (req, res) => {
           results.notify.bio = true;
         } catch (e) {}
       }
+    }
+
+    if (req.body && req.body.bot_notify_link !== undefined) {
+      let cleanLink = String(req.body.bot_notify_link).trim();
+      if (cleanLink && cleanLink.startsWith('@')) {
+        cleanLink = 'https://t.me/' + cleanLink.slice(1);
+      } else if (cleanLink && !cleanLink.startsWith('http')) {
+        cleanLink = 'https://t.me/' + cleanLink.replace(/^\/+/, '');
+      }
+      await dbHelpers.updateSetting('bot_notify_link', cleanLink);
     }
 
     res.json({

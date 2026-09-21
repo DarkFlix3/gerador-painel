@@ -1933,15 +1933,16 @@ document.addEventListener('DOMContentLoaded', () => {
       if (dataProfiles.success && dataProfiles.data) {
         const p = dataProfiles.data;
         const salesName = document.getElementById('bot-sales-name');
-        const salesBio = document.getElementById('bot-sales-bio');
         const notifyName = document.getElementById('bot-notify-name');
         const notifyBio = document.getElementById('bot-notify-bio');
+        const notifyLink = document.getElementById('bot-notify-link');
         const startMsg = document.getElementById('bot-start-message-text');
 
         if (salesName) salesName.value = p.bot_sales_name || '';
         if (salesBio) salesBio.value = p.bot_sales_bio || '';
         if (notifyName) notifyName.value = p.bot_notify_name || '';
         if (notifyBio) notifyBio.value = p.bot_notify_bio || '';
+        if (notifyLink) notifyLink.value = p.bot_notify_link || '';
         if (startMsg) startMsg.value = p.bot_start_message || '';
 
         __botCommands = Array.isArray(p.bot_commands) ? p.bot_commands : [];
@@ -2085,6 +2086,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const bot_sales_bio = document.getElementById('bot-sales-bio')?.value.trim();
         const bot_notify_name = document.getElementById('bot-notify-name')?.value.trim();
         const bot_notify_bio = document.getElementById('bot-notify-bio')?.value.trim();
+        const bot_notify_link = document.getElementById('bot-notify-link')?.value.trim();
 
         btnSyncBotProfiles.disabled = true;
         btnSyncBotProfiles.innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> <span>Sincronizando...</span>`;
@@ -2095,7 +2097,8 @@ document.addEventListener('DOMContentLoaded', () => {
             bot_sales_name,
             bot_sales_bio,
             bot_notify_name,
-            bot_notify_bio
+            bot_notify_bio,
+            bot_notify_link
           })
         });
         const data = await res.json();

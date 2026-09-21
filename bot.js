@@ -252,7 +252,7 @@ async function sendMainMenu(chatId, messageId, user) {
 
   const welcomeText = banner + bodyText + '\n\n';
 
-  const keyboard = getMainKeyboard();
+  const keyboard = getMainKeyboard(statusInfo);
   const buildMainText = (balanceLine) => welcomeText + balanceLine + '\n\nSelecione uma das opções abaixo para começar:';
 
   // Renderiza o menu IMEDIATAMENTE (nao espera a API) para o botao "Voltar ao Menu"
@@ -357,7 +357,12 @@ console.log(`🔑 Chave do Revendedor: ${RESELLER_API_KEY ? RESELLER_API_KEY.sub
 console.log('===================================================');
 
 // Menu Principal
-function getMainKeyboard() {
+function getMainKeyboard(statusInfo) {
+  const notifyUrl = (statusInfo && (statusInfo.notify_bot_url || statusInfo.notify_bot_link)) || '';
+  const notifyButton = notifyUrl
+    ? { text: '🔔 Notificações de Vendas', url: notifyUrl }
+    : { text: '🔔 Notificações de Vendas', callback_data: 'view_notifications' };
+
   return {
     reply_markup: {
       inline_keyboard: [
@@ -379,7 +384,7 @@ function getMainKeyboard() {
         ],
         [
           { text: '🆔 Meu ID de Perfil', callback_data: 'my_id' },
-          { text: '🔔 Notificações de Vendas', callback_data: 'view_notifications' }
+          notifyButton
         ]
       ]
     }
@@ -445,6 +450,9 @@ bot.onText(/\/(notificacoes|vendas|alertas)/, async (msg) => {
 // Exibe o feed de notificações e inscreve o chat para receber em tempo real
 async function handleShowNotifications(chatId, user, messageId) {
   try {
+    const statusInfo = await getBotStatus();
+    const notifyUrl = (statusInfo && (statusInfo.notify_bot_url || statusInfo.notify_bot_link)) || '';
+
     const res = await fetch(`${API_BASE_URL}/api/v1/notifications/subscribe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -465,12 +473,17 @@ async function handleShowNotifications(chatId, user, messageId) {
       `📊 <b>ÚLTIMAS NOTIFICAÇÕES:</b>\n` +
       `━━━━━━━━━━━━━━━\n\n` +
       feed;
+
+    const rows = [];
+    if (notifyUrl) {
+      rows.push([{ text: '🚀 Abrir Bot de Notificações no Telegram', url: notifyUrl }]);
+    }
+    rows.push([{ text: '🔄 Atualizar Notificações', callback_data: 'refresh_notify_feed' }]);
+    rows.push([{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]);
+
     const keyboard = {
       reply_markup: {
-        inline_keyboard: [
-          [{ text: '🔄 Atualizar Notificações', callback_data: 'refresh_notify_feed' }],
-          [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
-        ]
+        inline_keyboard: rows
       }
     };
     sendOrEdit(chatId, messageId, text, { parse_mode: 'HTML', ...keyboard });

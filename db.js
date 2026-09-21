@@ -672,6 +672,7 @@ const defaultSettings = [
   { key: 'bot_sales_bio', value: '🤖 Bot de vendas de produtos digitais com entrega automática!\n\n🎧 Produto: Spotify Premium 3 Meses (Acesso Individual)\n🛒 Use /start para comprar seu acesso com pagamento rápido e seguro.' },
   { key: 'bot_notify_name', value: 'Dark Vendas' },
   { key: 'bot_notify_bio', value: 'Bot oficial de notificações de vendas DarkFlix.' },
+  { key: 'bot_notify_link', value: 'https://t.me/DarkVendas_bot' },
   { key: 'bot_commands', value: JSON.stringify([
     { command: 'start', description: 'Menu Principal' },
     { command: 'saldo', description: 'Consultar Saldo' },
