@@ -446,6 +446,7 @@ async function sendMpRechargeMenu(chatId, messageId) {
   const keyboard = {
     reply_markup: {
       inline_keyboard: [
+        [{ text: '🧪 Teste R$ 0,01 (Validação da API)', callback_data: 'mp_recharge_0.01' }],
         [{ text: '💳 R$ 15,00', callback_data: 'mp_recharge_15' }],
         [{ text: '💳 R$ 30,00', callback_data: 'mp_recharge_30' }],
         [{ text: '💳 R$ 50,00', callback_data: 'mp_recharge_50' }],
@@ -478,8 +479,8 @@ async function handleMpRecharge(chatId, user, amount, messageId) {
   }
 
   const amountValue = Math.round(parseFloat(amount) * 100) / 100;
-  if (isNaN(amountValue) || amountValue < 15) {
-    return sendOrEdit(chatId, messageId, '⚠️ O valor mínimo para recarga é <b>R$ 15,00</b>.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
+  if (isNaN(amountValue) || amountValue < 0.01) {
+    return sendOrEdit(chatId, messageId, '⚠️ O valor mínimo para recarga é <b>R$ 0,01</b>.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
   }
 
   // Indicador de processamento: em CLIQUE no menu, a própria mensagem clicada vira o

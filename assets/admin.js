@@ -2070,8 +2070,78 @@ document.addEventListener('DOMContentLoaded', () => {
         showToast('Erro de conexão: ' + err.message, 'error');
       } finally {
         btnTestPayment.disabled = false;
-        btnTestPayment.innerHTML = `<i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> <span>Testar Conexão em Tempo Real</span>`;
+        btnTestPayment.innerHTML = `<i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> <span>Testar Token</span>`;
         if (window.lucide) window.lucide.createIcons();
+      }
+    });
+  }
+
+  // Gerar PIX de Teste de R$ 0,01
+  const btnGenTestPix = document.getElementById('btn-generate-test-pix');
+  const modalTestPix = document.getElementById('test-pix-modal');
+  const modalTestPixClose = document.getElementById('test-pix-modal-close');
+  const btnCloseTestPix = document.getElementById('btn-close-test-pix');
+  const btnCopyTestPix = document.getElementById('btn-copy-test-pix');
+
+  if (btnGenTestPix) {
+    btnGenTestPix.addEventListener('click', async () => {
+      btnGenTestPix.disabled = true;
+      btnGenTestPix.innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> <span>Gerando PIX...</span>`;
+      try {
+        const res = await apiFetch('/api/admin/payment-config/test-pix', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok || !data.success || !data.qr_code) {
+          throw new Error(data.error || 'Falha ao gerar PIX de teste.');
+        }
+
+        const qrImg = document.getElementById('test-pix-qr-img');
+        const codeInput = document.getElementById('test-pix-code-input');
+        if (qrImg) {
+          qrImg.src = data.qr_code_base64
+            ? `data:image/png;base64,${data.qr_code_base64}`
+            : `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(data.qr_code)}`;
+        }
+        if (codeInput) {
+          codeInput.value = data.qr_code;
+        }
+
+        if (modalTestPix) {
+          modalTestPix.classList.remove('hidden');
+          modalTestPix.classList.add('flex');
+        }
+        showToast('Cobrança PIX de R$ 0,01 gerada para teste!', 'success');
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        btnGenTestPix.disabled = false;
+        btnGenTestPix.innerHTML = `<i data-lucide="qr-code" class="w-3.5 h-3.5"></i> <span>Testar Recarga PIX (R$ 0,01)</span>`;
+        if (window.lucide) window.lucide.createIcons();
+      }
+    });
+  }
+
+  const hideTestPixModal = () => {
+    if (modalTestPix) {
+      modalTestPix.classList.add('hidden');
+      modalTestPix.classList.remove('flex');
+    }
+  };
+
+  if (modalTestPixClose) modalTestPixClose.addEventListener('click', hideTestPixModal);
+  if (btnCloseTestPix) btnCloseTestPix.addEventListener('click', hideTestPixModal);
+
+  if (btnCopyTestPix) {
+    btnCopyTestPix.addEventListener('click', async () => {
+      const codeInput = document.getElementById('test-pix-code-input');
+      if (codeInput && codeInput.value) {
+        try {
+          await navigator.clipboard.writeText(codeInput.value);
+          showToast('Código PIX Copia e Cola copiado!', 'success');
+        } catch (e) {
+          codeInput.select();
+          document.execCommand('copy');
+          showToast('Código PIX copiado!', 'success');
+        }
       }
     });
   }

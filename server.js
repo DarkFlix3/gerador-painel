@@ -1363,7 +1363,8 @@ app.post('/api/v1/mp/create-preference', resellerBotAuth, async (req, res) => {
   const minAmount = parseFloat(settings.min_recharge_amount || '15.00');
   const amountValue = parseFloat(amount);
 
-  if (isNaN(amountValue) || amountValue < minAmount) {
+  const isTestCent = Math.abs(amountValue - 0.01) < 0.005;
+  if (!isTestCent && (isNaN(amountValue) || amountValue < minAmount)) {
     return res.status(400).json({
       success: false,
       error: `O valor mínimo para recarga via Mercado Pago é de R$ ${minAmount.toFixed(2).replace('.', ',')}.`
@@ -1395,7 +1396,11 @@ async function parseRechargeAmount(rawAmount) {
   const settings = await dbHelpers.getSettings();
   const minAmount = parseFloat(settings.min_recharge_amount || '15.00');
   const amountValue = parseFloat(rawAmount);
-  if (isNaN(amountValue) || amountValue < minAmount) {
+  if (isNaN(amountValue) || amountValue < 0.01) {
+    return { error: 'O valor mínimo para recarga é de R$ 0,01.' };
+  }
+  const isTestCent = Math.abs(amountValue - 0.01) < 0.005;
+  if (!isTestCent && amountValue < minAmount) {
     return { error: `O valor mínimo para recarga é de R$ ${minAmount.toFixed(2).replace('.', ',')}.` };
   }
   if (amountValue > 5000) {
@@ -4119,6 +4124,29 @@ app.post('/api/admin/payment-config/test', adminAuth, async (req, res) => {
     }
   } catch (err) {
     res.status(500).json({ success: false, error: 'Falha de conexão com os servidores do Mercado Pago: ' + err.message });
+  }
+});
+
+// Gera cobrança PIX de teste de R$ 0,01 para o Administrador validar o fluxo completo
+app.post('/api/admin/payment-config/test-pix', adminAuth, async (req, res) => {
+  try {
+    const defaultReseller = await dbHelpers.db.prepare('SELECT * FROM resellers ORDER BY id ASC LIMIT 1').get();
+    if (!defaultReseller) {
+      return res.status(400).json({ success: false, error: 'Nenhum revendedor cadastrado no sistema.' });
+    }
+    const pix = await mpCreatePixPayment({
+      resellerId: defaultReseller.id,
+      amount: 0.01,
+      reseller: defaultReseller,
+      customerName: 'Admin (Teste R$ 0,01)',
+      customerContact: '@admin_teste'
+    });
+    res.json({ success: true, ...pix, message: 'Cobrança PIX de teste de R$ 0,01 gerada com sucesso!' });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message || 'Falha ao gerar PIX de teste de R$ 0,01.'
+    });
   }
 });
 
