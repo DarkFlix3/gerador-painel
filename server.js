@@ -27,8 +27,14 @@ const NOTIFY_CHAT_ID = process.env.NOTIFY_CHAT_ID || '';
 // MERCADOPAGO_ACCESS_TOKEN: Access Token da aplicação (Desenvolvedores -> Apps)
 // MERCADOPAGO_WEBHOOK_SECRET: Secret do webhook (opcional, válida a assinatura X-Signature)
 // ==========================================
-const MERCADOPAGO_ACCESS_TOKEN = process.env.MERCADOPAGO_ACCESS_TOKEN || '';
-const MERCADOPAGO_WEBHOOK_SECRET = process.env.MERCADOPAGO_WEBHOOK_SECRET || '';
+const MERCADOPAGO_ACCESS_TOKEN = process.env.MERCADOPAGO_ACCESS_TOKEN 
+  || process.env.MP_ACCESS_TOKEN 
+  || process.env.MERCADO_PAGO_ACCESS_TOKEN 
+  || process.env.MERCADOPAGO_TOKEN 
+  || '';
+const MERCADOPAGO_WEBHOOK_SECRET = process.env.MERCADOPAGO_WEBHOOK_SECRET 
+  || process.env.MP_WEBHOOK_SECRET 
+  || '';
 const MP_API_BASE = 'https://api.mercadopago.com';
 
 app.use(cors());
