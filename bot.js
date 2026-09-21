@@ -138,7 +138,7 @@ async function sendMainMenu(chatId, messageId, user) {
   const firstName = user && user.first_name ? escapeHtml(user.first_name) : 'Cliente';
 
   const welcomeText =
-    `👋 Olá, <b>${firstName}</b>! Seja muito bem-vindo(a) ao nosso <b>Gerador Automático de Acesso Spotify Premium 3 MESES</b>!
+    `👋 Olá, <b>${firstName}</b>! Seja muito bem-vindo(a) ao <b>DarkFlix</b>!
 
 ` +
     `⚡ <b>Entrega 100% Automática e Instantânea</b>
@@ -1469,7 +1469,7 @@ function sendHelpMessage(chatId, messageId) {
     `ℹ️ <b>COMO FUNCIONA O GERADOR:</b>\n\n` +
     `1. Cada link é gerado <b>individualmente e de forma única</b> para você.\n` +
     `2. O link possui tecnologia de camuflagem inteligente para garantir sua ativação sem conflitos.\n` +
-    `3. Ao abrir o link, você cai na nossa tela de validação segura e é redirecionado instantaneamente para sua conta do Spotify Premium <b>3 meses</b>.\n\n` +
+    `3. Ao abrir o link, você cai na nossa tela de validação segura e é redirecionado instantaneamente para sua conta do Spotify Premium.\n\n` +
     `Dúvidas? Fale com nosso suporte: ${SUPPORT_USER}`;
 
   sendOrEdit(chatId, messageId, helpText, { parse_mode: 'HTML', ...backToMenuKeyboard() });

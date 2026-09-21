@@ -151,6 +151,11 @@ async function syncTelegramProfile() {
     const username = me.ok && me.result && me.result.username ? me.result.username : '';
     const handle = username ? '@' + username : '';
 
+    // Nome oficial da marca
+    try {
+      await telegramPost(salesToken, 'setMyName', { name: 'DarkFlix' });
+    } catch (e) { /* silencioso */ }
+
     // Bio do bot de vendas (curta e completa) → bot de alertas, incluindo o @ do bot de vendas
     const sd = await telegramGet(salesToken, 'getMyShortDescription');
     const shortOrig = sd.ok && sd.result && sd.result.short_description ? sd.result.short_description.trim() : '';

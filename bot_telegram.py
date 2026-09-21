@@ -21,7 +21,7 @@ def get_main_keyboard():
 def handle_start(message):
     nome = message.from_user.first_name or "Cliente"
     texto = (
-        f"👋 Olá, <b>{nome}</b>! Bem-vindo ao <b>Gerador Automático de Spotify Premium</b>!\n\n"
+        f"👋 Olá, <b>{nome}</b>! Bem-vindo ao <b>DarkFlix</b>!\n\n"
         f"⚡ <b>Entrega Instantânea:</b> Link liberado na hora.\n"
         f"💰 Preço: <b>R$ {DEFAULT_SALE_PRICE:.2f}</b>\n\n"
         f"Clique no botão abaixo para comprar seu acesso:"
