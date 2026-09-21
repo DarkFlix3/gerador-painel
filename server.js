@@ -162,6 +162,9 @@ async function syncTelegramProfile() {
         { command: 'recarga', description: 'Adicionar Saldo via PIX' }
       ];
       await telegramPost(salesToken, 'setMyCommands', { commands });
+      if (NOTIFIER_BOT_TOKEN && NOTIFIER_BOT_TOKEN !== salesToken) {
+        await telegramPost(NOTIFIER_BOT_TOKEN, 'setMyName', { name: 'Dark Vendas' });
+      }
     } catch (e) { /* silencioso */ }
 
     // Bio do bot de vendas (curta e completa) → bot de alertas, incluindo o @ do bot de vendas
