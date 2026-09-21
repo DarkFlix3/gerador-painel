@@ -224,6 +224,14 @@ async function isMaintenanceBlocked(chatId, user) {
 async function sendMainMenu(chatId, messageId, user) {
   if (await isMaintenanceBlocked(chatId, user)) return;
 
+  // Se o chat tinha um QR Code de PIX aberto, remove para o menu nunca grudar nele
+  const pixMsgId = lastPixMsg.get(chatId);
+  if (pixMsgId) {
+    lastPixMsg.delete(chatId);
+    bot.deleteMessage(chatId, pixMsgId).catch(() => {});
+    if (messageId === pixMsgId) messageId = null;
+  }
+
   const firstName = user && user.first_name ? escapeHtml(user.first_name) : 'Cliente';
   const statusInfo = await getBotStatus();
   const banner = statusInfo && statusInfo.announcement
@@ -272,10 +280,7 @@ async function sendMainMenu(chatId, messageId, user) {
     try {
       await bot.editMessageText(buildMainText(balanceLine), payload);
     } catch (e) {
-      if (e && e.message && String(e.message).includes('message is not modified')) return;
-      try {
-        await bot.editMessageCaption(buildMainText(balanceLine), payload);
-      } catch (e2) { /* falha silenciosa: mantém a tela já exibida */ }
+      /* falha silenciosa: mantém a tela já exibida sem estragar foto ou mídia */
     }
   })();
 
@@ -446,11 +451,8 @@ async function sendMpRechargeMenu(chatId, messageId) {
   const keyboard = {
     reply_markup: {
       inline_keyboard: [
-        [{ text: '🧪 Teste R$ 0,01 (Validação da API)', callback_data: 'mp_recharge_0.01' }],
-        [{ text: '💳 R$ 15,00', callback_data: 'mp_recharge_15' }],
-        [{ text: '💳 R$ 30,00', callback_data: 'mp_recharge_30' }],
-        [{ text: '💳 R$ 50,00', callback_data: 'mp_recharge_50' }],
-        [{ text: '💳 R$ 100,00', callback_data: 'mp_recharge_100' }],
+        [{ text: '💳 R$ 15,00', callback_data: 'mp_recharge_15' }, { text: '💳 R$ 30,00', callback_data: 'mp_recharge_30' }],
+        [{ text: '💳 R$ 50,00', callback_data: 'mp_recharge_50' }, { text: '💳 R$ 100,00', callback_data: 'mp_recharge_100' }],
         [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
       ]
     }
@@ -479,8 +481,8 @@ async function handleMpRecharge(chatId, user, amount, messageId) {
   }
 
   const amountValue = Math.round(parseFloat(amount) * 100) / 100;
-  if (isNaN(amountValue) || amountValue < 0.01) {
-    return sendOrEdit(chatId, messageId, '⚠️ O valor mínimo para recarga é <b>R$ 0,01</b>.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
+  if (isNaN(amountValue) || amountValue < 15) {
+    return sendOrEdit(chatId, messageId, '⚠️ O valor mínimo para recarga é <b>R$ 15,00</b>.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
   }
 
   // Indicador de processamento: em CLIQUE no menu, a própria mensagem clicada vira o
@@ -628,6 +630,14 @@ async function checkPixStatus(chatId, user, externalReference, messageId) {
     const amountTxt = brl(cached ? cached.amount : data.amount);
 
     if (data.processed || data.status === 'approved') {
+      // Remove o QR Code para nunca ficar grudado no menu ou na tela de confirmação
+      const pixMsgId = lastPixMsg.get(chatId);
+      if (pixMsgId) {
+        lastPixMsg.delete(chatId);
+        bot.deleteMessage(chatId, pixMsgId).catch(() => {});
+        if (messageId === pixMsgId) messageId = null;
+      }
+
       const okText =
         `🎉 <b>PAGAMENTO CONFIRMADO!</b>\n\n` +
         `✅ Recebemos seu PIX de <b>${amountTxt}</b>.\n` +
@@ -1415,24 +1425,25 @@ function sendOrEdit(chatId, messageId, text, options) {
   const sendFresh = () => sendTracked(chatId, text, opts);
 
   if (messageId) {
+    // Se o painel for a foto do PIX (QR Code) e estamos navegando para outra tela, apaga a foto
+    const isPixPhoto = lastPixMsg.get(chatId) === messageId;
+    if (isPixPhoto) {
+      lastPixMsg.delete(chatId);
+      bot.deleteMessage(chatId, messageId).catch(() => {});
+      return deletePanel(chatId, messageId).then(sendFresh);
+    }
+
     // Esta mensagem passa a ser o painel unico do chat
     trackPanel(chatId, messageId);
     return bot.editMessageText(text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML', ...opts })
       .catch((e) => {
         if (isNotModified(e)) return null; // ja esta com esse conteudo: sucesso
-        // Se for especificamente a foto do PIX (QR Code), edita a legenda mantendo a foto
-        const isPixPhoto = lastPixMsg.get(chatId) === messageId;
-        if (isPixPhoto) {
-          return Promise.resolve().then(() => bot.editMessageCaption(text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML', ...opts }))
-            .catch((e2) => {
-              if (isNotModified(e2)) return null;
-              return deletePanel(chatId).then(sendFresh);
-            });
-        }
-        // Se for um arquivo/documento (.txt) ou outro tipo de mídia: NUNCA edita a legenda
-        // para não grudar o menu no arquivo. Remove os botões do arquivo e envia o menu limpo!
-        bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId }).catch(() => {});
-        return deletePanel(chatId).then(sendFresh);
+        // Se for foto, documento ou mídia: NUNCA edita legenda para não grudar o menu na mídia.
+        // Apaga a mídia antiga e envia uma nova mensagem limpa!
+        bot.deleteMessage(chatId, messageId).catch(() => {
+          bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId }).catch(() => {});
+        });
+        return deletePanel(chatId, messageId).then(sendFresh);
       });
   }
   // Sem mensagem de referencia (ex.: comando): limpa o painel anterior e envia a tela nova
