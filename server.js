@@ -495,7 +495,7 @@ async function mpFetch(path, { method = 'GET', body = null, idempotencyKey = nul
 // Retorna o link de pagamento (init_point) — em credenciais de teste, sandbox_init_point.
 async function mpCreatePreference({ resellerId, amount }) {
   const externalReference = `mp_recharge_${resellerId}_${crypto.randomBytes(6).toString('hex')}`;
-  const baseUrl = (process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
+  const baseUrl = (process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
   const roundedAmount = Math.round(parseFloat(amount) * 100) / 100;
 
   const pref = await mpFetch('/checkout/preferences', {
@@ -550,7 +550,7 @@ function mpPixExpiration(minutes) {
 // Usada pelo bot do Telegram (pagamento direto no chat) e pelo painel web.
 async function mpCreatePixPayment({ resellerId, amount, reseller, telegramId, customerName, customerContact }) {
   const externalReference = `mp_recharge_${resellerId}_${crypto.randomBytes(6).toString('hex')}`;
-  const baseUrl = (process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
+  const baseUrl = (process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
   const roundedAmount = Math.round(parseFloat(amount) * 100) / 100;
   const expirationMinutes = parseInt(process.env.MP_PIX_EXPIRATION_MINUTES || '30', 10);
 
@@ -695,10 +695,11 @@ async function mpProcessApprovedPayment(paymentId) {
     `).run(record.reseller_id, Math.floor(amount / parseFloat(reseller.cost_per_link || 2.99)), amount, methodLabel, now);
 
     // Se houver telegram_id associado a esse pagamento, credita a carteira do cliente e lança no extrato
+    let customer = null;
     if (record.telegram_id) {
       const cleanTg = String(record.telegram_id).replace(/^tg_/, '').trim();
       try {
-        const customer = await dbHelpers.db.prepare('SELECT id, name, username, balance FROM customers WHERE telegram_id = ? OR telegram_id = ?').get(cleanTg, 'tg_' + cleanTg);
+        customer = await dbHelpers.db.prepare('SELECT id, name, username, balance FROM customers WHERE telegram_id = ? OR telegram_id = ?').get(cleanTg, 'tg_' + cleanTg);
         if (customer) {
           const cur = parseFloat(customer.balance || 0);
           const upd = Math.round((cur + amount) * 100) / 100;
@@ -920,40 +921,66 @@ const resellerBotAuth = async (req, res, next) => {
   if (!keyValid) return;
 
   // ==========================================
-  // VÍNCULO POR ID DE PERFIL (Telegram)
+  // CONTA DO USUÁRIO NO TELEGRAM (Auto-provisionamento)
   // ------------------------------------------
-  // Se o bot enviar o header X-Telegram-Id, o saldo consultado/debitado é o
-  // do perfil vinculado àquele ID (site + bot juntos). Se o ID não estiver
-  // vinculado a nenhuma conta, responde com needs_link para o bot orientar
-  // a pessoa a cadastrar o ID no painel (aba Meu Perfil).
+  // Cada usuário do bot do Telegram tem sua própria conta e saldo individual.
+  // Se for o primeiro acesso, cria automaticamente o cadastro no banco.
   // ==========================================
   const tgId = (req.headers['x-telegram-id'] || '').toString().trim();
   if (tgId) {
     const cleanTg = tgId.replace(/^tg_/, '');
+    const tgUsername = (req.headers['x-telegram-username'] || '').toString().trim();
+    const tgName = (req.headers['x-telegram-name'] || '').toString().trim();
+
     let byTg = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE telegram_id = ? OR telegram_id = ?').get(cleanTg, 'tg_' + cleanTg);
     if (!byTg) {
-      const byCust = await dbHelpers.db.prepare('SELECT * FROM customers WHERE telegram_id = ? OR telegram_id = ?').get(cleanTg, 'tg_' + cleanTg);
-      if (byCust) {
-        const autoName = byCust.name || (byCust.username ? '@' + byCust.username : 'Cliente ' + cleanTg);
-        const autoKey = 'cust_' + Math.random().toString(36).substring(2, 14);
+      let byCust = await dbHelpers.db.prepare('SELECT * FROM customers WHERE telegram_id = ? OR telegram_id = ?').get(cleanTg, 'tg_' + cleanTg);
+      if (!byCust) {
+        try {
+          byCust = await dbHelpers.upsertCustomer({
+            telegramId: cleanTg,
+            username: tgUsername || null,
+            name: tgName || `Cliente ${cleanTg}`
+          });
+        } catch (custErr) {
+          console.error('[resellerBotAuth] erro ao auto-cadastrar customer:', custErr.message);
+        }
+      }
+
+      const autoName = tgName || (byCust && byCust.name) || (tgUsername ? '@' + tgUsername : 'Cliente ' + cleanTg);
+      const autoKey = 'cust_' + crypto.randomBytes(8).toString('hex');
+      const initialBalance = byCust ? parseFloat(byCust.balance || 0) : 0;
+      const isBlocked = byCust ? (byCust.blocked || 0) : 0;
+      const now = new Date().toISOString();
+
+      try {
         const ins = await dbHelpers.db.prepare(`
-          INSERT INTO resellers (name, email, credits, active, blocked, telegram_id, api_key, sale_price)
-          VALUES (?, ?, ?, 1, ?, ?, ?, 2.99) RETURNING id
-        `).run(autoName, `${cleanTg}@bot.telegram`, parseFloat(byCust.balance || 0), byCust.blocked || 0, cleanTg, autoKey);
-        byTg = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE id = ?').get(ins.lastInsertRowid);
+          INSERT INTO resellers (name, email, credits, active, blocked, telegram_id, api_key, sale_price, created_at)
+          VALUES (?, ?, ?, 1, ?, ?, ?, 2.99, ?) RETURNING id
+        `).run(autoName, `${cleanTg}@bot.telegram`, initialBalance, isBlocked, cleanTg, autoKey, now);
+        const newId = ins.lastInsertRowid || (ins.rows && ins.rows[0] && ins.rows[0].id);
+        if (newId) {
+          byTg = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE id = ?').get(newId);
+        }
+      } catch (insErr) {
+        console.error('[resellerBotAuth] erro ao auto-criar reseller:', insErr.message);
+      }
+      if (!byTg) {
+        byTg = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE telegram_id = ? OR telegram_id = ?').get(cleanTg, 'tg_' + cleanTg);
       }
     }
+
     if (!byTg) {
-      return res.status(404).json({
-        success: false,
-        needs_link: true,
-        error: 'Seu perfil de Telegram ainda não está vinculado a uma conta no site do gerador. No bot, envie /me para copiar seu ID de perfil e cadastre-o no painel do revendedor (aba Meu Perfil).'
-      });
+      // Fallback: se não conseguiu criar registro isolado, usa a conta principal da chave
+      byTg = req.reseller;
     }
-    if (byTg.blocked === 1 || byTg.active !== 1) {
+
+    if (byTg && (byTg.blocked === 1 || byTg.active !== 1)) {
       return res.status(403).json({ success: false, error: 'A conta vinculada a este perfil está bloqueada ou inativa.' });
     }
-    req.reseller = byTg;
+    if (byTg) {
+      req.reseller = byTg;
+    }
   }
 
   if (req.reseller.blocked === 1) {
@@ -1592,7 +1619,7 @@ app.post('/api/v1/mp/create-preference', resellerBotAuth, async (req, res) => {
 async function parseRechargeAmount(rawAmount) {
   const settings = await dbHelpers.getSettings();
   const minAmount = parseFloat(settings.min_recharge_amount || '5.00');
-  const amountValue = parseFloat(rawAmount);
+  const amountValue = parseFloat(String(rawAmount || '').replace(',', '.').trim());
   if (isNaN(amountValue) || amountValue < minAmount) {
     return { error: `O valor mínimo para recarga é de R$ ${minAmount.toFixed(2).replace('.', ',')}.` };
   }
@@ -1625,7 +1652,7 @@ app.post('/api/reseller/mp/create-pix', resellerUserAuth, async (req, res) => {
     res.status(err.mpNotConfigured ? 503 : 502).json({
       success: false,
       error: err.mpNotConfigured
-        ? 'Mercado Pago não configurado. O administrador precisa definir MERCADOPAGO_ACCESS_TOKEN no servidor.'
+        ? 'Mercado Pago não configurado. Configure as credenciais no painel admin.'
         : `Falha ao gerar o PIX: ${err.message}`
     });
   }
@@ -1645,9 +1672,9 @@ app.post('/api/v1/mp/create-pix', resellerBotAuth, async (req, res) => {
       resellerId: req.reseller.id,
       amount: parsed.amount,
       reseller: req.reseller,
-      telegramId: tgId,
-      customerName: tgName,
-      customerContact: tgUser
+      telegramId: tgId || req.reseller.telegram_id || null,
+      customerName: tgName || req.reseller.name || null,
+      customerContact: tgUser || null
     });
     res.json({ success: true, ...pix });
   } catch (err) {
@@ -1664,7 +1691,7 @@ app.post('/api/v1/mp/create-pix', resellerBotAuth, async (req, res) => {
     res.status(err.mpNotConfigured ? 503 : 502).json({
       success: false,
       error: err.mpNotConfigured
-        ? 'Mercado Pago não configurado no servidor.'
+        ? 'Mercado Pago não configurado no servidor. Configure as credenciais no painel admin.'
         : `Falha ao gerar o PIX: ${err.message}`
     });
   }
@@ -1678,8 +1705,8 @@ app.get('/api/v1/mp/payment-status', resellerBotAuth, async (req, res) => {
     return res.status(400).json({ success: false, error: 'Informe external_reference.' });
   }
 
-  const record = await dbHelpers.db.prepare('SELECT * FROM mp_payments WHERE external_reference = ? AND reseller_id = ?')
-    .get(ref, req.reseller.id);
+  const record = await dbHelpers.db.prepare('SELECT * FROM mp_payments WHERE external_reference = ?')
+    .get(ref);
   if (!record) {
     return res.status(404).json({ success: false, error: 'Cobrança não encontrada.' });
   }
@@ -1689,7 +1716,8 @@ app.get('/api/v1/mp/payment-status', resellerBotAuth, async (req, res) => {
 
   // Se o webhook ainda não chegou, consulta o MP na hora (fonte da verdade).
   // Isso cobre webhook atrasado/não configurado: o crédito acontece assim que o usuário checa.
-  if (!processed && MERCADOPAGO_ACCESS_TOKEN && record.payment_id) {
+  const effectiveMpToken = await getEffectiveMpAccessToken().catch(() => null);
+  if (!processed && effectiveMpToken && record.payment_id) {
     try {
       const result = await mpProcessApprovedPayment(record.payment_id);
       if (result.ok && !result.alreadyProcessed) {
@@ -1706,7 +1734,7 @@ app.get('/api/v1/mp/payment-status', resellerBotAuth, async (req, res) => {
     }
   }
 
-  const reseller = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(req.reseller.id);
+  const reseller = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(record.reseller_id || req.reseller.id);
   res.json({
     success: true,
     external_reference: ref,
@@ -4030,15 +4058,24 @@ app.get('/api/admin/bot/profiles', adminAuth, async (req, res) => {
     // Sincronização em TEMPO REAL (bot de notificações se tiver token próprio)
     if (process.env.NOTIFIER_BOT_TOKEN && process.env.NOTIFIER_BOT_TOKEN !== salesToken) {
       try {
-        const [meRes, descRes] = await Promise.all([
+        const [meRes, descRes, getMeRes] = await Promise.all([
           telegramGet(process.env.NOTIFIER_BOT_TOKEN, 'getMyName'),
-          telegramGet(process.env.NOTIFIER_BOT_TOKEN, 'getMyDescription')
+          telegramGet(process.env.NOTIFIER_BOT_TOKEN, 'getMyDescription'),
+          telegramGet(process.env.NOTIFIER_BOT_TOKEN, 'getMe')
         ]);
         if (meRes && meRes.ok && meRes.result && meRes.result.name) {
           notifyName = meRes.result.name;
         }
         if (descRes && descRes.ok && descRes.result && descRes.result.description && descRes.result.description.trim()) {
           notifyBio = descRes.result.description;
+        }
+        // Auto-detecta username do bot notificador e salva como link
+        if (getMeRes && getMeRes.ok && getMeRes.result && getMeRes.result.username) {
+          const detectedLink = 'https://t.me/' + getMeRes.result.username;
+          if (!settings.bot_notify_link || settings.bot_notify_link !== detectedLink) {
+            await dbHelpers.updateSetting('bot_notify_link', detectedLink).catch(() => {});
+            console.log('🔗 Link do bot de notificações detectado:', detectedLink);
+          }
         }
       } catch (e) {}
     }

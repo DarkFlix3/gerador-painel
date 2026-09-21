@@ -703,6 +703,8 @@ async function checkPixStatus(chatId, user, externalReference, messageId) {
   try {
     const headers = { 'X-API-Key': RESELLER_API_KEY };
     if (user && user.id) headers['X-Telegram-Id'] = String(user.id);
+    if (user && user.username) headers['X-Telegram-Username'] = String(user.username);
+    if (user && user.first_name) headers['X-Telegram-Name'] = String(user.first_name);
 
     const res = await fetch(`${API_BASE_URL}/api/v1/mp/payment-status?external_reference=${encodeURIComponent(externalReference)}`, { headers });
     const data = await res.json();
@@ -1264,6 +1266,8 @@ async function handleCheckBalance(chatId, user, messageId) {
     // vinculada àquele ID de perfil (site + bot ficam juntos pelo mesmo ID).
     const headers = { 'X-API-Key': RESELLER_API_KEY };
     if (user && user.id) headers['X-Telegram-Id'] = String(user.id);
+    if (user && user.username) headers['X-Telegram-Username'] = String(user.username);
+    if (user && user.first_name) headers['X-Telegram-Name'] = String(user.first_name);
 
     const res = await fetch(`${API_BASE_URL}/api/v1/balance`, { headers });
     const data = await res.json();
