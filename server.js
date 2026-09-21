@@ -2617,6 +2617,24 @@ app.get('/api/v1/balance', resellerBotAuth, async (req, res) => {
 // Consulta as compras do comprador final identificado pelo Telegram:
 // headers X-Telegram-Id (id numérico) e/ou X-Telegram-Username (@usuario).
 // Agrupa por produto e devolve os itens entregues para o bot gerar o .txt.
+// Colunas existentes numa tabela (compatibilidade com bancos antigos).
+// Bancos legados guardavam a entrega em sales.delivered_item/stock_type e as
+// contas em products.stock_type ('contas'), sem a tabela product_items.
+async function getTableColumns(table) {
+  try {
+    if (dbHelpers.getBackend() === 'postgres') {
+      const rows = await dbHelpers.db.prepare(
+        'SELECT column_name FROM information_schema.columns WHERE table_name = ?'
+      ).all(table);
+      return new Set(rows.map((r) => r.column_name));
+    }
+    const rows = await dbHelpers.db.prepare(`PRAGMA table_info(${table})`).all();
+    return new Set(rows.map((r) => r.name));
+  } catch (e) {
+    return new Set();
+  }
+}
+
 // ==========================================
 app.get('/api/v1/my-purchases', botKeyAuth, async (req, res) => {
   try {
@@ -2641,11 +2659,35 @@ app.get('/api/v1/my-purchases', botKeyAuth, async (req, res) => {
     }
 
     const where = clauses.map((c) => `(${c})`).join(' OR ');
+
+    // Compatibilidade com bancos antigos: nem todo banco tem product_items nem
+    // as colunas legadas de entrega. Monta o SELECT conforme o que existir.
+    const salesCols = await getTableColumns('sales');
+    const productCols = await getTableColumns('products');
+    const hasProductItems = (await getTableColumns('product_items')).size > 0;
+
+    const piJoin = hasProductItems ? 'LEFT JOIN product_items pi ON pi.sale_id = s.id' : '';
+    const piCols = hasProductItems
+      ? 'pi.type AS item_type, pi.login AS account_login, pi.password AS account_password, pi.content AS item_content'
+      : 'NULL AS item_type, NULL AS account_login, NULL AS account_password, NULL AS item_content';
+
+    const legacyCols = [];
+    if (salesCols.has('delivered_item')) legacyCols.push('s.delivered_item AS legacy_delivered_item');
+    if (salesCols.has('stock_type')) legacyCols.push('s.stock_type AS legacy_stock_type');
+
+    const productJoin = (salesCols.has('product_id') && productCols.has('stock_type'))
+      ? 'LEFT JOIN products p ON p.id = s.product_id'
+      : '';
+    if (productJoin) legacyCols.push('p.stock_type AS product_stock_type');
+
+    const extraCols = legacyCols.length ? ',\n             ' + legacyCols.join(',\n             ') : '';
+
     const rows = await dbHelpers.db.prepare(`
       SELECT s.id, s.token, s.target_url, s.product, s.sale_price, s.delivery_status, s.created_at,
-             pi.type AS item_type, pi.login AS account_login, pi.password AS account_password, pi.content AS item_content
+             ${piCols}${extraCols}
       FROM sales s
-      LEFT JOIN product_items pi ON pi.sale_id = s.id
+      ${piJoin}
+      ${productJoin}
       WHERE ${where}
       ORDER BY s.created_at DESC
     `).all(...params);
@@ -2665,7 +2707,11 @@ app.get('/api/v1/my-purchases', botKeyAuth, async (req, res) => {
         item_type: row.item_type || null,
         account_login: row.account_login || null,
         account_password: row.account_password || null,
-        item_content: row.item_content || null
+        item_content: row.item_content || null,
+        // Compatibilidade: itens entregues no modelo antigo (login/senha em
+        // sales.delivered_item) e o tipo do produto (products.stock_type = 'contas').
+        delivered_item: row.legacy_delivered_item != null ? String(row.legacy_delivered_item) : null,
+        stock_type: row.product_stock_type || row.legacy_stock_type || null
       });
     }
 
@@ -3018,16 +3064,18 @@ app.delete('/api/admin/resellers/:id', adminAuth, async (req, res) => {
 app.get('/api/admin/all-sales', adminAuth, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || '100', 10), 200);
 
+  // Compatibilidade com bancos legados que ainda não têm a tabela product_items.
+  const hasProductItems = (await getTableColumns('product_items')).size > 0;
   const sales = await dbHelpers.db.prepare(`
     SELECT 
       s.id, s.token, s.target_url, s.customer_name, s.customer_id, s.customer_contact, 
       s.product, s.product_id, s.coupon_id, s.discount,
       s.sale_price, s.cost_price, s.profit, s.delivery_status, s.created_at,
       r.name as reseller_name, r.email as reseller_email,
-      pi.type AS delivered_type, pi.login AS delivered_login, pi.password AS delivered_password, pi.content AS delivered_content
+      ${hasProductItems ? 'pi.type AS delivered_type, pi.login AS delivered_login, pi.password AS delivered_password, pi.content AS delivered_content' : 'NULL AS delivered_type, NULL AS delivered_login, NULL AS delivered_password, NULL AS delivered_content'}
     FROM sales s
     JOIN resellers r ON s.reseller_id = r.id
-    LEFT JOIN product_items pi ON pi.sale_id = s.id
+    ${hasProductItems ? 'LEFT JOIN product_items pi ON pi.sale_id = s.id' : ''}
     ORDER BY s.id DESC
     LIMIT ?
   `).all(limit);
@@ -3122,12 +3170,14 @@ app.get('/api/admin/customers/:id/purchases', adminAuth, async (req, res) => {
   }
   const where = clauses.map((c) => `(${c})`).join(' OR ');
 
+  // Compatibilidade com bancos legados que ainda não têm a tabela product_items.
+  const hasProductItemsCp = (await getTableColumns('product_items')).size > 0;
   const purchases = await dbHelpers.db.prepare(`
     SELECT s.id, s.token, s.product, s.sale_price, s.delivery_status, s.created_at, s.customer_contact, r.name AS reseller_name,
-           pi.type AS item_type, pi.login AS account_login, pi.password AS account_password, pi.content AS item_content
+           ${hasProductItemsCp ? 'pi.type AS item_type, pi.login AS account_login, pi.password AS account_password, pi.content AS item_content' : 'NULL AS item_type, NULL AS account_login, NULL AS account_password, NULL AS item_content'}
     FROM sales s
     JOIN resellers r ON s.reseller_id = r.id
-    LEFT JOIN product_items pi ON pi.sale_id = s.id
+    ${hasProductItemsCp ? 'LEFT JOIN product_items pi ON pi.sale_id = s.id' : ''}
     WHERE ${where}
     ORDER BY s.created_at DESC
   `).all(...params);

@@ -1235,6 +1235,69 @@ function formatPurchaseDate(iso) {
   }
 }
 
+// ==========================================================
+// ENTREGA DE UM ITEM (conta x link) PARA O .txt DE MINHAS COMPRAS
+// ----------------------------------------------------------
+// Regra: produto de CONTA entrega Login/Senha; produto de LINK entrega o link.
+// NUNCA imprime o target_url interno (link clonado/redirect) como se fosse o
+// acesso entregue — era esse o bug que mostrava a conta (ex.: Outlook) como link.
+// Suporta tanto o modelo atual (product_items.type/login/password/content)
+// quanto o modelo antigo (sales.delivered_item = "login\nsenha" + stock_type).
+// ==========================================================
+const looksLikeUrl = (v) => /^https?:\/\//i.test(String(v || '').trim());
+
+// Descobre se o item e de conta (login/senha) ou de link.
+function deliveryKind(item) {
+  const t = String(item.item_type || item.stock_type || '').toLowerCase().trim();
+  if (t.startsWith('conta') || t === 'account' || t === 'accounts') return 'account';
+  if (t.startsWith('link')) return 'link';
+  if (item.account_login || item.account_password) return 'account';
+  return null;
+}
+
+// Separa credenciais em duas formas comuns: "login\nsenha" ou "login:senha".
+function splitCredentials(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  const lines = s.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+  if (lines.length >= 2) return { login: lines[0], password: lines.slice(1).join(' ') };
+  const m = s.match(/^([^:\n|]+?)\s*[:|]\s*(.+)$/);
+  if (m) return { login: m[1].trim(), password: m[2].trim() };
+  return null;
+}
+
+// Monta as linhas de entrega de um item do .txt (Login/Senha ou Link).
+function deliveryLines(item) {
+  const kind = deliveryKind(item);
+  const raw = item.item_content != null ? String(item.item_content)
+    : (item.delivered_item != null ? String(item.delivered_item) : null);
+
+  let login = item.account_login || null;
+  let password = item.account_password || null;
+  let parsedFromRaw = false;
+  if (!login && !password && raw && !looksLikeUrl(raw)) {
+    const creds = splitCredentials(raw);
+    if (creds) { login = creds.login; password = creds.password; parsedFromRaw = true; }
+  }
+
+  if (login || password) {
+    const out = [`Login: ${login || '(nao informado)'}`, `Senha: ${password || '(nao informado)'}`];
+    if (raw && !parsedFromRaw && raw !== login && raw !== password) out.push(`Observacao: ${raw}`);
+    return out;
+  }
+
+  // Produto de link (ou conteudo que e realmente uma URL): entrega o link.
+  if (kind !== 'account' && (kind === 'link' || looksLikeUrl(raw))) {
+    return [`Link: ${raw || (looksLikeUrl(item.link) ? item.link : '(nao informado)')}`];
+  }
+
+  if (raw) return [`Acesso: ${raw}`];
+
+  // Sem acesso registrado: nao inventa link a partir do target_url interno.
+  if (kind !== 'account' && looksLikeUrl(item.link)) return [`Link: ${item.link}`];
+  return ['Nenhum dado de entrega disponivel para este item.'];
+}
+
 // Envia/edita uma mensagem EDITANDO a atual quando possível (sem poluir o chat).
 // Se messageId for informado, tenta reutilizar a mensagem atual: se a edição falhar
 // (ex.: a mensagem é uma foto ou o texto ficou idêntico), envia nova com fallback
@@ -1328,20 +1391,9 @@ async function handleMyPurchasesProductTxt(chatId, user, index, messageId) {
       listed.forEach((item, idx) => {
         lines.push(`----------------------------------------------`);
         lines.push(`#${idx + 1} | Pedido: ${item.token}`);
-        const isLinkItem = String(item.item_type || '').toLowerCase() === 'link';
-        if (isLinkItem) {
-          // Produto de LINK: entrega o proprio link gerado/entregue
-          lines.push(`Link: ${item.item_content || item.link || '(nao informado)'}`);
-        } else if (item.account_login || item.account_password) {
-          // Produto de CONTA (ex.: Outlook): entrega o login e a senha comprados
-          lines.push(`Login: ${item.account_login || '(nao informado)'}`);
-          lines.push(`Senha: ${item.account_password || '(nao informado)'}`);
-          if (item.item_content) lines.push(`Observacao: ${item.item_content}`);
-        } else if (item.item_content || item.link) {
-          lines.push(`Link: ${item.item_content || item.link}`);
-        } else {
-          lines.push('Nenhum dado de entrega disponivel para este item.');
-        }
+        // Produto de CONTA (ex.: Outlook) -> Login/Senha; produto de LINK -> Link.
+        // Compatível com o modelo atual (product_items) e o legado (delivered_item).
+        deliveryLines(item).forEach((l) => lines.push(l));
         lines.push(`Status: ${item.delivery_status}`);
         lines.push(`Data: ${formatPurchaseDate(item.created_at)}`);
       });
