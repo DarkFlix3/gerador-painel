@@ -56,16 +56,42 @@ const getClientIp = (req) => {
 // Helper: escapa HTML para uso com parse_mode HTML do Telegram
 const escHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
 
-// Helper: identifica o usuário que comprou — prioriza o @username (ex.: @edu_coffe);
-// fallback: nome do cliente; fallback final: ID (tel. do Telegram ou IP).
+// Helper: identifica o usuário que comprou e marca o @ do Telegram da pessoa
 const customerLabel = (name, id, contact) => {
-  const n = escHtml(name).trim();
   const c = String(contact || '').trim();
-  if (c.startsWith('@')) return escHtml(c);
-  if (n) return n;
-  const i = escHtml(id).trim();
-  if (i) return i;
-  return '—';
+  const n = String(name || '').trim();
+  const rawId = String(id || '').replace(/^tg_/, '').trim();
+  const numFromContact = c.replace(/^@?ID:\s*/i, '').replace(/^tg_/i, '').trim();
+  const effectiveId = (/^\d+$/.test(rawId) ? rawId : null) || (/^\d+$/.test(numFromContact) ? numFromContact : null);
+
+  // 1) Se já tem @ no contact (ex: "@edu_coffe")
+  if (c.startsWith('@') && !/^@ID:\s*/i.test(c)) {
+    return escHtml(c);
+  }
+
+  // 2) Se o contact é um username Telegram direto (sem espaços, sem "ID:")
+  if (c && !c.includes(' ') && !/^ID:/i.test(c) && /^[a-zA-Z0-9_]{3,32}$/.test(c)) {
+    return '@' + escHtml(c);
+  }
+
+  // 3) Se o nome veio com @
+  if (n.startsWith('@')) {
+    return escHtml(n);
+  }
+
+  // 4) Se temos ID numérico do Telegram (ex.: 123456789), cria menção interativa com @ no Telegram
+  if (effectiveId) {
+    const displayName = n && n !== 'Cliente Anônimo' && n !== 'Cliente Telegram' && !/^ID:/i.test(n) ? n : 'cliente';
+    return `<a href="tg://user?id=${effectiveId}">@${escHtml(displayName)}</a>`;
+  }
+
+  // 5) Se temos apenas o nome
+  if (n && n !== 'Cliente Anônimo' && n !== 'Cliente Telegram' && !/^ID:/i.test(n)) {
+    const clean = n.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+    return clean ? `@${escHtml(clean)}` : `@${escHtml(n)}`;
+  }
+
+  return '@cliente';
 };
 
 const formatMoneyBr = (value) => {
@@ -145,7 +171,7 @@ async function getNotificationChatIds() {
 async function getRecentNotificationsFeed() {
   try {
     const txs = await dbHelpers.db.prepare(`
-      SELECT customer_name, customer_contact, type, description, product_name, amount, created_at, order_number
+      SELECT customer_name, customer_contact, customer_id, type, description, product_name, amount, created_at, order_number
       FROM financial_transactions
       ORDER BY id DESC
       LIMIT 5
@@ -160,14 +186,14 @@ async function getRecentNotificationsFeed() {
       const title = isDeposit ? '💳 Recarga PIX Aprovada!' : '🎉 Nova Compra!';
       const prod = t.product_name || (isDeposit ? 'Depósito de Saldo' : 'Spotify Premium');
       const val = formatMoneyBr(Math.abs(Number(t.amount || 0)));
-      const client = t.customer_name || (t.customer_contact ? t.customer_contact : 'Cliente');
+      const client = customerLabel(t.customer_name, t.customer_id, t.customer_contact);
       const date = t.created_at ? new Date(t.created_at).toLocaleString('pt-BR') : '';
       const order = t.order_number ? `\n🔖 Nº do Pedido: <code>${escHtml(t.order_number)}</code>` : '';
 
       return (
         `<b>${idx + 1}. ${title}</b>\n` +
         `▪️ Serviço: ${escHtml(prod)}\n` +
-        `👤 Cliente: ${escHtml(client)}\n` +
+        `👤 Cliente: ${client}\n` +
         `📈 Valor: <b>${val}</b>` +
         order +
         (date ? `\n🕒 ${date}` : '')
@@ -374,7 +400,7 @@ const _rechargeNotifiedKeys = new Set();
 
 // Envia alerta de nova venda para o bot de notificações do dono e para os inscritos
 // Notifica no bot de alertas quando um revendedor recarrega o saldo (Garantia de envio único)
-async function notifyRecharge({ reseller, amountPaid, method = 'PIX', paymentId = null, externalReference = null }) {
+async function notifyRecharge({ reseller, amountPaid, method = 'PIX', paymentId = null, externalReference = null, customerName = null, customerContact = null, telegramId = null }) {
   if (!NOTIFIER_BOT_TOKEN) return;
   if (typeof fetch !== 'function') return;
 
@@ -392,15 +418,17 @@ async function notifyRecharge({ reseller, amountPaid, method = 'PIX', paymentId 
     setTimeout(() => _rechargeNotifiedKeys.delete(dedupKey), 300000); // 5 minutos
   }
 
-  // Prioriza o ID do Telegram (identifica o revendedor no bot); phone é fallback
-  const userId = (reseller && reseller.telegram_id) || (reseller && reseller.phone) || '';
-  const userLabel = maskUserId(userId);
+  // Prioriza o @ do Telegram do cliente / revendedor
+  const tgId = telegramId || (reseller && reseller.telegram_id) || null;
+  const cContact = customerContact || (reseller && reseller.phone) || null;
+  const cName = customerName || (reseller && reseller.name) || null;
+  const clientTag = customerLabel(cName, tgId, cContact);
   const methodLabel = `Depósito via ${escHtml(method)}${String(method).toLowerCase().includes('binance') ? ' 🟡' : ''}`;
 
   const lines = [
-    '<b>Novos créditos adicionados!</b>',
+    '<b>💳 Novos créditos adicionados!</b>',
     '',
-    `👤 Usuário: ${userLabel}`,
+    `👤 Cliente: ${clientTag}`,
     `💵 Valor: ${formatMoneyBr(amountPaid)}`,
     `💳 Método: ${methodLabel}`
   ];
@@ -698,7 +726,10 @@ async function mpProcessApprovedPayment(paymentId) {
       amountPaid: amount,
       method: methodLabel,
       paymentId: pIdStr,
-      externalReference: ref
+      externalReference: ref,
+      customerName: (customer && customer.name) || record.customer_name,
+      customerContact: (customer && customer.username ? '@' + customer.username : null) || record.customer_contact,
+      telegramId: record.telegram_id
     }).catch((e) => console.error('notifyRecharge (MP) falhou:', e.message));
 
     return { ok: true, alreadyProcessed: false, amount, reseller: reseller.name };

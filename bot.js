@@ -287,7 +287,7 @@ async function sendMainMenu(chatId, messageId, user) {
 
   return result;
 }
-// Mostra o ID de Perfil da pessoa (id único no bot e no site do gerador)
+// Mostra o ID de Perfil da pessoa (id único no bot)
 function sendProfileId(chatId, user, messageId) {
   const firstName = escapeHtml(user.first_name || 'Cliente');
   const username = user.username ? '@' + escapeHtml(user.username) : '—';
@@ -298,8 +298,7 @@ function sendProfileId(chatId, user, messageId) {
     `👤 <b>Nome:</b> ${firstName}\n` +
     `📛 <b>Username:</b> ${username}\n` +
     `🆔 <b>Seu ID de Perfil:</b> <code>${profileId}</code>\n\n` +
-    `Este ID é o seu identificador único no bot e no site do gerador.\n` +
-    `💡 <b>Para vincular seu saldo:</b> envie este ID ao suporte do gerador para fazer o vínculo na sua conta.\n\n` +
+    `Este ID é o seu identificador único no bot.\n\n` +
     `📦 Toque em <b>Minhas Compras</b> para baixar um arquivo <b>.txt</b> com todos os acessos que você já recebeu.`;
 
   const profileKeyboard = {
