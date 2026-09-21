@@ -18,6 +18,16 @@ const SUPPORT_USER = process.env.SUPPORT_USER || '@seu_suporte';
 // o serviço gratuito do Render "durma" por inatividade. 0 desliga o ping.
 const KEEP_ALIVE_MINUTES = parseInt(process.env.KEEP_ALIVE_INTERVAL_MINUTES || '5', 10);
 
+// Garante que nomes e usernames com emojis, acentos ou caracteres especiais nunca quebrem os headers HTTP do fetch (ByteString)
+function safeHeaderEncode(val) {
+  if (!val) return '';
+  try {
+    return encodeURIComponent(String(val).trim());
+  } catch (e) {
+    return String(val).replace(/[^\x00-\x7F]/g, '');
+  }
+}
+
 // Comunicação robusta com a API local / remota
 // Tenta candidatos com failover automático: loopback local direto (127.0.0.1:PORT) -> RENDER_EXTERNAL_URL -> API_BASE_URL
 async function botApiFetch(path, options = {}) {
@@ -38,6 +48,22 @@ async function botApiFetch(path, options = {}) {
     candidates.push(process.env.API_BASE_URL.replace(/\/+$/, ''));
   }
 
+  // Sanitiza TODOS os headers para garantir que nenhum caractere Unicode/Emoji lance TypeError no Node.js fetch (ByteString <= 255)
+  const sanitizedHeaders = {};
+  if (options.headers) {
+    for (const [k, v] of Object.entries(options.headers)) {
+      if (v !== undefined && v !== null) {
+        const str = String(v);
+        sanitizedHeaders[k] = /[^\x00-\xFF]/.test(str) ? encodeURIComponent(str) : str;
+      }
+    }
+  }
+
+  const safeOptions = {
+    ...options,
+    headers: sanitizedHeaders
+  };
+
   const uniqueUrls = [...new Set(candidates)];
   let lastError = null;
 
@@ -45,8 +71,8 @@ async function botApiFetch(path, options = {}) {
     try {
       const fullUrl = `${base}${path.startsWith('/') ? path : '/' + path}`;
       const res = await fetch(fullUrl, {
-        ...options,
-        signal: options.signal || AbortSignal.timeout(10000)
+        ...safeOptions,
+        signal: safeOptions.signal || AbortSignal.timeout(10000)
       });
       API_BASE_URL = base;
       return res;
@@ -625,13 +651,18 @@ async function handleMpRecharge(chatId, user, amount, messageId) {
   try {
     const headers = { 'X-API-Key': RESELLER_API_KEY, 'Content-Type': 'application/json' };
     if (user && user.id) headers['X-Telegram-Id'] = String(user.id);
-    if (user && user.username) headers['X-Telegram-Username'] = String(user.username);
-    if (user && user.first_name) headers['X-Telegram-Name'] = String(user.first_name);
+    if (user && user.username) headers['X-Telegram-Username'] = safeHeaderEncode(user.username);
+    if (user && user.first_name) headers['X-Telegram-Name'] = safeHeaderEncode(user.first_name);
 
     const res = await botApiFetch('/api/v1/mp/create-pix', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ amount: amountValue })
+      body: JSON.stringify({
+        amount: amountValue,
+        telegram_id: user && user.id ? String(user.id) : undefined,
+        customer_name: user && user.first_name ? String(user.first_name) : undefined,
+        customer_contact: user && user.username ? String(user.username) : undefined
+      })
     });
     const data = await res.json();
 

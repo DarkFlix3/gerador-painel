@@ -59,6 +59,17 @@ const getClientIp = (req) => {
   return req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
 };
 
+// Helper: decodifica headers codificados com safeHeaderEncode (ex: emojis/acentos do Telegram)
+const safeHeaderDecode = (val) => {
+  if (!val) return '';
+  const str = String(val).trim();
+  try {
+    return decodeURIComponent(str);
+  } catch (e) {
+    return str;
+  }
+};
+
 // Helper: escapa HTML para uso com parse_mode HTML do Telegram
 const escHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
 
@@ -954,8 +965,8 @@ const resellerBotAuth = async (req, res, next) => {
   const tgId = (req.headers['x-telegram-id'] || '').toString().trim();
   if (tgId) {
     const cleanTg = tgId.replace(/^tg_/, '');
-    const tgUsername = (req.headers['x-telegram-username'] || '').toString().trim();
-    const tgName = (req.headers['x-telegram-name'] || '').toString().trim();
+    const tgUsername = safeHeaderDecode(req.headers['x-telegram-username'] || (req.body && req.body.customer_contact) || '');
+    const tgName = safeHeaderDecode(req.headers['x-telegram-name'] || (req.body && req.body.customer_name) || '');
 
     let byTg = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE telegram_id = ? OR telegram_id = ?').get(cleanTg, 'tg_' + cleanTg);
     if (!byTg) {
@@ -1691,8 +1702,8 @@ app.post('/api/v1/mp/create-pix', resellerBotAuth, async (req, res) => {
   }
   try {
     const tgId = (req.headers['x-telegram-id'] || (req.body && req.body.telegram_id) || '').toString().trim();
-    const tgName = (req.headers['x-telegram-name'] || (req.body && req.body.customer_name) || '').toString().trim();
-    const tgUser = (req.headers['x-telegram-username'] || (req.body && req.body.customer_contact) || '').toString().trim();
+    const tgName = safeHeaderDecode(req.headers['x-telegram-name'] || (req.body && req.body.customer_name) || '');
+    const tgUser = safeHeaderDecode(req.headers['x-telegram-username'] || (req.body && req.body.customer_contact) || '');
     const pix = await mpCreatePixPayment({
       resellerId: req.reseller.id,
       amount: parsed.amount,
@@ -3165,8 +3176,8 @@ app.get('/api/v1/my-purchases', botKeyAuth, async (req, res) => {
 app.post('/api/v1/customer-ping', botKeyAuth, async (req, res) => {
   try {
     const tgId = (req.headers['x-telegram-id'] || '').toString().trim();
-    const tgUsername = (req.headers['x-telegram-username'] || '').toString().trim();
-    const tgName = (req.headers['x-telegram-name'] || '').toString().trim();
+    const tgUsername = safeHeaderDecode(req.headers['x-telegram-username'] || '');
+    const tgName = safeHeaderDecode(req.headers['x-telegram-name'] || '');
 
     if (!tgId && !tgUsername) {
       return res.status(400).json({ success: false, error: 'Identificação do cliente não fornecida. Envie o header X-Telegram-Id e/ou X-Telegram-Username.' });
@@ -3224,8 +3235,8 @@ app.post('/api/v1/customer-ping', botKeyAuth, async (req, res) => {
 app.get('/api/v1/customer/balance', botKeyAuth, async (req, res) => {
   try {
     const tgId = (req.headers['x-telegram-id'] || '').toString().trim().replace(/^tg_/, '');
-    const tgUsername = (req.headers['x-telegram-username'] || '').toString().trim().replace(/^@/, '');
-    const tgName = (req.headers['x-telegram-name'] || '').toString().trim();
+    const tgUsername = safeHeaderDecode(req.headers['x-telegram-username'] || '').replace(/^@/, '');
+    const tgName = safeHeaderDecode(req.headers['x-telegram-name'] || '');
 
     if (!tgId && !tgUsername) {
       return res.status(400).json({ success: false, error: 'Identificação do cliente não fornecida. Envie o header X-Telegram-Id e/ou X-Telegram-Username.' });
