@@ -554,20 +554,19 @@ async function mpCreatePixPayment({ resellerId, amount, reseller, telegramId, cu
   const roundedAmount = Math.round(parseFloat(amount) * 100) / 100;
   const expirationMinutes = parseInt(process.env.MP_PIX_EXPIRATION_MINUTES || '30', 10);
 
-  let payerEmail = (reseller && reseller.email ? String(reseller.email).trim() : '');
-  const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
-  if (!payerEmail || !emailRegex.test(payerEmail) || payerEmail.endsWith('.local') || payerEmail.endsWith('.telegram') || payerEmail.endsWith('.internal')) {
-    const cleanId = String(telegramId || (reseller && reseller.telegram_id) || (reseller && reseller.id) || Date.now()).replace(/\D/g, '') || 'cliente';
-    payerEmail = `cliente_${cleanId}@gmail.com`;
-  }
-  const payerName = (customerName || (reseller && reseller.name) || 'Cliente').replace(/[^\p{L}\p{N}\s]/gu, '').trim() || 'Cliente';
+  // O Mercado Pago exige o campo payer.email na API para gerar o PIX.
+  // Para que NENHUM cliente precise de e-mail, o sistema usa um e-mail genérico válido.
+  const payerEmail = (reseller && reseller.email && reseller.email.includes('@') && !reseller.email.endsWith('.local') && !reseller.email.endsWith('.telegram') && !reseller.email.endsWith('.internal') && reseller.email.includes('.'))
+    ? reseller.email
+    : 'pagamento.darkflix@gmail.com';
+  const payerName = 'Cliente';
 
   const payment = await mpFetch('/v1/payments', {
     method: 'POST',
     idempotencyKey: externalReference,
     body: {
       transaction_amount: roundedAmount,
-      description: `Recarga de saldo - ${(reseller && reseller.name) || 'revendedor'}`,
+      description: `Recarga de saldo - ${(reseller && reseller.name) || 'DarkFlix'}`,
       payment_method_id: 'pix',
       external_reference: externalReference,
       notification_url: `${baseUrl}/api/v1/mp/webhook`,

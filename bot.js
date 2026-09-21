@@ -640,18 +640,20 @@ async function handleMpRecharge(chatId, user, amount, messageId) {
     if (prevPixMsg && prevPixMsg !== messageId) bot.deleteMessage(chatId, prevPixMsg).catch(() => {});
     let sentPix = null;
     if (data.qr_code_base64) {
-      sentPix = await bot.sendPhoto(
-        chatId,
-        Buffer.from(data.qr_code_base64, 'base64'),
-        { caption, parse_mode: 'HTML', ...keyboard },
-        { filename: 'pix-qrcode.png', contentType: 'image/png' }
-      ).catch(async (e) => {
-        console.error('[recarga] envio do QR falhou:', e && e.message ? e.message : e);
+      try {
+        sentPix = await bot.sendPhoto(
+          chatId,
+          Buffer.from(data.qr_code_base64, 'base64'),
+          { caption, parse_mode: 'HTML', ...keyboard },
+          { filename: 'pix-qrcode.png', contentType: 'image/png' }
+        );
+      } catch (photoErr) {
+        console.warn('[recarga] envio da foto falhou, enviando copia-e-cola em texto:', photoErr.message);
         sentPix = await bot.sendMessage(chatId,
           `${caption}\n\n🔑 <b>PIX Copia e Cola:</b>\n<code>${escapeHtml(data.qr_code)}</code>`,
           { parse_mode: 'HTML', ...keyboard }
         ).catch(() => null);
-      });
+      }
     } else {
       sentPix = await bot.sendMessage(chatId,
         `${caption}\n\n🔑 <b>PIX Copia e Cola:</b>\n<code>${escapeHtml(data.qr_code)}</code>`,
