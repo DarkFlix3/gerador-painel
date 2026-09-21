@@ -985,17 +985,22 @@ async function showCatalog(chatId, messageId) {
   try {
     const products = await fetchProducts();
     let text, keyboard;
-    if (!products.length) {
-      text = '🛒 <b>PRODUTOS</b>\n\n⚠️ Nenhum produto disponível no momento. Tente novamente mais tarde.';
+
+    // 1. Ordenação alfabética rigorosa de A a Z
+    products.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'pt-BR', { sensitivity: 'base' }));
+
+    // 2. Filtra produtos com estoque disponível para exibição no menu
+    const available = products.filter(p => !isSoldOut(p));
+
+    if (!available.length) {
+      text = '🛒 <b>PRODUTOS DISPONÍVEIS</b>\n\n⚠️ Nenhum produto com estoque disponível no momento. Novos estoques são repostos automaticamente!';
       keyboard = { reply_markup: { inline_keyboard: [[{ text: '🏠 Menu Principal', callback_data: 'back_to_menu' }]] } };
     } else {
-      text = '🛒 <b>PRODUTOS</b>\n\nEscolha o produto desejado:';
-      const rows = products.map((p) => {
-        let suffix = '';
-        if (isSoldOut(p)) suffix = ' — ❌ ESGOTADO';
-        else if (p.stock !== null && p.stock !== undefined) suffix = ` (${Number(p.stock)})`;
+      text = '🛒 <b>CATÁLOGO DE PRODUTOS</b>\n\nSelecione um produto abaixo para comprar ou ver detalhes:';
+      const rows = available.map((p) => {
         const icon = (p && p.emoji && String(p.emoji).trim()) ? String(p.emoji).trim() : productIcon(p);
-        return [{ text: `${icon} ${p.name} — ${brl(p.sale_price)}${suffix}`, callback_data: `prod_${p.id}` }];
+        const stockSuffix = (p.stock !== null && p.stock !== undefined) ? ` (${p.stock} un.)` : '';
+        return [{ text: `${icon} ${p.name} • ${brl(p.sale_price)}${stockSuffix}`, callback_data: `prod_${p.id}` }];
       });
       rows.push([{ text: '🏠 Menu Principal', callback_data: 'back_to_menu' }]);
       keyboard = { reply_markup: { inline_keyboard: rows } };

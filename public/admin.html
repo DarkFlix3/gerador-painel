@@ -1112,6 +1112,9 @@
                   Gerenciar Produtos dos Bots Integrados
                 </h3>
                 <p class="text-xs text-slate-400">Escolha quais produtos aparecem no seu bot do Telegram, personalize o nome, emoji, descrição, preço e ordem no menu.</p>
+                <div id="integrated-stock-stats" class="flex flex-wrap items-center gap-2 pt-1.5 text-[11px]">
+                  <!-- Renderizado via admin.js -->
+                </div>
               </div>
               <div class="flex items-center gap-2 w-full sm:w-auto">
                 <select id="filter-integration-provider" class="px-3 py-1.5 bg-slate-900 border border-white/10 rounded-xl text-xs text-slate-300 focus:outline-none focus:border-indigo-500">
@@ -1134,13 +1137,14 @@
                     <th class="py-3 px-4">Descrição no Bot</th>
                     <th class="py-3 px-3">Custo Orig. / R$</th>
                     <th class="py-3 px-3">Preço de Venda</th>
+                    <th class="py-3 px-2 text-center">Estoque</th>
                     <th class="py-3 px-2 text-center">Ordem</th>
                     <th class="py-3 px-3 text-center">Ações</th>
                   </tr>
                 </thead>
                 <tbody id="integrated-products-tbody" class="divide-y divide-white/5">
                   <tr>
-                    <td colspan="8" class="text-center py-6 text-slate-500">Nenhum produto integrado encontrado. Conecte um bot fornecedor acima para importar o catálogo.</td>
+                    <td colspan="9" class="text-center py-6 text-slate-500">Nenhum produto integrado encontrado. Conecte um bot fornecedor acima para importar o catálogo.</td>
                   </tr>
                 </tbody>
               </table>

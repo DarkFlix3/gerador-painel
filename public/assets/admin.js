@@ -2559,10 +2559,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
       __adminIntegratedProducts = integrated;
 
+      // Atualiza contadores rápidos de estoque no topo
+      const totalCount = integrated.length;
+      const outOfStockCount = integrated.filter(p => p.stock !== null && p.stock !== undefined && Number(p.stock) <= 0).length;
+      const inStockCount = totalCount - outOfStockCount;
+      const statsEl = document.getElementById('integrated-stock-stats');
+      if (statsEl) {
+        statsEl.innerHTML = `
+          <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-white/10 font-semibold">
+            <i data-lucide="layers" class="w-3 h-3 text-indigo-400"></i>
+            Total: ${totalCount} produtos
+          </span>
+          <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-semibold">
+            <i data-lucide="check-circle" class="w-3 h-3"></i>
+            ${inStockCount} com estoque (ativos)
+          </span>
+          ${outOfStockCount > 0 ? `
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/30 font-bold">
+              <i data-lucide="alert-triangle" class="w-3 h-3"></i>
+              ${outOfStockCount} esgotados (auto-desativados)
+            </span>
+          ` : ''}
+        `;
+      }
+
       if (integrated.length === 0) {
         tbody.innerHTML = `
           <tr>
-            <td colspan="8" class="text-center py-10 text-slate-500">
+            <td colspan="9" class="text-center py-10 text-slate-500">
               <div class="max-w-md mx-auto space-y-2">
                 <i data-lucide="package-search" class="w-8 h-8 text-slate-600 mx-auto"></i>
                 <p class="text-xs font-medium text-slate-400">Nenhum produto integrado encontrado ${filterProviderId !== 'all' ? 'para este fornecedor' : ''}.</p>
@@ -2581,6 +2605,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
       tbody.innerHTML = integrated.map(p => {
         const isVisible = p.visible_in_bot === 1 || p.visible_in_bot === true || p.visible_in_bot === '1' || p.visible_in_bot === undefined;
+        const isSoldOut = p.stock !== null && p.stock !== undefined && Number(p.stock) <= 0;
+        const stockVal = p.stock !== null && p.stock !== undefined ? Number(p.stock) : null;
         const provName = providerMap.get(Number(p.provider_id)) || `Fornecedor #${p.provider_id}`;
         const costNum = Number(p.cost_price || 0);
         const saleNum = Number(p.price_value || p.sale_price || 0);
@@ -2597,8 +2623,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 <input type="checkbox" id="prod-vis-${p.id}" class="sr-only peer" ${isVisible ? 'checked' : ''} onchange="toggleProductVisibility(${p.id}, this.checked)">
                 <div class="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-600"></div>
               </label>
-              <span id="prod-vis-badge-${p.id}" class="block text-[9px] font-bold uppercase tracking-wider mt-1 ${isVisible ? 'text-emerald-400' : 'text-slate-500'}">
-                ${isVisible ? 'No Bot' : 'Oculto'}
+              <span id="prod-vis-badge-${p.id}" class="block text-[9px] font-bold uppercase tracking-wider mt-1 ${isSoldOut ? 'text-rose-400' : (isVisible ? 'text-emerald-400' : 'text-slate-500')}">
+                ${isSoldOut ? 'Esgotado' : (isVisible ? 'No Bot' : 'Oculto')}
               </span>
             </td>
 
@@ -2640,12 +2666,33 @@ document.addEventListener('DOMContentLoaded', () => {
               </span>
             </td>
 
-            <!-- 7. Ordem no Menu -->
+            <!-- 7. Estoque Fornecedor & Status Automático -->
+            <td class="py-3 px-2 text-center whitespace-nowrap">
+              ${isSoldOut ? `
+                <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-500/15 text-rose-400 border border-rose-500/30 shadow-sm shadow-rose-950/40">
+                  <i data-lucide="x-circle" class="w-3 h-3"></i>
+                  ESGOTADO (0)
+                </span>
+                <span class="block text-[9px] text-rose-400/80 font-semibold mt-0.5">Auto-desativado</span>
+              ` : (stockVal !== null ? `
+                <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                  <i data-lucide="package-check" class="w-3 h-3"></i>
+                  ${stockVal} un.
+                </span>
+                <span class="block text-[9px] text-emerald-400/80 font-medium mt-0.5">Disponível</span>
+              ` : `
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-800 text-slate-400 border border-white/10">
+                  Ilimitado
+                </span>
+              `)}
+            </td>
+
+            <!-- 8. Ordem no Menu -->
             <td class="py-3 px-2 text-center">
               <input type="number" id="prod-sort-${p.id}" value="${Number(p.sort_order || 0)}" class="w-12 bg-slate-900 border border-white/10 rounded-xl px-1 py-1.5 text-xs font-mono text-center text-slate-300 focus:border-indigo-500 focus:outline-none transition-all shadow-inner" title="Ordem no menu do Telegram (menores aparecem primeiro)">
             </td>
 
-            <!-- 8. Ações -->
+            <!-- 9. Ações -->
             <td class="py-3 px-3 text-center whitespace-nowrap">
               <button onclick="saveProductCustomization(${p.id}, this)" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md shadow-indigo-600/20 transition-all mx-auto">
                 <i data-lucide="save" class="w-3.5 h-3.5"></i>
@@ -2659,7 +2706,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (window.lucide) window.lucide.createIcons();
     } catch (err) {
       if (tbody) {
-        tbody.innerHTML = `<tr><td colspan="8" class="text-center py-6 text-rose-400 text-xs">${escapeHtml(err.message)}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="9" class="text-center py-6 text-rose-400 text-xs">${escapeHtml(err.message)}</td></tr>`;
       }
     }
   }

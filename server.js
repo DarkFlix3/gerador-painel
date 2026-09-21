@@ -2291,6 +2291,59 @@ async function getUsdToBrlRate(force = false) {
   return cachedUsdRate;
 }
 
+// Helper para atribuir emojis altamente representativos por produto da GGOSOMA
+function getGgsomaEmoji(name, slug = '') {
+  const text = `${name || ''} ${slug || ''}`.toLowerCase();
+  // IA & Chatbots
+  if (text.includes('chatgpt') || text.includes('gpt') || text.includes('openai')) return '🤖';
+  if (text.includes('claude') || text.includes('anthropic')) return '🧠';
+  if (text.includes('gemini') || text.includes('google ai')) return '✨';
+  if (text.includes('cursor')) return '💻';
+  if (text.includes('manus')) return '🦾';
+  if (text.includes('elevenlabs') || text.includes('voice')) return '🎙️';
+  if (text.includes('heygen')) return '🗣️';
+  if (text.includes('chatprd')) return '💬';
+  if (text.includes('bolt.new') || text.includes('bolt')) return '⚡';
+  if (text.includes('replit')) return '💻';
+  // Streaming, Vídeo & Áudio
+  if (text.includes('capcut')) return '🎬';
+  if (text.includes('youtube')) return '📺';
+  if (text.includes('netflix')) return '🍿';
+  if (text.includes('prime video') || text.includes('amazon prime')) return '🎥';
+  if (text.includes('runway')) return '🎞️';
+  if (text.includes('spotify') || text.includes('deezer') || text.includes('music')) return '🎧';
+  // Design, UI & Apresentação
+  if (text.includes('canva')) return '🖌️';
+  if (text.includes('figma')) return '🎨';
+  if (text.includes('framer')) return '🖼️';
+  if (text.includes('mobbin')) return '📱';
+  if (text.includes('magic patterns')) return '📐';
+  if (text.includes('gamma')) return '📊';
+  // Dev, Infra & Automação
+  if (text.includes('railway')) return '🚂';
+  if (text.includes('supabase')) return '🗄️';
+  if (text.includes('n8n')) return '🔀';
+  if (text.includes('gumloop')) return '🔄';
+  if (text.includes('factory')) return '🏭';
+  if (text.includes('posthog')) return '🦔';
+  if (text.includes('linear')) return '📈';
+  if (text.includes('jam team')) return '🍓';
+  if (text.includes('granola')) return '🥣';
+  if (text.includes('lovable')) return '💜';
+  // Aprendizado, Docs & Carreira
+  if (text.includes('coursera')) return '🎓';
+  if (text.includes('duolingo')) return '🦉';
+  if (text.includes('quillbot')) return '🪶';
+  if (text.includes('ilovepdf') || text.includes('pdf')) return '📄';
+  if (text.includes('linkedin') || text.includes('career')) return '💼';
+  if (text.includes('notion')) return '📝';
+  // Segurança, Privacidade & Mensagens
+  if (text.includes('telegram')) return '⭐';
+  if (text.includes('proton')) return '🛡️';
+  if (text.includes('vpn') || text.includes('express') || text.includes('avira')) return '🔒';
+  return '🎁';
+}
+
 // Helper universal para buscar produtos de bots fornecedores
 // Suporta o ecossistema Quantum (GET /api/v1/products com X-API-Key)
 // e a Partner API do GGSoma (GET /catalog/products com Bearer sk_live_...)
@@ -2339,18 +2392,22 @@ async function fetchProviderProducts(apiUrl, apiKey) {
         const costUsd = parseFloat(p.yourPrice || p.catalogPrice || 0);
         const costBrl = Math.round(costUsd * usdRate * 100) / 100;
         const defaultSalePrice = Math.round(costBrl * (1 + marginPercent / 100) * 100) / 100;
-        const normalEmoji = (p.emoji && p.emoji.normal) || (p.provider && p.provider.emoji && p.provider.emoji.normal) || '🎁';
+        const stockCount = (p.stock && typeof p.stock.count === 'number') ? p.stock.count : null;
+        // Emojis representativos específicos para o catálogo GGSoma
+        const representativeEmoji = getGgsomaEmoji(p.name, p.slug);
+        const activeStatus = (stockCount !== null && stockCount <= 0) ? 0 : 1;
 
         return {
           id: p.slug || String(p.id),
           external_product_id: p.slug || String(p.id),
           name: p.name,
           description: p.deliveryType ? `Entrega: ${p.deliveryType}${p.durationDays ? ` • Duração: ${p.durationDays} dias` : ''}` : null,
-          emoji: normalEmoji,
+          emoji: representativeEmoji,
           cost_usd: costUsd,
           cost_price: costBrl,
           sale_price: defaultSalePrice,
-          stock: (p.stock && typeof p.stock.count === 'number') ? p.stock.count : null,
+          stock: stockCount,
+          active: activeStatus,
           delivery_type: p.deliveryType
         };
       })
@@ -2496,15 +2553,17 @@ app.post('/api/admin/integrations', adminAuth, async (req, res) => {
     if (fetched.products.length > 0 && provider && provider.id) {
       for (const p of fetched.products) {
         const now = new Date().toISOString();
+        const activeStatus = (p.stock !== null && p.stock !== undefined && Number(p.stock) <= 0) ? 0 : 1;
         await dbHelpers.db.prepare(`
           INSERT INTO products (name, description, emoji, cost_price, price_type, price_value, active, visible_in_bot, sort_order, stock, provider_id, external_product_id, cost_usd, created_at)
-          VALUES (?, ?, ?, ?, 'fixed', ?, 1, 1, 0, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, 'fixed', ?, ?, 1, 0, ?, ?, ?, ?, ?)
         `).run(
           String(p.name).trim(),
           p.description ? String(p.description).trim() : null,
           p.emoji || '🎁',
           p.cost_price,
           p.sale_price,
+          activeStatus,
           p.stock,
           provider.id,
           p.external_product_id,
@@ -2574,22 +2633,35 @@ app.post('/api/admin/integrations/:id/sync', adminAuth, async (req, res) => {
 
     let inserted = 0;
     let updated = 0;
+    const isGgsoma = (provider.api_key && provider.api_key.startsWith('sk_live_')) || (provider.api_url && provider.api_url.includes('ggsoma'));
+
     for (const p of fetched.products) {
       const existing = await dbHelpers.db.prepare('SELECT * FROM products WHERE provider_id = ? AND external_product_id = ?').get(provider.id, p.external_product_id);
+      const activeStatus = (p.stock !== null && p.stock !== undefined && Number(p.stock) <= 0) ? 0 : 1;
+
       if (existing) {
-        // Atualiza custo e estoque, preservando preço de venda se customizado manualmente
-        await dbHelpers.db.prepare('UPDATE products SET cost_price = ?, cost_usd = ?, stock = ? WHERE id = ?').run(p.cost_price, p.cost_usd || 0, p.stock, existing.id);
+        // Se for GGSoma e o emoji atual for genérico 🎁, atualiza para o representativo
+        const emojiVal = (isGgsoma && (!existing.emoji || existing.emoji === '🎁')) ? p.emoji : (existing.emoji || p.emoji || '🎁');
+        await dbHelpers.db.prepare('UPDATE products SET cost_price = ?, cost_usd = ?, stock = ?, active = ?, emoji = ? WHERE id = ?').run(
+          p.cost_price,
+          p.cost_usd || 0,
+          p.stock,
+          activeStatus,
+          emojiVal,
+          existing.id
+        );
         updated++;
       } else {
         await dbHelpers.db.prepare(`
           INSERT INTO products (name, description, emoji, cost_price, price_type, price_value, active, visible_in_bot, sort_order, stock, provider_id, external_product_id, cost_usd, created_at)
-          VALUES (?, ?, ?, ?, 'fixed', ?, 1, 1, 0, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, 'fixed', ?, ?, 1, 0, ?, ?, ?, ?, ?)
         `).run(
           String(p.name).trim(),
           p.description ? String(p.description).trim() : null,
           p.emoji || '🎁',
           p.cost_price,
           p.sale_price,
+          activeStatus,
           p.stock,
           provider.id,
           p.external_product_id,
@@ -2914,7 +2986,7 @@ app.delete('/api/admin/coupons/:id', adminAuth, async (req, res) => {
 // ---------- CATALOGO: PORTAL DO REVENDEDOR ----------
 
 app.get('/api/reseller/products', resellerUserAuth, async (req, res) => {
-  const products = await dbHelpers.db.prepare('SELECT * FROM products WHERE active = 1 ORDER BY sort_order ASC, id ASC').all();
+  const products = await dbHelpers.db.prepare('SELECT * FROM products WHERE active = 1 ORDER BY sort_order ASC, LOWER(name) ASC, id ASC').all();
   res.json({
     success: true,
     data: products.map((p) => {
@@ -2957,7 +3029,7 @@ app.post('/api/reseller/validate-coupon', resellerUserAuth, async (req, res) => 
 // ---------- CATALOGO: API PARA BOTS ----------
 
 app.get('/api/v1/products', resellerBotAuth, async (req, res) => {
-  const products = await dbHelpers.db.prepare('SELECT * FROM products WHERE active = 1 AND (visible_in_bot = 1 OR visible_in_bot IS NULL) ORDER BY sort_order ASC, id ASC').all();
+  const products = await dbHelpers.db.prepare('SELECT * FROM products WHERE active = 1 AND (visible_in_bot = 1 OR visible_in_bot IS NULL) ORDER BY sort_order ASC, LOWER(name) ASC, id ASC').all();
   res.json({
     success: true,
     data: products.map((p) => {
@@ -5461,6 +5533,60 @@ app.use((err, req, res, next) => {
 });
 
 // ==========================================
+// MONITORAMENTO AUTOMÁTICO DE ESTOQUE GGOSOMA
+// Verifica estoque periodicamente e ativa/desativa produtos automaticamente
+// ==========================================
+async function checkGgsomaStock() {
+  try {
+    const providers = await dbHelpers.getExternalProviders();
+    const ggsomaProviders = providers.filter(p => 
+      (p.api_key && p.api_key.startsWith('sk_live_')) || 
+      (p.api_url && (p.api_url.includes('ggsoma') || p.api_url.includes('partner/v1')))
+    );
+
+    for (const provider of ggsomaProviders) {
+      if (!provider.api_key) continue;
+      try {
+        const cleanKey = provider.api_key.trim();
+        const res = await fetch('https://ggsoma.store/api/partner/v1/catalog/products', {
+          headers: {
+            'Authorization': `Bearer ${cleanKey}`,
+            'X-API-Key': cleanKey
+          },
+          signal: AbortSignal.timeout(12000)
+        });
+        if (!res.ok) continue;
+        const data = await res.json();
+        if (!data || !Array.isArray(data.data)) continue;
+
+        let deactivatedCount = 0;
+        let activatedCount = 0;
+
+        for (const item of data.data) {
+          const extId = item.slug || String(item.id);
+          const stockCount = (item.stock && typeof item.stock.count === 'number') ? item.stock.count : null;
+          if (stockCount === null) continue;
+
+          const shouldBeActive = stockCount > 0 ? 1 : 0;
+          const current = await dbHelpers.db.prepare('SELECT id, stock, active FROM products WHERE provider_id = ? AND external_product_id = ?').get(provider.id, extId);
+          if (current) {
+            if (Number(current.stock) !== stockCount || Number(current.active) !== shouldBeActive) {
+              await dbHelpers.db.prepare('UPDATE products SET stock = ?, active = ? WHERE id = ?').run(stockCount, shouldBeActive, current.id);
+              if (shouldBeActive === 0) deactivatedCount++;
+              else activatedCount++;
+            }
+          }
+        }
+
+        if (deactivatedCount > 0 || activatedCount > 0) {
+          console.log(`📦 [ggsoma-stock] Estoque atualizado: ${deactivatedCount} produto(s) esgotado(s)/desativado(s), ${activatedCount} produto(s) com estoque reativado(s).`);
+        }
+      } catch (e) {}
+    }
+  } catch (err) {}
+}
+
+// ==========================================
 // INICIALIZAÇÃO DO SERVIDOR
 // (aguarda o banco de dados ficar pronto antes de escutar)
 // ==========================================
@@ -5489,6 +5615,11 @@ dbHelpers.initDb()
       } else {
         console.log('🔕 Alertas de venda desativados — defina NOTIFIER_BOT_TOKEN e NOTIFY_CHAT_ID.');
       }
+
+      // Verificação periódica de estoque GGOSOMA e auto ativação/desativação
+      setTimeout(checkGgsomaStock, 3000);
+      setInterval(checkGgsomaStock, 4 * 60 * 1000);
+
       console.log(`🚀 Quantum Link Generator rodando na porta ${PORT}`);
       console.log(`🔗 Gerador Público:       http://localhost:${PORT}`);
       console.log(`🛡️  Painel Admin:           http://localhost:${PORT}/admin.html`);
