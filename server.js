@@ -151,9 +151,17 @@ async function syncTelegramProfile() {
     const username = me.ok && me.result && me.result.username ? me.result.username : '';
     const handle = username ? '@' + username : '';
 
-    // Nome oficial da marca
+    // Nome oficial da marca e comandos oficiais
     try {
       await telegramPost(salesToken, 'setMyName', { name: 'DarkFlix' });
+      const commands = [
+        { command: 'start', description: 'Menu Principal' },
+        { command: 'saldo', description: 'Consultar Saldo' },
+        { command: 'perfil', description: 'Meu ID de Perfil' },
+        { command: 'ajuda', description: 'Como Funciona' },
+        { command: 'recarga', description: 'Adicionar Saldo via PIX' }
+      ];
+      await telegramPost(salesToken, 'setMyCommands', { commands });
     } catch (e) { /* silencioso */ }
 
     // Bio do bot de vendas (curta e completa) → bot de alertas, incluindo o @ do bot de vendas

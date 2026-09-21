@@ -33,6 +33,19 @@ if (!RESELLER_API_KEY) {
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
+// Sincroniza comandos oficiais do bot no menu do Telegram
+(async () => {
+  try {
+    await bot.setMyCommands([
+      { command: 'start', description: 'Menu Principal' },
+      { command: 'saldo', description: 'Consultar Saldo' },
+      { command: 'perfil', description: 'Meu ID de Perfil' },
+      { command: 'ajuda', description: 'Como Funciona' },
+      { command: 'recarga', description: 'Adicionar Saldo via PIX' }
+    ]);
+  } catch (e) { /* silencioso */ }
+})();
+
 // O bot NUNCA pode morrer por causa de um envio que falhou (ex: URL de botão inválida)
 process.on('unhandledRejection', (reason) => {
   console.error('[unhandledRejection]', reason && reason.message ? reason.message : reason);
