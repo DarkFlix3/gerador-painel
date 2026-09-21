@@ -368,6 +368,16 @@ const SQLITE_DDL = `
     created_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_notify_subs_chat ON notification_subscribers(chat_id);
+
+  CREATE TABLE IF NOT EXISTS external_providers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    api_url TEXT NOT NULL,
+    api_key TEXT NOT NULL,
+    active INTEGER DEFAULT 1,
+    last_sync TEXT,
+    created_at TEXT NOT NULL
+  );
 `;
 
 const POSTGRES_DDL = `
@@ -606,6 +616,16 @@ const POSTGRES_DDL = `
     created_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_notify_subs_chat ON notification_subscribers(chat_id);
+
+  CREATE TABLE IF NOT EXISTS external_providers (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    api_url TEXT NOT NULL,
+    api_key TEXT NOT NULL,
+    active INTEGER DEFAULT 1,
+    last_sync TEXT,
+    created_at TEXT NOT NULL
+  );
 `;
 
 // Colunas adicionadas em versões posteriores (migração segura)
@@ -633,7 +653,13 @@ const EXTRA_COLUMNS = {
     'target_url TEXT',
     // Estoque do produto. NULL = ilimitado, 0 = esgotado. Decrementado a cada venda.
     'stock INTEGER',
-    "emoji TEXT DEFAULT '🎁'"
+    "emoji TEXT DEFAULT '🎁'",
+    'provider_id BIGINT',
+    'external_product_id TEXT',
+    'visible_in_bot INTEGER DEFAULT 1',
+    'sort_order INTEGER DEFAULT 0',
+    "price_type TEXT DEFAULT 'fixed'",
+    'price_value DOUBLE PRECISION DEFAULT 0.00'
   ],
   mp_payments: [
     'telegram_id TEXT',
@@ -1059,6 +1085,53 @@ const helpers = {
     } catch (e) {
       return [];
     }
+  },
+
+  getExternalProviders: async () => {
+    try {
+      return await db.prepare('SELECT * FROM external_providers ORDER BY id DESC').all();
+    } catch (e) {
+      return [];
+    }
+  },
+
+  getExternalProviderById: async (id) => {
+    try {
+      return await db.prepare('SELECT * FROM external_providers WHERE id = ?').get(id);
+    } catch (e) {
+      return null;
+    }
+  },
+
+  createExternalProvider: async ({ name, api_url, api_key }) => {
+    const now = new Date().toISOString();
+    const cleanUrl = String(api_url || '').replace(/\/+$/, '');
+    const res = await db.prepare(`
+      INSERT INTO external_providers (name, api_url, api_key, active, last_sync, created_at)
+      VALUES (?, ?, ?, 1, NULL, ?) RETURNING id
+    `).run(name, cleanUrl, api_key, now);
+    const newId = res.lastInsertRowid || (res.rows && res.rows[0] && res.rows[0].id);
+    return newId ? await helpers.getExternalProviderById(newId) : null;
+  },
+
+  updateExternalProvider: async (id, fields = {}) => {
+    const sets = [];
+    const params = [];
+    if (fields.name !== undefined) { sets.push('name = ?'); params.push(fields.name); }
+    if (fields.api_url !== undefined) { sets.push('api_url = ?'); params.push(String(fields.api_url).replace(/\/+$/, '')); }
+    if (fields.api_key !== undefined) { sets.push('api_key = ?'); params.push(fields.api_key); }
+    if (fields.active !== undefined) { sets.push('active = ?'); params.push(Number(fields.active)); }
+    if (fields.last_sync !== undefined) { sets.push('last_sync = ?'); params.push(fields.last_sync); }
+    if (!sets.length) return await helpers.getExternalProviderById(id);
+    params.push(id);
+    await db.prepare(`UPDATE external_providers SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+    return await helpers.getExternalProviderById(id);
+  },
+
+  deleteExternalProvider: async (id) => {
+    // Desvincula produtos que vieram deste provider ou os desativa
+    await db.prepare('UPDATE products SET active = 0, visible_in_bot = 0 WHERE provider_id = ?').run(id);
+    return await db.prepare('DELETE FROM external_providers WHERE id = ?').run(id);
   }
 };
 

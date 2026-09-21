@@ -2001,6 +2001,8 @@ app.get('/api/admin/products', adminAuth, async (req, res) => {
       price_value: Number(p.price_value || 0),
       active: Number(p.active || 0),
       sort_order: Number(p.sort_order || 0),
+      visible_in_bot: p.visible_in_bot === 0 ? 0 : 1,
+      provider_id: p.provider_id ? Number(p.provider_id) : null,
       stock: (p.stock === null || p.stock === undefined) ? null : Number(p.stock),
       item_count: itemsCount.get(Number(p.id)) || 0
     }))
@@ -2240,6 +2242,310 @@ app.delete('/api/admin/products/:id/items/:itemId', adminAuth, async (req, res) 
   res.json({ success: true, message: 'Item removido do estoque.', stock });
 });
 
+// ---------- INTEGRAÇÕES DE BOTS (API DE FORNECEDORES) ----------
+
+// 1. Lista todos os bots integrados com contagem de produtos sincronizados
+app.get('/api/admin/integrations', adminAuth, async (req, res) => {
+  try {
+    const providers = await dbHelpers.getExternalProviders();
+    const productCounts = new Map();
+    try {
+      const counts = await dbHelpers.db.prepare('SELECT provider_id, COUNT(*) as c FROM products WHERE provider_id IS NOT NULL GROUP BY provider_id').all();
+      for (const row of counts) {
+        productCounts.set(Number(row.provider_id), Number(row.c));
+      }
+    } catch (e) {}
+
+    res.json({
+      success: true,
+      data: providers.map(p => ({
+        ...p,
+        id: Number(p.id),
+        products_count: productCounts.get(Number(p.id)) || 0
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 2. Conectar novo bot fornecedor (testa a conexão e já sincroniza produtos)
+app.post('/api/admin/integrations', adminAuth, async (req, res) => {
+  try {
+    const { name, api_url, api_key } = req.body || {};
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ success: false, error: 'Informe um nome para identificar este bot fornecedor.' });
+    }
+    if (!api_url || !String(api_url).trim()) {
+      return res.status(400).json({ success: false, error: 'Informe a URL da API do bot fornecedor.' });
+    }
+    if (!api_key || !String(api_key).trim()) {
+      return res.status(400).json({ success: false, error: 'Informe a Chave de API (X-API-Key) do bot fornecedor.' });
+    }
+
+    const cleanUrl = String(api_url).trim().replace(/\/+$/, '');
+    const cleanKey = String(api_key).trim();
+
+    // Testa a conexão antes de salvar
+    let testSuccess = false;
+    let fetchedProducts = [];
+    try {
+      const testRes = await fetch(`${cleanUrl}/api/v1/products`, {
+        headers: { 'X-API-Key': cleanKey },
+        signal: AbortSignal.timeout(10000)
+      });
+      const testData = await testRes.json();
+      if (testRes.ok && testData.success && Array.isArray(testData.data)) {
+        testSuccess = true;
+        fetchedProducts = testData.data;
+      }
+    } catch (testErr) {
+      try {
+        const pingRes = await fetch(`${cleanUrl}/health`, { signal: AbortSignal.timeout(5000) });
+        if (pingRes.ok) testSuccess = true;
+      } catch (e) {}
+    }
+
+    if (!testSuccess) {
+      return res.status(400).json({
+        success: false,
+        error: 'Não foi possível conectar à API do bot fornecedor. Verifique se a URL e a Chave de API estão corretas e se o bot está online.'
+      });
+    }
+
+    const provider = await dbHelpers.createExternalProvider({
+      name: String(name).trim(),
+      api_url: cleanUrl,
+      api_key: cleanKey
+    });
+
+    // Sincroniza produtos imediatamente se disponíveis
+    let syncedCount = 0;
+    if (fetchedProducts.length > 0 && provider && provider.id) {
+      for (const p of fetchedProducts) {
+        const extId = String(p.id || p.product_id || p.name);
+        const costPrice = Number(p.sale_price || p.cost_price || p.price || 0);
+        const salePrice = Number(p.sale_price || p.price || (costPrice * 1.3).toFixed(2));
+        const now = new Date().toISOString();
+        await dbHelpers.db.prepare(`
+          INSERT INTO products (name, description, emoji, cost_price, price_type, price_value, active, visible_in_bot, sort_order, stock, provider_id, external_product_id, created_at)
+          VALUES (?, ?, ?, ?, 'fixed', ?, 1, 1, 0, ?, ?, ?, ?)
+        `).run(
+          String(p.name || 'Produto').trim(),
+          p.description ? String(p.description).trim() : null,
+          p.emoji || '🎁',
+          costPrice,
+          salePrice,
+          (p.stock !== null && p.stock !== undefined) ? Number(p.stock) : null,
+          provider.id,
+          extId,
+          now
+        );
+        syncedCount++;
+      }
+      await dbHelpers.updateExternalProvider(provider.id, { last_sync: new Date().toISOString() });
+    }
+
+    res.json({
+      success: true,
+      message: `Bot conectado com sucesso! ${syncedCount} produto(s) sincronizado(s).`,
+      data: provider,
+      synced_count: syncedCount
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 3. Atualizar bot fornecedor
+app.put('/api/admin/integrations/:id', adminAuth, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const provider = await dbHelpers.getExternalProviderById(id);
+    if (!provider) {
+      return res.status(404).json({ success: false, error: 'Bot integrado não encontrado.' });
+    }
+    const updated = await dbHelpers.updateExternalProvider(id, req.body || {});
+    res.json({ success: true, message: 'Integração atualizada com sucesso!', data: updated });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 4. Desconectar bot fornecedor
+app.delete('/api/admin/integrations/:id', adminAuth, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const provider = await dbHelpers.getExternalProviderById(id);
+    if (!provider) {
+      return res.status(404).json({ success: false, error: 'Bot integrado não encontrado.' });
+    }
+    await dbHelpers.deleteExternalProvider(id);
+    res.json({ success: true, message: 'Bot fornecedor desconectado com sucesso.' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 5. Sincronizar catálogo de produtos do bot fornecedor
+app.post('/api/admin/integrations/:id/sync', adminAuth, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const provider = await dbHelpers.getExternalProviderById(id);
+    if (!provider) {
+      return res.status(404).json({ success: false, error: 'Bot integrado não encontrado.' });
+    }
+
+    const cleanUrl = provider.api_url.replace(/\/+$/, '');
+    const resExt = await fetch(`${cleanUrl}/api/v1/products`, {
+      headers: { 'X-API-Key': provider.api_key },
+      signal: AbortSignal.timeout(10000)
+    });
+    const dataExt = await resExt.json();
+    if (!resExt.ok || !dataExt.success || !Array.isArray(dataExt.data)) {
+      return res.status(502).json({
+        success: false,
+        error: (dataExt && dataExt.error) || 'Falha ao buscar produtos no bot fornecedor. Verifique a chave ou conexão.'
+      });
+    }
+
+    let inserted = 0;
+    let updated = 0;
+    for (const p of dataExt.data) {
+      const extId = String(p.id || p.product_id || p.name);
+      const costPrice = Number(p.sale_price || p.cost_price || p.price || 0);
+      const stock = (p.stock !== null && p.stock !== undefined) ? Number(p.stock) : null;
+
+      const existing = await dbHelpers.db.prepare('SELECT * FROM products WHERE provider_id = ? AND external_product_id = ?').get(provider.id, extId);
+      if (existing) {
+        // Atualiza custo e estoque, mas PRESERVA as personalizações do admin
+        await dbHelpers.db.prepare('UPDATE products SET cost_price = ?, stock = ? WHERE id = ?').run(costPrice, stock, existing.id);
+        updated++;
+      } else {
+        const defaultSalePrice = Number(p.sale_price || p.price || (costPrice * 1.3).toFixed(2));
+        await dbHelpers.db.prepare(`
+          INSERT INTO products (name, description, emoji, cost_price, price_type, price_value, active, visible_in_bot, sort_order, stock, provider_id, external_product_id, created_at)
+          VALUES (?, ?, ?, ?, 'fixed', ?, 1, 1, 0, ?, ?, ?, ?)
+        `).run(
+          String(p.name || 'Produto').trim(),
+          p.description ? String(p.description).trim() : null,
+          p.emoji || '🎁',
+          costPrice,
+          defaultSalePrice,
+          stock,
+          provider.id,
+          extId,
+          new Date().toISOString()
+        );
+        inserted++;
+      }
+    }
+
+    const now = new Date().toISOString();
+    await dbHelpers.updateExternalProvider(provider.id, { last_sync: now });
+
+    res.json({
+      success: true,
+      message: `Sincronização concluída! ${inserted} novo(s) produto(s), ${updated} atualizado(s).`,
+      inserted,
+      updated,
+      last_sync: now
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: `Erro na sincronização: ${err.message}` });
+  }
+});
+
+// 6. Lista produtos de um bot fornecedor
+app.get('/api/admin/integrations/:id/products', adminAuth, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const products = await dbHelpers.db.prepare('SELECT * FROM products WHERE provider_id = ? ORDER BY sort_order ASC, id ASC').all(id);
+    res.json({
+      success: true,
+      data: products.map(p => ({
+        ...p,
+        id: Number(p.id),
+        emoji: p.emoji || '🎁',
+        cost_price: Number(p.cost_price || 0),
+        price_value: Number(p.price_value || 0),
+        sale_price: Number(p.price_value || p.price || 0),
+        visible_in_bot: p.visible_in_bot === 0 ? 0 : 1,
+        sort_order: Number(p.sort_order || 0),
+        active: Number(p.active || 0)
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 7. Atualização de personalização de produto para o bot (nome, emoji, descrição, preço, visibilidade e ordem)
+app.patch('/api/admin/products/:id/customization', adminAuth, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const product = await dbHelpers.db.prepare('SELECT * FROM products WHERE id = ?').get(id);
+    if (!product) {
+      return res.status(404).json({ success: false, error: 'Produto não encontrado.' });
+    }
+
+    const body = req.body || {};
+    const sets = [];
+    const params = [];
+
+    if (body.name !== undefined) {
+      const name = String(body.name).trim();
+      if (!name) return res.status(400).json({ success: false, error: 'O nome do produto não pode ficar vazio.' });
+      sets.push('name = ?');
+      params.push(name);
+    }
+
+    if (body.emoji !== undefined) {
+      sets.push('emoji = ?');
+      params.push((body.emoji && String(body.emoji).trim()) ? String(body.emoji).trim() : '🎁');
+    }
+
+    if (body.description !== undefined) {
+      sets.push('description = ?');
+      params.push(body.description ? String(body.description).trim() : null);
+    }
+
+    if (body.price_value !== undefined || body.sale_price !== undefined) {
+      const price = parseFloat(body.price_value !== undefined ? body.price_value : body.sale_price);
+      if (isNaN(price) || price < 0) return res.status(400).json({ success: false, error: 'Preço de venda inválido.' });
+      sets.push('price_value = ?');
+      params.push(price);
+    }
+
+    if (body.visible_in_bot !== undefined) {
+      sets.push('visible_in_bot = ?');
+      params.push((body.visible_in_bot === 1 || body.visible_in_bot === true || body.visible_in_bot === '1') ? 1 : 0);
+    }
+
+    if (body.active !== undefined) {
+      sets.push('active = ?');
+      params.push((body.active === 1 || body.active === true || body.active === '1') ? 1 : 0);
+    }
+
+    if (body.sort_order !== undefined) {
+      sets.push('sort_order = ?');
+      params.push(parseInt(body.sort_order, 10) || 0);
+    }
+
+    if (!sets.length) {
+      return res.json({ success: true, data: product });
+    }
+
+    params.push(id);
+    await dbHelpers.db.prepare(`UPDATE products SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+    const updated = await dbHelpers.db.prepare('SELECT * FROM products WHERE id = ?').get(id);
+
+    res.json({ success: true, message: 'Personalização do produto salva com sucesso!', data: updated });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ---------- CUPONS: PAINEL ADMIN ----------
 
 app.get('/api/admin/coupons', adminAuth, async (req, res) => {
@@ -2384,7 +2690,7 @@ app.post('/api/reseller/validate-coupon', resellerUserAuth, async (req, res) => 
 // ---------- CATALOGO: API PARA BOTS ----------
 
 app.get('/api/v1/products', resellerBotAuth, async (req, res) => {
-  const products = await dbHelpers.db.prepare('SELECT * FROM products WHERE active = 1 ORDER BY sort_order ASC, id ASC').all();
+  const products = await dbHelpers.db.prepare('SELECT * FROM products WHERE active = 1 AND (visible_in_bot = 1 OR visible_in_bot IS NULL) ORDER BY sort_order ASC, id ASC').all();
   res.json({
     success: true,
     data: products.map((p) => {
@@ -2811,6 +3117,41 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
         password: itemConsumed.password || null,
         content: itemConsumed.content || null
       };
+    }
+
+    // Se o produto for de um bot fornecedor parceiro, aciona a API externa para entrega
+    if (!deliveredItem && pricing.product && pricing.product.provider_id) {
+      try {
+        const provider = await dbHelpers.getExternalProviderById(pricing.product.provider_id);
+        if (provider && provider.api_url && provider.api_key) {
+          const cleanProviderUrl = String(provider.api_url).replace(/\/+$/, '');
+          const extRes = await fetch(`${cleanProviderUrl}/api/v1/generate`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-API-Key': provider.api_key
+            },
+            body: JSON.stringify({
+              customer_name: finalCustomerName,
+              customer_id: finalCustomerId,
+              customer_contact: finalContact,
+              product_id: pricing.product.external_product_id || undefined,
+              product: pricing.product.name
+            }),
+            signal: AbortSignal.timeout(15000)
+          });
+          const extData = await extRes.json();
+          if (extRes.ok && extData.success) {
+            if (extData.item) {
+              deliveredItem = extData.item;
+            } else if (extData.link) {
+              deliveredItem = { type: 'link', content: extData.link };
+            }
+          }
+        }
+      } catch (extDeliveryErr) {
+        console.warn('[external-delivery] aviso ao acionar bot parceiro:', extDeliveryErr.message);
+      }
     }
 
     const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);

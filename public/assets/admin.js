@@ -161,6 +161,7 @@ document.addEventListener('DOMContentLoaded', () => {
       dashboard: 'Visão geral',
       'all-sales': 'Histórico Geral de Pedidos',
       products: 'Catálogo de Produtos',
+      integrations: 'Integração de Bots API (Fornecedores)',
       coupons: 'Cupons de Desconto',
       customers: 'Clientes do Bot',
       financeiro: 'Extrato Financeiro e Movimentações',
@@ -175,6 +176,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (tabId === 'dashboard') loadStats();
     if (tabId === 'all-sales') loadAllSales();
     if (tabId === 'products') loadProducts();
+    if (tabId === 'integrations') loadIntegrationsTab();
     if (tabId === 'coupons') loadCoupons();
     if (tabId === 'customers') loadCustomers();
     if (tabId === 'financeiro') loadFinancialTransactions();
@@ -2364,6 +2366,579 @@ document.addEventListener('DOMContentLoaded', () => {
         btnSendBroadcast.innerHTML = `<i data-lucide="send" class="w-4 h-4"></i> <span>Disparar Mensagem para Todos</span>`;
         if (window.lucide) window.lucide.createIcons();
       }
+    });
+  }
+
+  // ==============================================
+  // 10. INTEGRAÇÃO DE BOTS API (FORNECEDORES)
+  // ==============================================
+  let __adminIntegrations = [];
+  let __adminIntegratedProducts = [];
+
+  async function loadIntegrationsTab() {
+    await loadIntegrations();
+    await loadIntegratedProducts();
+  }
+
+  async function loadIntegrations() {
+    const listEl = document.getElementById('integrations-list');
+    const filterEl = document.getElementById('filter-integration-provider');
+    if (!listEl) return;
+
+    try {
+      listEl.innerHTML = `
+        <div class="col-span-full py-8 text-center text-slate-400 text-xs flex items-center justify-center gap-2">
+          <i data-lucide="loader-2" class="w-4 h-4 animate-spin text-emerald-400"></i>
+          <span>Carregando bots fornecedores...</span>
+        </div>
+      `;
+      if (window.lucide) window.lucide.createIcons();
+
+      const res = await apiFetch('/api/admin/integrations');
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Erro ao carregar integrações.');
+
+      __adminIntegrations = data.data || [];
+
+      // Atualiza dropdown de filtro
+      if (filterEl) {
+        const currentVal = filterEl.value;
+        let opts = '<option value="all">Todos os Fornecedores</option>';
+        __adminIntegrations.forEach(p => {
+          opts += `<option value="${p.id}">${escapeHtml(p.name)} (${p.products_count || 0} produtos)</option>`;
+        });
+        filterEl.innerHTML = opts;
+        if (currentVal && Array.from(filterEl.options).some(o => o.value === currentVal)) {
+          filterEl.value = currentVal;
+        }
+      }
+
+      // Renderiza cartões dos bots conectados
+      if (__adminIntegrations.length === 0) {
+        listEl.innerHTML = `
+          <div class="col-span-full py-8 text-center bg-slate-900/40 rounded-2xl border border-dashed border-white/10 p-6">
+            <div class="w-12 h-12 mx-auto mb-3 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+              <i data-lucide="plug-zap" class="w-6 h-6"></i>
+            </div>
+            <h4 class="text-sm font-bold text-white mb-1">Nenhum bot fornecedor conectado ainda</h4>
+            <p class="text-xs text-slate-400 mb-4 max-w-md mx-auto">
+              Conecte outro bot informando a URL da API e a Chave de Acesso para importar seus produtos e exibi-los no seu bot do Telegram.
+            </p>
+            <button onclick="document.getElementById('btn-new-integration').click()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white rounded-xl shadow-lg shadow-emerald-600/20 transition-all inline-flex items-center gap-2">
+              <i data-lucide="plus" class="w-4 h-4"></i>
+              <span>Conectar Primeiro Bot</span>
+            </button>
+          </div>
+        `;
+        if (window.lucide) window.lucide.createIcons();
+        return;
+      }
+
+      listEl.innerHTML = __adminIntegrations.map(p => {
+        const lastSyncFormatted = p.last_sync 
+          ? new Date(p.last_sync).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
+          : 'Nunca';
+
+        return `
+          <div class="bg-slate-900/80 border border-white/10 rounded-2xl p-4 flex flex-col justify-between hover:border-emerald-500/40 transition-all group shadow-sm">
+            <div class="space-y-2">
+              <div class="flex items-start justify-between gap-2">
+                <div class="flex items-center gap-2">
+                  <div class="w-8 h-8 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 shrink-0">
+                    <i data-lucide="server" class="w-4 h-4"></i>
+                  </div>
+                  <div>
+                    <h4 class="text-sm font-bold text-white leading-tight">${escapeHtml(p.name)}</h4>
+                    <span class="text-[10px] text-slate-400 font-mono truncate block max-w-[200px]" title="${escapeHtml(p.api_url)}">${escapeHtml(p.api_url)}</span>
+                  </div>
+                </div>
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${Number(p.active) ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-500/30' : 'bg-slate-800 text-slate-400 border border-white/10'}">
+                  ${Number(p.active) ? 'CONECTADO' : 'PAUSADO'}
+                </span>
+              </div>
+
+              <div class="pt-2 border-t border-white/5 flex items-center justify-between text-[11px] text-slate-400">
+                <span class="flex items-center gap-1 font-medium text-indigo-300">
+                  <i data-lucide="package" class="w-3.5 h-3.5 text-indigo-400"></i>
+                  ${p.products_count || 0} produto(s)
+                </span>
+                <span class="text-[10px] text-slate-500">Sync: ${lastSyncFormatted}</span>
+              </div>
+            </div>
+
+            <div class="mt-4 pt-3 border-t border-white/5 flex items-center justify-between gap-2">
+              <button onclick="syncIntegration(${p.id}, this)" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold flex items-center gap-1.5 border border-white/10 transition-all" title="Sincronizar catálogo com a API deste bot">
+                <i data-lucide="refresh-cw" class="w-3 h-3 text-indigo-400"></i>
+                <span>Sincronizar</span>
+              </button>
+              <div class="flex items-center gap-1">
+                <button onclick="editIntegration(${p.id})" class="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-white/5 transition-all" title="Editar Configurações">
+                  <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
+                </button>
+                <button onclick="deleteIntegration(${p.id})" class="p-1.5 text-slate-400 hover:text-rose-400 rounded-lg hover:bg-white/5 transition-all" title="Desconectar Bot">
+                  <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      if (window.lucide) window.lucide.createIcons();
+    } catch (err) {
+      if (listEl) {
+        listEl.innerHTML = `<div class="col-span-full py-4 text-center text-rose-400 text-xs">${escapeHtml(err.message)}</div>`;
+      }
+    }
+  }
+
+  async function loadIntegratedProducts(filterProviderId = 'all') {
+    const tbody = document.getElementById('integrated-products-tbody');
+    if (!tbody) return;
+
+    try {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="8" class="text-center py-8 text-slate-400 text-xs">
+            <div class="inline-flex items-center gap-2">
+              <i data-lucide="loader-2" class="w-4 h-4 animate-spin text-indigo-400"></i>
+              <span>Carregando produtos integrados...</span>
+            </div>
+          </td>
+        </tr>
+      `;
+      if (window.lucide) window.lucide.createIcons();
+
+      const res = await apiFetch('/api/admin/products');
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Erro ao carregar produtos.');
+
+      const allProducts = data.data || [];
+      // Filtra apenas produtos que vieram de bots parceiros (provider_id preenchido)
+      let integrated = allProducts.filter(p => p.provider_id !== null && p.provider_id !== undefined);
+
+      if (filterProviderId && filterProviderId !== 'all') {
+        integrated = integrated.filter(p => Number(p.provider_id) === Number(filterProviderId));
+      }
+
+      __adminIntegratedProducts = integrated;
+
+      if (integrated.length === 0) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="8" class="text-center py-10 text-slate-500">
+              <div class="max-w-md mx-auto space-y-2">
+                <i data-lucide="package-search" class="w-8 h-8 text-slate-600 mx-auto"></i>
+                <p class="text-xs font-medium text-slate-400">Nenhum produto integrado encontrado ${filterProviderId !== 'all' ? 'para este fornecedor' : ''}.</p>
+                <p class="text-[11px] text-slate-500">Clique em "Sincronizar Produtos" acima para buscar o catálogo atualizado do bot conectado.</p>
+              </div>
+            </td>
+          </tr>
+        `;
+        if (window.lucide) window.lucide.createIcons();
+        return;
+      }
+
+      // Mapeamento de id do fornecedor para nome
+      const providerMap = new Map();
+      __adminIntegrations.forEach(pr => providerMap.set(Number(pr.id), pr.name));
+
+      tbody.innerHTML = integrated.map(p => {
+        const isVisible = p.visible_in_bot === 1 || p.visible_in_bot === true || p.visible_in_bot === '1' || p.visible_in_bot === undefined;
+        const provName = providerMap.get(Number(p.provider_id)) || `Fornecedor #${p.provider_id}`;
+        const salePriceVal = Number(p.price_value || p.sale_price || 0).toFixed(2);
+        const costPriceVal = Number(p.cost_price || 0).toFixed(2);
+
+        return `
+          <tr class="hover:bg-white/[0.02] transition-colors border-b border-white/5" data-product-id="${p.id}">
+            <!-- 1. Visibilidade no Bot -->
+            <td class="py-3 px-3 text-center">
+              <label class="relative inline-flex items-center cursor-pointer select-none">
+                <input type="checkbox" id="prod-vis-${p.id}" class="sr-only peer" ${isVisible ? 'checked' : ''} onchange="toggleProductVisibility(${p.id}, this.checked)">
+                <div class="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-600"></div>
+              </label>
+              <span id="prod-vis-badge-${p.id}" class="block text-[9px] font-bold uppercase tracking-wider mt-1 ${isVisible ? 'text-emerald-400' : 'text-slate-500'}">
+                ${isVisible ? 'No Bot' : 'Oculto'}
+              </span>
+            </td>
+
+            <!-- 2. Emoji Personalizado -->
+            <td class="py-3 px-3">
+              <input type="text" id="prod-emoji-${p.id}" value="${escapeHtml(p.emoji || '🎁')}" maxlength="8" class="w-12 text-center text-lg bg-slate-900 border border-white/10 rounded-xl py-1.5 focus:border-indigo-500 focus:outline-none transition-all shadow-inner" title="Emoji do produto no menu do bot">
+            </td>
+
+            <!-- 3. Nome Personalizado -->
+            <td class="py-3 px-3">
+              <div class="space-y-1 min-w-[180px]">
+                <input type="text" id="prod-name-${p.id}" value="${escapeHtml(p.name)}" class="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-white font-semibold focus:border-indigo-500 focus:outline-none transition-all shadow-inner" placeholder="Nome exibido no Telegram">
+                <div class="flex items-center gap-1.5 text-[10px] text-slate-500">
+                  <span class="inline-block w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
+                  <span class="truncate">${escapeHtml(provName)}</span>
+                </div>
+              </div>
+            </td>
+
+            <!-- 4. Descrição Personalizada -->
+            <td class="py-3 px-4">
+              <textarea id="prod-desc-${p.id}" rows="2" class="w-full min-w-[200px] bg-slate-900 border border-white/10 rounded-xl px-3 py-1.5 text-[11px] text-slate-300 focus:border-indigo-500 focus:outline-none transition-all resize-y shadow-inner" placeholder="Descrição ou benefícios exibidos no Telegram">${escapeHtml(p.description || '')}</textarea>
+            </td>
+
+            <!-- 5. Custo Fornecedor -->
+            <td class="py-3 px-3 whitespace-nowrap">
+              <span class="font-mono text-xs font-semibold text-slate-400 block">R$ ${costPriceVal.replace('.', ',')}</span>
+              <span class="text-[9px] text-slate-600 block">custo API</span>
+            </td>
+
+            <!-- 6. Preço de Venda ao Cliente -->
+            <td class="py-3 px-3 whitespace-nowrap">
+              <div class="flex items-center gap-1">
+                <span class="text-slate-500 font-mono text-xs">R$</span>
+                <input type="number" step="0.01" min="0" id="prod-price-${p.id}" value="${salePriceVal}" class="w-20 bg-slate-900 border border-white/10 rounded-xl px-2.5 py-1.5 text-xs font-mono font-bold text-emerald-400 focus:border-emerald-500 focus:outline-none transition-all shadow-inner">
+              </div>
+            </td>
+
+            <!-- 7. Ordem no Menu -->
+            <td class="py-3 px-2 text-center">
+              <input type="number" id="prod-sort-${p.id}" value="${Number(p.sort_order || 0)}" class="w-12 bg-slate-900 border border-white/10 rounded-xl px-1 py-1.5 text-xs font-mono text-center text-slate-300 focus:border-indigo-500 focus:outline-none transition-all shadow-inner" title="Ordem no menu do Telegram (menores aparecem primeiro)">
+            </td>
+
+            <!-- 8. Ações -->
+            <td class="py-3 px-3 text-center whitespace-nowrap">
+              <button onclick="saveProductCustomization(${p.id}, this)" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md shadow-indigo-600/20 transition-all mx-auto">
+                <i data-lucide="save" class="w-3.5 h-3.5"></i>
+                <span>Salvar</span>
+              </button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      if (window.lucide) window.lucide.createIcons();
+    } catch (err) {
+      if (tbody) {
+        tbody.innerHTML = `<tr><td colspan="8" class="text-center py-6 text-rose-400 text-xs">${escapeHtml(err.message)}</td></tr>`;
+      }
+    }
+  }
+
+  // Ações de Produtos Integrados
+  window.toggleProductVisibility = async (id, isVisible) => {
+    const badge = document.getElementById(`prod-vis-badge-${id}`);
+    try {
+      if (badge) {
+        badge.innerText = isVisible ? 'No Bot' : 'Oculto';
+        badge.className = `block text-[9px] font-bold uppercase tracking-wider mt-1 ${isVisible ? 'text-emerald-400' : 'text-slate-500'}`;
+      }
+
+      const res = await apiFetch(`/api/admin/products/${id}/customization`, {
+        method: 'PATCH',
+        body: JSON.stringify({ visible_in_bot: isVisible ? 1 : 0 })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao alterar visibilidade.');
+
+      showToast(`Produto ${isVisible ? 'agora visível' : 'ocultado'} no bot DarkFlix!`, 'success');
+    } catch (err) {
+      showToast(err.message, 'error');
+      // Reverte checkbox em caso de erro
+      const chk = document.getElementById(`prod-vis-${id}`);
+      if (chk) chk.checked = !isVisible;
+      if (badge) {
+        badge.innerText = !isVisible ? 'No Bot' : 'Oculto';
+        badge.className = `block text-[9px] font-bold uppercase tracking-wider mt-1 ${!isVisible ? 'text-emerald-400' : 'text-slate-500'}`;
+      }
+    }
+  };
+
+  window.saveProductCustomization = async (id, btn) => {
+    const nameEl = document.getElementById(`prod-name-${id}`);
+    const emojiEl = document.getElementById(`prod-emoji-${id}`);
+    const descEl = document.getElementById(`prod-desc-${id}`);
+    const priceEl = document.getElementById(`prod-price-${id}`);
+    const sortEl = document.getElementById(`prod-sort-${id}`);
+    const visEl = document.getElementById(`prod-vis-${id}`);
+
+    const name = nameEl ? nameEl.value.trim() : '';
+    const emoji = emojiEl ? emojiEl.value.trim() : '🎁';
+    const description = descEl ? descEl.value.trim() : '';
+    const price = priceEl ? parseFloat(priceEl.value) : 0;
+    const sort_order = sortEl ? parseInt(sortEl.value, 10) : 0;
+    const visible_in_bot = visEl ? (visEl.checked ? 1 : 0) : 1;
+
+    if (!name) {
+      showToast('O nome do produto não pode ficar vazio.', 'error');
+      if (nameEl) nameEl.focus();
+      return;
+    }
+    if (isNaN(price) || price < 0) {
+      showToast('Informe um preço de venda válido.', 'error');
+      if (priceEl) priceEl.focus();
+      return;
+    }
+
+    let origHtml = '';
+    if (btn) {
+      origHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> <span>Salvando...</span>`;
+      if (window.lucide) window.lucide.createIcons();
+    }
+
+    try {
+      const res = await apiFetch(`/api/admin/products/${id}/customization`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name,
+          emoji,
+          description,
+          price_value: price,
+          sale_price: price,
+          sort_order,
+          visible_in_bot
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao salvar produto.');
+
+      showToast(`Personalização de "${name}" salva com sucesso!`, 'success');
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = origHtml || `<i data-lucide="save" class="w-3.5 h-3.5"></i> <span>Salvar</span>`;
+        if (window.lucide) window.lucide.createIcons();
+      }
+    }
+  };
+
+  // Ações de Bots Integrados
+  window.syncIntegration = async (id, btn) => {
+    let origHtml = '';
+    if (btn) {
+      origHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = `<i data-lucide="loader-2" class="w-3 h-3 animate-spin"></i> <span>Sincronizando...</span>`;
+      if (window.lucide) window.lucide.createIcons();
+    }
+
+    try {
+      const res = await apiFetch(`/api/admin/integrations/${id}/sync`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha na sincronização.');
+
+      showToast(data.message || 'Produtos sincronizados com sucesso!', 'success');
+      await loadIntegrations();
+      const filterEl = document.getElementById('filter-integration-provider');
+      await loadIntegratedProducts(filterEl ? filterEl.value : 'all');
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = origHtml || `<i data-lucide="refresh-cw" class="w-3 h-3 text-indigo-400"></i> <span>Sincronizar</span>`;
+        if (window.lucide) window.lucide.createIcons();
+      }
+    }
+  };
+
+  window.editIntegration = (id) => {
+    const provider = __adminIntegrations.find(p => Number(p.id) === Number(id));
+    if (!provider) return;
+
+    const formCard = document.getElementById('integration-form-card');
+    const formTitle = document.getElementById('integration-form-title');
+    const idInput = document.getElementById('integration-id');
+    const nameInput = document.getElementById('integration-name');
+    const urlInput = document.getElementById('integration-url');
+    const keyInput = document.getElementById('integration-key');
+
+    if (formTitle) formTitle.innerText = `Editar Bot Fornecedor: ${provider.name}`;
+    if (idInput) idInput.value = provider.id;
+    if (nameInput) nameInput.value = provider.name || '';
+    if (urlInput) urlInput.value = provider.api_url || '';
+    if (keyInput) {
+      keyInput.value = '';
+      keyInput.placeholder = 'Deixe em branco para manter a chave atual';
+    }
+
+    if (formCard) {
+      formCard.classList.remove('hidden');
+      formCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  };
+
+  window.deleteIntegration = async (id) => {
+    const provider = __adminIntegrations.find(p => Number(p.id) === Number(id));
+    const provName = provider ? provider.name : `Bot #${id}`;
+    if (!confirm(`Deseja realmente desconectar o bot "${provName}"? Os produtos vinculados a ele continuarão no histórico, mas novos pedidos não serão encaminhados.`)) {
+      return;
+    }
+
+    try {
+      const res = await apiFetch(`/api/admin/integrations/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao desconectar bot.');
+
+      showToast('Bot fornecedor desconectado com sucesso!', 'success');
+      await loadIntegrations();
+      await loadIntegratedProducts('all');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  // Event Listeners do Formulário de Integração
+  const btnNewIntegration = document.getElementById('btn-new-integration');
+  const btnCancelIntegrationForm = document.getElementById('btn-cancel-integration-form');
+  const btnCancelIntegration = document.getElementById('btn-cancel-integration');
+  const btnSaveIntegration = document.getElementById('btn-save-integration');
+  const integrationFormCard = document.getElementById('integration-form-card');
+  const filterIntegrationProvider = document.getElementById('filter-integration-provider');
+  const btnSyncAllIntegrations = document.getElementById('btn-sync-all-integrations');
+
+  function resetIntegrationForm() {
+    const idInput = document.getElementById('integration-id');
+    const nameInput = document.getElementById('integration-name');
+    const urlInput = document.getElementById('integration-url');
+    const keyInput = document.getElementById('integration-key');
+    const title = document.getElementById('integration-form-title');
+
+    if (idInput) idInput.value = '';
+    if (nameInput) nameInput.value = '';
+    if (urlInput) urlInput.value = '';
+    if (keyInput) {
+      keyInput.value = '';
+      keyInput.placeholder = 'rk_live_... ou cust_...';
+    }
+    if (title) title.innerText = 'Conectar Bot Fornecedor';
+    if (integrationFormCard) integrationFormCard.classList.add('hidden');
+  }
+
+  if (btnNewIntegration) {
+    btnNewIntegration.addEventListener('click', () => {
+      resetIntegrationForm();
+      if (integrationFormCard) {
+        integrationFormCard.classList.remove('hidden');
+        document.getElementById('integration-name')?.focus();
+      }
+    });
+  }
+
+  if (btnCancelIntegrationForm) {
+    btnCancelIntegrationForm.addEventListener('click', resetIntegrationForm);
+  }
+  if (btnCancelIntegration) {
+    btnCancelIntegration.addEventListener('click', resetIntegrationForm);
+  }
+
+  if (btnSaveIntegration) {
+    btnSaveIntegration.addEventListener('click', async () => {
+      const idInput = document.getElementById('integration-id');
+      const nameInput = document.getElementById('integration-name');
+      const urlInput = document.getElementById('integration-url');
+      const keyInput = document.getElementById('integration-key');
+
+      const id = idInput ? idInput.value.trim() : '';
+      const name = nameInput ? nameInput.value.trim() : '';
+      const api_url = urlInput ? urlInput.value.trim() : '';
+      const api_key = keyInput ? keyInput.value.trim() : '';
+
+      if (!name) {
+        showToast('Informe o nome do bot fornecedor.', 'error');
+        nameInput?.focus();
+        return;
+      }
+      if (!api_url) {
+        showToast('Informe a URL da API do bot fornecedor.', 'error');
+        urlInput?.focus();
+        return;
+      }
+      if (!id && !api_key) {
+        showToast('Informe a Chave de API (X-API-Key) do bot.', 'error');
+        keyInput?.focus();
+        return;
+      }
+
+      btnSaveIntegration.disabled = true;
+      btnSaveIntegration.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> <span>Testando & Conectando...</span>`;
+      if (window.lucide) window.lucide.createIcons();
+
+      try {
+        let res, data;
+        if (id) {
+          // Atualização
+          const payload = { name, api_url };
+          if (api_key) payload.api_key = api_key;
+          res = await apiFetch(`/api/admin/integrations/${id}`, {
+            method: 'PUT',
+            body: JSON.stringify(payload)
+          });
+          data = await res.json();
+          if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao atualizar bot.');
+          showToast('Configurações do bot atualizadas com sucesso!', 'success');
+        } else {
+          // Nova Conexão
+          res = await apiFetch('/api/admin/integrations', {
+            method: 'POST',
+            body: JSON.stringify({ name, api_url, api_key })
+          });
+          data = await res.json();
+          if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao conectar com a API do bot.');
+          showToast(data.message || 'Bot fornecedor conectado e produtos sincronizados!', 'success');
+        }
+
+        resetIntegrationForm();
+        await loadIntegrations();
+        await loadIntegratedProducts();
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        btnSaveIntegration.disabled = false;
+        btnSaveIntegration.innerHTML = `<i data-lucide="check" class="w-4 h-4"></i> <span>Testar & Conectar Bot</span>`;
+        if (window.lucide) window.lucide.createIcons();
+      }
+    });
+  }
+
+  if (filterIntegrationProvider) {
+    filterIntegrationProvider.addEventListener('change', () => {
+      loadIntegratedProducts(filterIntegrationProvider.value);
+    });
+  }
+
+  if (btnSyncAllIntegrations) {
+    btnSyncAllIntegrations.addEventListener('click', async () => {
+      if (__adminIntegrations.length === 0) {
+        showToast('Nenhum bot fornecedor conectado para sincronizar.', 'info');
+        return;
+      }
+
+      btnSyncAllIntegrations.disabled = true;
+      btnSyncAllIntegrations.innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin text-indigo-400"></i> <span>Sincronizando...</span>`;
+      if (window.lucide) window.lucide.createIcons();
+
+      let successCount = 0;
+      let errorCount = 0;
+
+      for (const prov of __adminIntegrations) {
+        try {
+          const res = await apiFetch(`/api/admin/integrations/${prov.id}/sync`, { method: 'POST' });
+          const data = await res.json();
+          if (res.ok && data.success) successCount++;
+          else errorCount++;
+        } catch {
+          errorCount++;
+        }
+      }
+
+      showToast(`Sincronização concluída: ${successCount} bot(s) atualizado(s) com sucesso${errorCount ? `, ${errorCount} com erro` : ''}.`, successCount > 0 ? 'success' : 'error');
+      await loadIntegrations();
+      await loadIntegratedProducts(filterIntegrationProvider ? filterIntegrationProvider.value : 'all');
+
+      btnSyncAllIntegrations.disabled = false;
+      btnSyncAllIntegrations.innerHTML = `<i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-indigo-400"></i> <span>Sincronizar Produtos</span>`;
+      if (window.lucide) window.lucide.createIcons();
     });
   }
 
