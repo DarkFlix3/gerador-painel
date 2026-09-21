@@ -635,7 +635,10 @@ async function checkPixStatus(chatId, user, externalReference, messageId) {
       if (pixMsgId) {
         lastPixMsg.delete(chatId);
         bot.deleteMessage(chatId, pixMsgId).catch(() => {});
-        if (messageId === pixMsgId) messageId = null;
+      }
+      if (messageId) {
+        bot.deleteMessage(chatId, messageId).catch(() => {});
+        messageId = null;
       }
 
       const okText =
@@ -777,8 +780,13 @@ async function handleCallback(query) {
       { parse_mode: 'HTML', ...backToMenuKeyboard() }
     );
   } else if (action === 'back_to_menu') {
-    // Edita a mensagem atual virando o menu principal (sem duplicar no chat)
-    await sendMainMenu(chatId, query.message.message_id, query.from);
+    // Se a mensagem que originou o clique for uma foto (ex: QR Code do PIX), remove a foto e abre menu limpo
+    if (query.message && (query.message.photo || query.message.caption !== undefined)) {
+      bot.deleteMessage(chatId, query.message.message_id).catch(() => {});
+      await sendMainMenu(chatId, null, query.from);
+    } else {
+      await sendMainMenu(chatId, query.message.message_id, query.from);
+    }
   }
 }
 

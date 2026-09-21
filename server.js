@@ -249,11 +249,28 @@ async function autoRefund(resellerId, amount, extra = {}) {
   }).catch(() => {});
 }
 
+// ==========================================
+// DEDUPLICAÇÃO E TRAVA DE CONCORRÊNCIA PARA RECARGAS E NOTIFICAÇÕES
+// ==========================================
+const _activeProcessingPayments = new Set();
+const _rechargeNotifiedKeys = new Set();
+
 // Envia alerta de nova venda para o bot de notificações do dono
-// Notifica no bot de alertas quando um revendedor recarrega o saldo
-async function notifyRecharge({ reseller, amountPaid, method = 'PIX' }) {
+// Notifica no bot de alertas quando um revendedor recarrega o saldo (Garantia de envio único)
+async function notifyRecharge({ reseller, amountPaid, method = 'PIX', paymentId = null, externalReference = null }) {
   if (!NOTIFIER_BOT_TOKEN || !NOTIFY_CHAT_ID) return;
   if (typeof fetch !== 'function') return;
+
+  // Deduplicação estrita: se a mesma recarga foi notificada nos últimos 5 minutos, bloqueia envio duplicado
+  const dedupKey = (paymentId && `pid_${paymentId}`) || (externalReference && `ref_${externalReference}`) || null;
+  if (dedupKey) {
+    if (_rechargeNotifiedKeys.has(dedupKey)) {
+      console.log(`[notifyRecharge] Notificação duplicada bloqueada para chave: ${dedupKey}`);
+      return;
+    }
+    _rechargeNotifiedKeys.add(dedupKey);
+    setTimeout(() => _rechargeNotifiedKeys.delete(dedupKey), 300000); // 5 minutos
+  }
 
   // Prioriza o ID do Telegram (identifica o revendedor no bot); phone é fallback
   const userId = (reseller && reseller.telegram_id) || (reseller && reseller.phone) || '';
@@ -268,7 +285,7 @@ async function notifyRecharge({ reseller, amountPaid, method = 'PIX' }) {
     `💳 Método: ${methodLabel}`
   ];
 
-  await sendTelegramAlert(lines.join('\n'), NOTIFY_CHAT_ID, 'RECHARGE-' + Date.now());
+  await sendTelegramAlert(lines.join('\n'), NOTIFY_CHAT_ID, 'RECHARGE-' + (dedupKey || Date.now()));
 }
 
 // ==========================================
@@ -453,92 +470,120 @@ function verifyMpSignature(req) {
 }
 
 // Processa um pagamento aprovado do Mercado Pago (fonte da verdade: consulta à API).
-// Idempotente: se o payment_id já foi processado, não credita de novo.
+// Idempotente e Concorrência-Safe: se o payment_id já foi processado ou está em processamento, não credita de novo.
 async function mpProcessApprovedPayment(paymentId) {
-  const payment = await mpFetch(`/v1/payments/${paymentId}`);
-  const ref = String(payment.external_reference || '');
-
-  // Só aceita pagamentos aprovados com referência de recarga do sistema
-  if (payment.status !== 'approved') {
-    return { ok: false, reason: `pagamento não aprovado (${payment.status || 'unknown'})` };
-  }
-  if (!ref.startsWith('mp_recharge_')) {
-    return { ok: false, reason: 'external_reference inválida' };
-  }
-
-  // Idempotência por payment_id
-  const byPaymentId = await dbHelpers.db.prepare('SELECT * FROM mp_payments WHERE payment_id = ?').get(String(paymentId));
-  if (byPaymentId && Number(byPaymentId.processed) === 1) {
+  const pIdStr = String(paymentId);
+  if (_activeProcessingPayments.has(pIdStr)) {
+    console.log(`[mpProcessApprovedPayment] Processamento concorrente já em andamento para paymentId=${pIdStr}. Ignorando.`);
     return { ok: true, alreadyProcessed: true };
   }
+  _activeProcessingPayments.add(pIdStr);
 
-  const record = await dbHelpers.db.prepare('SELECT * FROM mp_payments WHERE external_reference = ?').get(ref);
-  if (!record) {
-    return { ok: false, reason: 'preferência de recarga não encontrada' };
-  }
+  try {
+    const payment = await mpFetch(`/v1/payments/${paymentId}`);
+    const ref = String(payment.external_reference || '');
 
-  // Valor pago deve bater com o valor da preferência (centavos)
-  const expected = Math.round(Number(record.amount) * 100);
-  const paid = Math.round(Number(payment.transaction_amount) * 100);
-  if (expected !== paid) {
-    return { ok: false, reason: `valor divergente (esperado ${expected}, pago ${paid})` };
-  }
-
-  const reseller = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE id = ?').get(record.reseller_id);
-  if (!reseller) {
-    return { ok: false, reason: 'revendedor não encontrado' };
-  }
-
-  const amount = Number(record.amount);
-  const now = new Date().toISOString();
-
-  // Rótulo do método: PIX (pagamento direto) ou Checkout Pro (link)
-  const isPix = String(payment.payment_method_id || '').toLowerCase() === 'pix';
-  const methodLabel = isPix ? 'Mercado Pago PIX' : 'Mercado Pago';
-
-  // Credita o saldo (R$) e registra a recarga como aprovada
-  await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits + ? AS NUMERIC), 2) WHERE id = ?')
-    .run(amount, record.reseller_id);
-  await dbHelpers.db.prepare(`
-    INSERT INTO recharges (reseller_id, credits, amount_paid, status, payment_method, created_at)
-    VALUES (?, ?, ?, 'approved', ?, ?)
-  `).run(record.reseller_id, Math.floor(amount / parseFloat(reseller.cost_per_link || 2.99)), amount, methodLabel, now);
-
-  // Se houver telegram_id associado a esse pagamento, credita a carteira do cliente e lança no extrato
-  if (record.telegram_id) {
-    const cleanTg = String(record.telegram_id).replace(/^tg_/, '').trim();
-    try {
-      const customer = await dbHelpers.db.prepare('SELECT id, name, username, balance FROM customers WHERE telegram_id = ? OR telegram_id = ?').get(cleanTg, 'tg_' + cleanTg);
-      if (customer) {
-        const cur = parseFloat(customer.balance || 0);
-        const upd = Math.round((cur + amount) * 100) / 100;
-        await dbHelpers.db.prepare('UPDATE customers SET balance = ? WHERE id = ?').run(upd.toFixed(2), customer.id);
-        await dbHelpers.recordFinancialTransaction({
-          customerId: cleanTg,
-          customerName: customer.name || record.customer_name,
-          customerContact: customer.username ? '@' + customer.username : record.customer_contact,
-          type: 'deposit',
-          description: 'Depósito PIX aprovado (Bot DarkFlix)',
-          orderNumber: ref,
-          amount: amount,
-          balanceBefore: cur,
-          balanceAfter: upd
-        });
-      }
-    } catch (e) {
-      console.error('Falha ao creditar cliente na recarga:', e.message);
+    // Só aceita pagamentos aprovados com referência de recarga do sistema
+    if (payment.status !== 'approved') {
+      return { ok: false, reason: `pagamento não aprovado (${payment.status || 'unknown'})` };
     }
+    if (!ref.startsWith('mp_recharge_')) {
+      return { ok: false, reason: 'external_reference inválida' };
+    }
+
+    // Idempotência por payment_id
+    const byPaymentId = await dbHelpers.db.prepare('SELECT * FROM mp_payments WHERE payment_id = ?').get(pIdStr);
+    if (byPaymentId && Number(byPaymentId.processed) === 1) {
+      return { ok: true, alreadyProcessed: true };
+    }
+
+    const record = await dbHelpers.db.prepare('SELECT * FROM mp_payments WHERE external_reference = ?').get(ref);
+    if (!record) {
+      return { ok: false, reason: 'preferência de recarga não encontrada' };
+    }
+    if (Number(record.processed) === 1) {
+      return { ok: true, alreadyProcessed: true };
+    }
+
+    // Valor pago deve bater com o valor da preferência (centavos)
+    const expected = Math.round(Number(record.amount) * 100);
+    const paid = Math.round(Number(payment.transaction_amount) * 100);
+    if (expected !== paid) {
+      return { ok: false, reason: `valor divergente (esperado ${expected}, pago ${paid})` };
+    }
+
+    const reseller = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE id = ?').get(record.reseller_id);
+    if (!reseller) {
+      return { ok: false, reason: 'revendedor não encontrado' };
+    }
+
+    const amount = Number(record.amount);
+    const now = new Date().toISOString();
+
+    // Rótulo do método: PIX (pagamento direto) ou Checkout Pro (link)
+    const isPix = String(payment.payment_method_id || '').toLowerCase() === 'pix';
+    const methodLabel = isPix ? 'Mercado Pago PIX' : 'Mercado Pago';
+
+    // ATOMIC CLAIM: Apenas uma execução consegue alterar processed de 0 para 1
+    const claim = await dbHelpers.db.prepare(
+      'UPDATE mp_payments SET processed = 1, payment_id = ?, status = ?, payment_method = ?, updated_at = ? WHERE id = ? AND (processed = 0 OR processed IS NULL)'
+    ).run(pIdStr, 'approved', methodLabel, now, record.id);
+
+    if (!claim || claim.changes === 0) {
+      console.log(`[mpProcessApprovedPayment] Claim atômico recusado (já processado concorrentemente) para paymentId=${pIdStr}`);
+      return { ok: true, alreadyProcessed: true };
+    }
+
+    // Credita o saldo (R$) e registra a recarga como aprovada
+    await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits + ? AS NUMERIC), 2) WHERE id = ?')
+      .run(amount, record.reseller_id);
+    await dbHelpers.db.prepare(`
+      INSERT INTO recharges (reseller_id, credits, amount_paid, status, payment_method, created_at)
+      VALUES (?, ?, ?, 'approved', ?, ?)
+    `).run(record.reseller_id, Math.floor(amount / parseFloat(reseller.cost_per_link || 2.99)), amount, methodLabel, now);
+
+    // Se houver telegram_id associado a esse pagamento, credita a carteira do cliente e lança no extrato
+    if (record.telegram_id) {
+      const cleanTg = String(record.telegram_id).replace(/^tg_/, '').trim();
+      try {
+        const customer = await dbHelpers.db.prepare('SELECT id, name, username, balance FROM customers WHERE telegram_id = ? OR telegram_id = ?').get(cleanTg, 'tg_' + cleanTg);
+        if (customer) {
+          const cur = parseFloat(customer.balance || 0);
+          const upd = Math.round((cur + amount) * 100) / 100;
+          await dbHelpers.db.prepare('UPDATE customers SET balance = ? WHERE id = ?').run(upd.toFixed(2), customer.id);
+          await dbHelpers.recordFinancialTransaction({
+            customerId: cleanTg,
+            customerName: customer.name || record.customer_name,
+            customerContact: customer.username ? '@' + customer.username : record.customer_contact,
+            type: 'deposit',
+            description: 'Depósito PIX aprovado (Bot DarkFlix)',
+            orderNumber: ref,
+            amount: amount,
+            balanceBefore: cur,
+            balanceAfter: upd
+          });
+        }
+      } catch (e) {
+        console.error('Falha ao creditar cliente na recarga:', e.message);
+      }
+    }
+
+    // Alerta no bot do dono com chave de deduplicação
+    notifyRecharge({
+      reseller,
+      amountPaid: amount,
+      method: methodLabel,
+      paymentId: pIdStr,
+      externalReference: ref
+    }).catch((e) => console.error('notifyRecharge (MP) falhou:', e.message));
+
+    return { ok: true, alreadyProcessed: false, amount, reseller: reseller.name };
+  } finally {
+    // Mantém a trava por 2 minutos para evitar disparos repetidos de webhooks atrasados
+    setTimeout(() => {
+      _activeProcessingPayments.delete(pIdStr);
+    }, 120000);
   }
-
-  // Marca como processado + grava o payment_id (idempotência definitiva)
-  await dbHelpers.db.prepare('UPDATE mp_payments SET payment_id = ?, status = ?, payment_method = ?, processed = 1, updated_at = ? WHERE id = ?')
-    .run(String(paymentId), 'approved', methodLabel, now, record.id);
-
-  // Alerta no bot do dono
-  notifyRecharge({ reseller, amountPaid: amount, method: methodLabel })
-    .catch((e) => console.error('notifyRecharge (MP) falhou:', e.message));
-
-  return { ok: true, alreadyProcessed: false, amount, reseller: reseller.name };
 }
 
 async function notifyNewSale(opts = {}) {
@@ -1301,7 +1346,7 @@ app.post('/api/reseller/recharge', resellerUserAuth, async (req, res) => {
   `).run(req.reseller.id, Math.floor(amountPaid / costPerCredit), amountPaid, paymentMethod, now);
 
   // Notifica a recarga no bot de alertas (formato: Novos créditos adicionados!)
-  notifyRecharge({ reseller: req.reseller, amountPaid, method: paymentMethod })
+  notifyRecharge({ reseller: req.reseller, amountPaid, method: paymentMethod, externalReference: `manual_${req.reseller.id}_${Date.now()}` })
     .catch((err) => console.error('notifyRecharge falhou:', err.message));
 
   const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(req.reseller.id);
