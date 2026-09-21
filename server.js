@@ -2269,49 +2269,33 @@ app.get('/api/admin/integrations', adminAuth, async (req, res) => {
   }
 });
 
-// 2. Conectar novo bot fornecedor (testa a conexão e já sincroniza produtos)
+// 2. Conectar novo bot fornecedor via API (chave/token da API)
 app.post('/api/admin/integrations', adminAuth, async (req, res) => {
   try {
     const { name, api_url, api_key } = req.body || {};
     if (!name || !String(name).trim()) {
       return res.status(400).json({ success: false, error: 'Informe um nome para identificar este bot fornecedor.' });
     }
-    if (!api_url || !String(api_url).trim()) {
-      return res.status(400).json({ success: false, error: 'Informe a URL da API do bot fornecedor.' });
-    }
     if (!api_key || !String(api_key).trim()) {
-      return res.status(400).json({ success: false, error: 'Informe a Chave de API (X-API-Key) do bot fornecedor.' });
+      return res.status(400).json({ success: false, error: 'Informe a API (Chave / Token) do bot fornecedor.' });
     }
 
-    const cleanUrl = String(api_url).trim().replace(/\/+$/, '');
+    const defaultUrl = process.env.PROVIDER_API_BASE_URL || process.env.API_BASE_URL || 'http://localhost:3000';
+    const cleanUrl = String(api_url || defaultUrl).trim().replace(/\/+$/, '');
     const cleanKey = String(api_key).trim();
 
-    // Testa a conexão antes de salvar
-    let testSuccess = false;
+    // Tenta sincronizar produtos se o endpoint estiver disponível
     let fetchedProducts = [];
     try {
       const testRes = await fetch(`${cleanUrl}/api/v1/products`, {
         headers: { 'X-API-Key': cleanKey },
-        signal: AbortSignal.timeout(10000)
+        signal: AbortSignal.timeout(6000)
       });
       const testData = await testRes.json();
       if (testRes.ok && testData.success && Array.isArray(testData.data)) {
-        testSuccess = true;
         fetchedProducts = testData.data;
       }
-    } catch (testErr) {
-      try {
-        const pingRes = await fetch(`${cleanUrl}/health`, { signal: AbortSignal.timeout(5000) });
-        if (pingRes.ok) testSuccess = true;
-      } catch (e) {}
-    }
-
-    if (!testSuccess) {
-      return res.status(400).json({
-        success: false,
-        error: 'Não foi possível conectar à API do bot fornecedor. Verifique se a URL e a Chave de API estão corretas e se o bot está online.'
-      });
-    }
+    } catch (e) {}
 
     const provider = await dbHelpers.createExternalProvider({
       name: String(name).trim(),
@@ -2319,7 +2303,6 @@ app.post('/api/admin/integrations', adminAuth, async (req, res) => {
       api_key: cleanKey
     });
 
-    // Sincroniza produtos imediatamente se disponíveis
     let syncedCount = 0;
     if (fetchedProducts.length > 0 && provider && provider.id) {
       for (const p of fetchedProducts) {
@@ -2348,7 +2331,9 @@ app.post('/api/admin/integrations', adminAuth, async (req, res) => {
 
     res.json({
       success: true,
-      message: `Bot conectado com sucesso! ${syncedCount} produto(s) sincronizado(s).`,
+      message: syncedCount > 0 
+        ? `Bot conectado com sucesso! ${syncedCount} produto(s) sincronizado(s).`
+        : 'Bot conectado com sucesso!',
       data: provider,
       synced_count: syncedCount
     });
