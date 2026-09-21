@@ -492,12 +492,30 @@ document.addEventListener('DOMContentLoaded', () => {
               <span class="text-[10px] text-slate-400 font-mono">${escapeHtml(s.customer_contact || s.customer_id || 'Via Bot')}</span>
             </td>
             <td class="px-5 py-3.5 max-w-xs font-mono text-[11px]">
-              <div class="flex items-center gap-1 text-cyan-300">
-                <span class="truncate">${escapeHtml(s.target_url)}</span>
-                <button onclick="copyToClipboard('${escapeHtml(s.target_url)}')" class="p-1 hover:text-white" title="Copiar Link">
-                  <i data-lucide="copy" class="w-3.5 h-3.5"></i>
-                </button>
-              </div>
+              ${(() => {
+                const isSpotify = /spotify/i.test(s.product || '');
+                const rawUrl = (s.delivered_content && /^https?:\/\//i.test(s.delivered_content))
+                  ? s.delivered_content
+                  : (s.target_url && (!s.target_url.includes('/r/') || isSpotify) ? s.target_url : '');
+                
+                if (rawUrl) {
+                  return `
+                    <div class="flex items-center gap-1 text-cyan-300">
+                      <span class="truncate max-w-[14rem]" title="${escapeHtml(rawUrl)}">${escapeHtml(rawUrl)}</span>
+                      <button onclick="copyToClipboard('${escapeHtml(rawUrl)}')" class="p-1 hover:text-white" title="Copiar Link">
+                        <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                      </button>
+                      <a href="${escapeHtml(rawUrl)}" target="_blank" rel="noopener" class="p-1 text-slate-400 hover:text-cyan-300" title="Abrir link">
+                        <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
+                      </a>
+                    </div>
+                  `;
+                }
+                if (s.delivered_login || s.delivered_password) {
+                  return `<span class="text-slate-400 text-xs font-sans">🔑 Conta de acesso</span>`;
+                }
+                return `<span class="text-slate-600">—</span>`;
+              })()}
             </td>
             <td class="px-5 py-3">
               <div class="flex items-center gap-1.5">
@@ -618,7 +636,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (s.delivered_content) {
       const isUrl = /^https?:\/\//i.test(String(s.delivered_content));
-      parts.push(receiptFieldRow(type === 'link' ? 'Link entregue' : 'Arquivo / Conteúdo', s.delivered_content, isUrl));
+      const fieldTitle = isUrl ? 'Link de Ativação / Resgate' : (type === 'coupon' ? 'Código de Resgate' : 'Conteúdo Entregue');
+      parts.push(receiptFieldRow(fieldTitle, s.delivered_content, isUrl));
     }
     if (!parts.length) {
       parts.push('<div class="text-slate-500 text-[11px]">Nenhum item entregue registrado (venda sem produto associado).</div>');
@@ -643,8 +662,26 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('receipt-item-type').textContent = receiptTypeLabel(s.delivered_type);
     document.getElementById('receipt-product-name').textContent = s.product || '—';
     document.getElementById('receipt-item-fields').innerHTML = receiptItemFields(s);
-    currentReceiptUrl = s.target_url || '';
-    document.getElementById('receipt-target-url').textContent = currentReceiptUrl || '—';
+    
+    const isSpotify = /spotify/i.test(s.product || '');
+    const realDeliveryUrl = (s.delivered_content && /^https?:\/\//i.test(s.delivered_content))
+      ? s.delivered_content
+      : (s.target_url && (!s.target_url.includes('/r/') || isSpotify) ? s.target_url : '');
+
+    currentReceiptUrl = realDeliveryUrl || '';
+    const targetUrlBlock = document.getElementById('receipt-target-url-block') || document.getElementById('receipt-target-url')?.closest('.border-t');
+    const targetUrlLabel = document.getElementById('receipt-target-url-label');
+    if (targetUrlLabel) {
+      targetUrlLabel.textContent = isSpotify ? 'Link gerado (Spotify)' : 'Link de Resgate / Acesso';
+    }
+    if (targetUrlBlock) {
+      // Se não for Spotify, oculta a linha duplicada pois o link real já é exibido com destaque acima em receipt-item-fields
+      targetUrlBlock.style.display = (isSpotify && currentReceiptUrl) ? 'block' : 'none';
+    }
+    const targetUrlEl = document.getElementById('receipt-target-url');
+    if (targetUrlEl) {
+      targetUrlEl.textContent = currentReceiptUrl || '—';
+    }
     document.getElementById('receipt-price').textContent = __brl(s.sale_price);
     document.getElementById('receipt-discount').textContent = Number(s.discount || 0) > 0 ? '− ' + __brl(s.discount) : '—';
     document.getElementById('receipt-profit').textContent = '+ ' + __brl(s.profit);

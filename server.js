@@ -3229,18 +3229,20 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
     await dbHelpers.db.prepare('UPDATE resellers SET credits = ROUND(CAST(credits - ? AS NUMERIC), 2) WHERE id = ?').run(costPrice, reseller.id);
     debited = true; // débito concluído — falhas daqui pra frente disparam estorno automático
 
-    // Gera o link
+    //    // 4. Gera o Token / Link
+    const isSpotify = /spotify/i.test(pricing.productName || '');
     const generation = await dbHelpers.generateLink(`painel_manual:${reseller.name}`, reseller.id, ip, pricing.productTargetUrl);
+    const initialTargetUrl = isSpotify ? generation.targetUrl : '';
 
-    // Registra a venda no histórico de clientes do revendedor
+    // 5. Registra a Venda
     const now = new Date().toISOString();
     const saleResult = await dbHelpers.db.prepare(`
-      INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_id, customer_contact, product, sale_price, cost_price, profit, delivery_status, product_id, coupon_id, discount, created_at)
-      VALUES (?, ?, ?, ?, 'manual_web', ?, ?, ?, ?, ?, 'Entregue (Manual)', ?, ?, ?, ?) RETURNING id
+      INSERT INTO sales (reseller_id, token, target_url, customer_name, customer_contact, product, sale_price, cost_price, profit, delivery_status, product_id, coupon_id, discount, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Entregue', ?, ?, ?, ?) RETURNING id
     `).run(
       reseller.id,
       generation.token,
-      generation.targetUrl,
+      initialTargetUrl,
       finalCustomerName,
       finalContact,
       pricing.productName || 'Spotify Premium',
@@ -3325,6 +3327,12 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
       }
     }
 
+    let finalDeliveryUrl = isSpotify ? generation.targetUrl : '';
+    if (deliveredItem && deliveredItem.content && /^https?:\/\//i.test(deliveredItem.content)) {
+      finalDeliveryUrl = deliveredItem.content;
+      await dbHelpers.db.prepare('UPDATE sales SET target_url = ? WHERE id = ?').run(finalDeliveryUrl, saleResult.lastInsertRowid);
+    }
+
     const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
 
     // Alerta de venda manual (painel do revendedor)
@@ -3345,8 +3353,8 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
 
     res.json({
       success: true,
-      message: 'Link gerado com sucesso! R$ 2,99 descontado do seu saldo.',
-      link: generation.targetUrl,
+      message: 'Pedido processado e entregue com sucesso!',
+      link: finalDeliveryUrl || (isSpotify ? generation.targetUrl : null),
       token: generation.token,
       expires_at: generation.expiresAt,
       balance_remaining: Number(updated.credits).toFixed(2),
@@ -3555,8 +3563,10 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
     debited = true; // débito concluído — falhas daqui pra frente disparam estorno automático
 
 
-    // 4. Gera o Link
+    // 4. Gera o Token / Link
+    const isSpotify = /spotify/i.test(finalProduct);
     const generation = await dbHelpers.generateLink(`bot:${reseller.name}`, reseller.id, ip, pricing.productTargetUrl);
+    const initialTargetUrl = isSpotify ? generation.targetUrl : '';
 
     // 5. Registra a Venda no Histórico de Clientes do Revendedor
     const now = new Date().toISOString();
@@ -3566,7 +3576,7 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
     `).run(
       reseller.id,
       generation.token,
-      generation.targetUrl,
+      initialTargetUrl,
       finalCustomerName,
       finalCustomerId,
       finalContact,
@@ -3638,6 +3648,12 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
       }
     }
 
+    let finalDeliveryUrl = isSpotify ? generation.targetUrl : '';
+    if (deliveredItem && deliveredItem.content && /^https?:\/\//i.test(deliveredItem.content)) {
+      finalDeliveryUrl = deliveredItem.content;
+      await dbHelpers.db.prepare('UPDATE sales SET target_url = ? WHERE id = ?').run(finalDeliveryUrl, saleResult.lastInsertRowid);
+    }
+
     const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
 
     // Registra a transação de compra no livro financeiro
@@ -3676,7 +3692,7 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
     res.json({
       success: true,
       message: 'Link gerado e entregue com sucesso para o cliente!',
-      link: generation.targetUrl,
+      link: finalDeliveryUrl || (isSpotify ? generation.targetUrl : null),
       token: generation.token,
       delivery_status: 'Entregue',
       customer: {

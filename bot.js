@@ -1629,15 +1629,18 @@ function deliveryLines(item) {
     return out;
   }
 
-  // Produto de link (ou conteudo que e realmente uma URL): entrega o link.
-  if (kind !== 'account' && (kind === 'link' || looksLikeUrl(raw))) {
-    return [`Link: ${raw || (looksLikeUrl(item.link) ? item.link : '(nao informado)')}`];
+  // Produto de link (ou conteudo que e realmente uma URL): entrega o link real.
+  if (looksLikeUrl(raw)) {
+    return [`Link: ${raw}`];
   }
 
   if (raw) return [`Acesso: ${raw}`];
 
-  // Sem acesso registrado: nao inventa link a partir do target_url interno.
-  if (kind !== 'account' && looksLikeUrl(item.link)) return [`Link: ${item.link}`];
+  // NUNCA imprime o link interno do gerador (/r/) para produtos que não sejam Spotify!
+  const isSpotify = /spotify/i.test(String(item.product || ''));
+  if (looksLikeUrl(item.link) && (isSpotify || !item.link.includes('/r/'))) {
+    return [`Link: ${item.link}`];
+  }
   return ['Nenhum dado de entrega disponivel para este item.'];
 }
 
