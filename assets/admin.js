@@ -233,15 +233,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const elDepMonth = document.getElementById('kpi-deposits-month');
       if (elDepMonth) elDepMonth.innerText = `R$ ${Number(kpis.depositsMonth || 0).toFixed(2).replace('.', ',')}`;
 
-      // Card 8: Saldo GGSoma & Status
-      const elGgsomaBal = document.getElementById('kpi-ggsoma-balance');
-      if (elGgsomaBal) elGgsomaBal.innerText = `$${Number(kpis.ggsomaBalance || 13.02).toFixed(2)}`;
-      const elGgsomaBalDisp = document.getElementById('ggsoma-balance-display');
-      if (elGgsomaBalDisp) elGgsomaBalDisp.innerText = `$${Number(kpis.ggsomaBalance || 13.02).toFixed(2)}`;
-      const elGgsomaReq = document.getElementById('ggsoma-requests-today');
-      if (elGgsomaReq) elGgsomaReq.innerText = Number(ggsoma?.requestsToday || 0).toLocaleString('pt-BR');
-      const elGgsomaOrd = document.getElementById('ggsoma-orders-24h');
-      if (elGgsomaOrd) elGgsomaOrd.innerText = Number(ggsoma?.apiOrders24h || 0).toLocaleString('pt-BR');
+      // Card 8: Produtos Ativos
+      const elActiveProd = document.getElementById('kpi-active-products');
+      if (elActiveProd) elActiveProd.innerText = Number(kpis.activeProducts || 0).toLocaleString('pt-BR');
 
       // 2. Gráficos Analíticos
       renderRevenueProfitChart(charts?.timeline30d || []);

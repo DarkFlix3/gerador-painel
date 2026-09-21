@@ -3100,21 +3100,9 @@ app.get('/api/admin/stats', adminAuth, async (req, res) => {
       depositsMonth = Number(finDepRow ? finDepRow.total : 0);
     } catch (e) {}
 
-    // 7. GGSoma Balance e Status
-    let ggsomaBalance = '13.02';
-    let ggsomaStatus = 'connected';
-    try {
-      const sBal = await dbHelpers.db.prepare("SELECT value FROM settings WHERE key = 'ggsoma_balance'").get();
-      if (sBal && sBal.value) ggsomaBalance = sBal.value;
-      const sSt = await dbHelpers.db.prepare("SELECT value FROM settings WHERE key = 'ggsoma_status'").get();
-      if (sSt && sSt.value) ggsomaStatus = sSt.value;
-    } catch (e) {}
-
-    const todayGenRow = await dbHelpers.db.prepare('SELECT COUNT(*) as count FROM generations WHERE created_at >= ?').get(todayIso);
-    const requestsToday = Number(todayGenRow ? todayGenRow.count : 0);
-
-    const sales24hRow = await dbHelpers.db.prepare('SELECT COUNT(*) as count FROM sales WHERE created_at >= ?').get(twentyFourHoursAgo);
-    const apiOrders24h = Number(sales24hRow ? sales24hRow.count : 0);
+    // 7. Produtos Ativos no Catálogo
+    const prodCountRow = await dbHelpers.db.prepare('SELECT COUNT(*) as count FROM products WHERE active = 1').get();
+    const activeProducts = Number(prodCountRow ? prodCountRow.count : 0);
 
     // 8. Gráficos de 30 Dias (Timeline contínua)
     const sales30d = await dbHelpers.db.prepare(`
@@ -3211,8 +3199,7 @@ app.get('/api/admin/stats', adminAuth, async (req, res) => {
         totalOrders,
         pendingOrders30d,
         depositsMonth,
-        ggsomaBalance,
-        ggsomaStatus,
+        activeProducts,
         // Legado
         totalGenerations: totalOrders,
         todayGenerations: ordersToday,
@@ -3249,13 +3236,7 @@ app.get('/api/admin/stats', adminAuth, async (req, res) => {
         product_name: m.product_name,
         amount: Number(m.amount || 0),
         created_at: m.created_at
-      })),
-      ggsoma: {
-        balance: ggsomaBalance,
-        status: ggsomaStatus,
-        requestsToday,
-        apiOrders24h
-      }
+      }))
     });
 
   } catch (err) {

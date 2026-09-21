@@ -359,35 +359,33 @@
         const timeline30d = [];
         for (let i = 29; i >= 0; i--) {
           const d = new Date(Date.now() - i * 86400000);
-          const count = Math.floor(2 + Math.random() * 8);
           timeline30d.push({
             date_day: d.toISOString().slice(0, 10),
-            count,
-            revenue: count * 15.00,
-            profit: count * 12.01
+            count: 0,
+            revenue: 0,
+            profit: 0
           });
         }
 
         return mockResponse(200, {
           success: true,
           kpis: {
-            revenueToday: 200.88,
-            ordersToday: 12,
-            revenueMonth: totalRev > 0 ? totalRev : 14741.65,
-            totalRevenue: totalRev > 0 ? totalRev : 33658.64,
-            accumulatedProfit: totalProfit > 0 ? totalProfit : 15684.50,
-            customersBalance: customersBal > 0 ? customersBal : 3173.17,
-            totalCustomers: customers.length > 0 ? customers.length : 2192,
-            activeCustomers7d: 416,
+            revenueToday: 0,
+            ordersToday: 0,
+            revenueMonth: totalRev,
+            totalRevenue: totalRev,
+            accumulatedProfit: totalProfit,
+            customersBalance: customersBal,
+            totalCustomers: customers.length,
+            activeCustomers7d: customers.filter(c => !c.blocked).length,
             blockedCustomers: customers.filter(c => c.blocked).length,
-            totalOrders: sales.length > 0 ? sales.length : 2663,
-            pendingOrders30d: 3,
-            depositsMonth: 15517.24,
-            ggsomaBalance: 13.02,
-            ggsomaStatus: 'connected',
+            totalOrders: sales.length,
+            pendingOrders30d: 0,
+            depositsMonth: 0,
+            activeProducts: getProducts().filter(p => p.active).length,
             // Legado
-            totalGenerations: 1482 + sales.length,
-            todayGenerations: 48,
+            totalGenerations: sales.length,
+            todayGenerations: 0,
             totalResellers: resellers.length,
             activeResellers: resellers.filter(r => r.active && !r.blocked).length,
             blockedResellers: resellers.filter(r => r.blocked).length,
@@ -405,24 +403,14 @@
           recentOrders: sales.slice(0, 8).map(s => ({
             id: s.id,
             token: s.token,
-            product: s.product || 'Spotify Premium 3 Meses',
-            customer_name: s.customer_name || 'Cliente Demo',
-            customer_contact: s.customer_contact || '@demo',
-            sale_price: Number(s.sale_price || 15),
+            product: s.product || 'Produto',
+            customer_name: s.customer_name || 'Cliente',
+            customer_contact: s.customer_contact || '',
+            sale_price: Number(s.sale_price || 0),
             delivery_status: s.delivery_status || 'Entregue',
             created_at: s.created_at
           })),
-          recentMovements: [
-            { id: 1, customer_name: 'Gabriel', customer_contact: '@gabriel_vip', type: 'deposit', amount: 17.00, created_at: new Date(Date.now() - 3600000).toISOString() },
-            { id: 2, customer_name: 'Gabriel', customer_contact: '@gabriel_vip', type: 'purchase', amount: 16.74, created_at: new Date(Date.now() - 3500000).toISOString() },
-            { id: 3, customer_name: 'Lucas Ferreira', customer_contact: '@lucas_ferr', type: 'deposit', amount: 30.00, created_at: new Date(Date.now() - 7200000).toISOString() }
-          ],
-          ggsoma: {
-            balance: 13.02,
-            status: 'connected',
-            requestsToday: 83,
-            apiOrders24h: 12
-          }
+          recentMovements: []
         });
       }
 
