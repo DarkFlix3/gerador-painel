@@ -239,6 +239,42 @@ document.addEventListener('DOMContentLoaded', () => {
       const elActiveProd = document.getElementById('kpi-active-products');
       if (elActiveProd) elActiveProd.innerText = Number(kpis.activeProducts || 0).toLocaleString('pt-BR');
 
+      // 1b. Painel Especial GGOSOMA no Dashboard
+      if (ggsoma) {
+        const elGgOrders = document.getElementById('kpi-ggsoma-orders');
+        if (elGgOrders) elGgOrders.innerText = `${Number(ggsoma.totalOrders || 0)} pedidos`;
+        const elGgOrdersToday = document.getElementById('kpi-ggsoma-orders-today');
+        if (elGgOrdersToday) elGgOrdersToday.innerText = `${Number(ggsoma.ordersToday || 0)} hoje`;
+
+        const elGgRev = document.getElementById('kpi-ggsoma-revenue');
+        if (elGgRev) elGgRev.innerText = `R$ ${Number(ggsoma.revenue || 0).toFixed(2).replace('.', ',')}`;
+        const elGgRevToday = document.getElementById('kpi-ggsoma-revenue-today');
+        if (elGgRevToday) elGgRevToday.innerText = `R$ ${Number(ggsoma.revenueToday || 0).toFixed(2).replace('.', ',')} hoje`;
+
+        const elGgCost = document.getElementById('kpi-ggsoma-cost');
+        if (elGgCost) elGgCost.innerText = `R$ ${Number(ggsoma.cost || 0).toFixed(2).replace('.', ',')}`;
+        const elGgCostUsd = document.getElementById('kpi-ggsoma-cost-usd');
+        if (elGgCostUsd) elGgCostUsd.innerText = `$${Number(ggsoma.costUsd || 0).toFixed(2)} USD custo API`;
+
+        const elGgProfit = document.getElementById('kpi-ggsoma-profit');
+        if (elGgProfit) elGgProfit.innerText = `R$ ${Number(ggsoma.profit || 0).toFixed(2).replace('.', ',')}`;
+        const elGgMargin = document.getElementById('kpi-ggsoma-margin');
+        if (elGgMargin) elGgMargin.innerText = `Margem média: ${ggsoma.marginPercent || 40}%`;
+
+        const elGgBalBadge = document.getElementById('dashboard-ggsoma-balance-badge');
+        if (elGgBalBadge) {
+          const balUsd = typeof ggsoma.balanceUsd === 'number' ? ggsoma.balanceUsd.toFixed(2) : '0.00';
+          const balBrl = typeof ggsoma.balanceBrl === 'number' ? ggsoma.balanceBrl.toFixed(2).replace('.', ',') : '0,00';
+          const isZero = !ggsoma.balanceUsd || ggsoma.balanceUsd <= 0;
+          elGgBalBadge.innerHTML = `
+            <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-bold ${isZero ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30' : 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'}">
+              <i data-lucide="wallet" class="w-3.5 h-3.5"></i>
+              Saldo GGOSOMA: $${balUsd} USD (~R$ ${balBrl})
+            </span>
+          `;
+        }
+      }
+
       // 2. Gráficos Analíticos
       renderRevenueProfitChart(charts?.timeline30d || []);
       renderOrdersChart(charts?.timeline30d || []);
@@ -246,6 +282,8 @@ document.addEventListener('DOMContentLoaded', () => {
       // 3. Painéis Inferiores
       renderRecentOrders(recentOrders || []);
       renderRecentMovements(recentMovements || []);
+
+      if (window.lucide) window.lucide.createIcons();
 
     } catch (e) {
       console.warn('Erro ao carregar estatísticas da visão geral:', e);
@@ -282,12 +320,11 @@ document.addEventListener('DOMContentLoaded', () => {
             pointRadius: 3
           },
           {
-            label: 'Lucro Líquido',
+            label: 'Lucro',
             data: profitData,
             borderColor: '#6366f1',
             backgroundColor: 'rgba(99, 102, 241, 0.08)',
             borderWidth: 2,
-            borderDash: [3, 3],
             fill: true,
             tension: 0.35,
             pointBackgroundColor: '#6366f1',
@@ -299,12 +336,7 @@ document.addEventListener('DOMContentLoaded', () => {
         responsive: true,
         maintainAspectRatio: false,
         plugins: {
-          legend: { labels: { color: '#94a3b8', font: { size: 11 } } },
-          tooltip: {
-            callbacks: {
-              label: (ctx) => `${ctx.dataset.label}: R$ ${Number(ctx.raw).toFixed(2).replace('.', ',')}`
-            }
-          }
+          legend: { display: false }
         },
         scales: {
           x: { grid: { color: 'rgba(255, 255, 255, 0.05)' }, ticks: { color: '#64748b', maxTicksLimit: 10 } },
@@ -369,10 +401,16 @@ document.addEventListener('DOMContentLoaded', () => {
       if (st.includes('pend')) badge = '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-950/60 text-amber-400 border border-amber-500/30">Pendente</span>';
       if (st.includes('erro') || st.includes('falh')) badge = '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-950/60 text-rose-400 border border-rose-500/30">Erro</span>';
 
+      const gBadge = o.is_ggsoma ? '<span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">GGOSOMA</span>' : '';
+      const icon = o.product_emoji ? `${o.product_emoji} ` : '';
+
       return `
         <div class="pt-2.5 pb-1 flex items-center justify-between text-xs">
           <div class="min-w-0 pr-2">
-            <span class="font-bold text-white block truncate">${escapeHtml(o.product || 'Produto')}</span>
+            <div class="flex items-center gap-1.5">
+              <span class="font-bold text-white block truncate">${icon}${escapeHtml(o.product || 'Produto')}</span>
+              ${gBadge}
+            </div>
             <span class="text-[11px] text-slate-400 block font-mono truncate"># ${escapeHtml(String(o.id))} · ${escapeHtml(o.customer_name || 'Cliente')} · ${dateStr}</span>
           </div>
           <div class="text-right shrink-0 flex flex-col items-end gap-1">
@@ -400,12 +438,14 @@ document.addEventListener('DOMContentLoaded', () => {
       const badge = isDeposit
         ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950/60 text-emerald-400 border border-emerald-500/30">Depósito</span>'
         : '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-950/60 text-rose-400 border border-rose-500/30">Compra</span>';
+      const gBadge = m.is_ggsoma ? '<span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">GGOSOMA</span>' : '';
 
       return `
         <div class="pt-2.5 pb-1 flex items-center justify-between text-xs">
           <div class="min-w-0 pr-2">
-            <div class="flex items-center gap-2 mb-0.5">
+            <div class="flex items-center gap-1.5 mb-0.5">
               ${badge}
+              ${gBadge}
             </div>
             <span class="text-[11px] text-slate-300 block font-mono truncate">${escapeHtml(m.customer_name || 'Cliente')} · ${dateStr}</span>
           </div>
@@ -460,7 +500,10 @@ document.addEventListener('DOMContentLoaded', () => {
               </div>
             </td>
             <td class="px-5 py-3">
-              <span class="font-bold text-amber-300 block text-xs">${escapeHtml(s.product || '—')}</span>
+              <div class="flex items-center gap-1.5">
+                <span class="font-bold text-amber-300 block text-xs">${s.product_emoji ? s.product_emoji + ' ' : ''}${escapeHtml(s.product || '—')}</span>
+                ${s.is_ggsoma ? '<span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">GGOSOMA</span>' : ''}
+              </div>
               ${s.delivered_login ? `
                 <span class="flex items-center gap-1 text-[10px] text-emerald-400 font-mono mt-0.5">
                   <span class="text-slate-500 font-sans">Login:</span>
@@ -1719,6 +1762,44 @@ document.addEventListener('DOMContentLoaded', () => {
       if (elRef) elRef.innerText = `R$ ${String(refVal).replace('.', ',')}`;
       if (elWal) elWal.innerText = `R$ ${String(walVal).replace('.', ',')}`;
 
+      // GGOSOMA KPIs no Financeiro
+      const gg = data.ggsoma || {};
+      const elGgFinRev = document.getElementById('kpi-fin-ggsoma-revenue');
+      const elGgFinOrders = document.getElementById('kpi-fin-ggsoma-orders');
+      const elGgFinCost = document.getElementById('kpi-fin-ggsoma-cost');
+      const elGgFinCostUsd = document.getElementById('kpi-fin-ggsoma-cost-usd');
+      const elGgFinProfit = document.getElementById('kpi-fin-ggsoma-profit');
+      const elGgFinMargin = document.getElementById('kpi-fin-ggsoma-margin');
+      const elGgFinWallet = document.getElementById('kpi-fin-ggsoma-wallet');
+      const elGgFinWalletBrl = document.getElementById('kpi-fin-ggsoma-wallet-brl');
+      const elGgFinBadge = document.getElementById('fin-ggsoma-balance-badge');
+
+      if (elGgFinRev) elGgFinRev.innerText = `R$ ${Number(gg.totalRevenue || 0).toFixed(2).replace('.', ',')}`;
+      if (elGgFinOrders) elGgFinOrders.innerText = `${gg.totalOrders || 0} venda(s) realizada(s)`;
+      if (elGgFinCost) elGgFinCost.innerText = `R$ ${Number(gg.totalCost || 0).toFixed(2).replace('.', ',')}`;
+      if (elGgFinCostUsd) elGgFinCostUsd.innerText = `$${Number(gg.totalCostUsd || 0).toFixed(2)} USD custo API`;
+      if (elGgFinProfit) elGgFinProfit.innerText = `R$ ${Number(gg.totalProfit || 0).toFixed(2).replace('.', ',')}`;
+      const revNum = Number(gg.totalRevenue || 0);
+      const costNum = Number(gg.totalCost || 0);
+      const marginEst = costNum > 0 ? Math.round(((revNum - costNum) / costNum) * 100) : 40;
+      if (elGgFinMargin) elGgFinMargin.innerText = `Margem média: ${marginEst}%`;
+
+      const balUsd = typeof gg.balanceUsd === 'number' ? gg.balanceUsd.toFixed(2) : '0.00';
+      const balBrl = typeof gg.balanceBrl === 'number' ? gg.balanceBrl.toFixed(2).replace('.', ',') : '0,00';
+      const isZero = !gg.balanceUsd || gg.balanceUsd <= 0;
+
+      if (elGgFinWallet) elGgFinWallet.innerText = `$${balUsd} USD`;
+      if (elGgFinWalletBrl) elGgFinWalletBrl.innerText = `~R$ ${balBrl} disponível`;
+
+      if (elGgFinBadge) {
+        elGgFinBadge.innerHTML = `
+          <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-bold ${isZero ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30' : 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'}">
+            <i data-lucide="wallet" class="w-3.5 h-3.5"></i>
+            Saldo Fornecedor: $${balUsd} USD (~R$ ${balBrl})
+          </span>
+        `;
+      }
+
       // Table rows
       const items = data.data || [];
       if (items.length === 0) {
@@ -1751,6 +1832,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const orderInfo = tx.order_number ? `Pedido #${escapeHtml(tx.order_number)}` : '';
         const prodInfo = tx.product_name ? escapeHtml(tx.product_name) : '';
         const descInfo = tx.description ? escapeHtml(tx.description) : '';
+        const gBadge = tx.is_ggsoma ? '<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">GGOSOMA</span>' : '';
 
         return `
           <tr class="hover:bg-white/[0.02] transition-colors whitespace-nowrap">
@@ -1761,7 +1843,10 @@ document.addEventListener('DOMContentLoaded', () => {
             </td>
             <td class="px-5 py-3">${typeBadge}</td>
             <td class="px-5 py-3">
-              <span class="font-bold text-amber-300 block text-xs">${[orderInfo, prodInfo].filter(Boolean).join(' • ') || '—'}</span>
+              <div class="flex items-center gap-1.5">
+                <span class="font-bold text-amber-300 block text-xs">${[orderInfo, prodInfo].filter(Boolean).join(' • ') || '—'}</span>
+                ${gBadge}
+              </div>
               ${descInfo ? `<span class="text-[10px] text-slate-400 block">${descInfo}</span>` : ''}
             </td>
             <td class="px-5 py-3">${amountFormatted}</td>
@@ -1770,6 +1855,8 @@ document.addEventListener('DOMContentLoaded', () => {
           </tr>
         `;
       }).join('');
+
+      if (window.lucide) window.lucide.createIcons();
 
     } catch (e) {
       console.warn('Erro ao carregar movimentações financeiras:', e);

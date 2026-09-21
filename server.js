@@ -4251,21 +4251,86 @@ app.get('/api/admin/stats', adminAuth, async (req, res) => {
 
     // 9. Painéis Inferiores: Últimos Pedidos & Movimentações
     const recentOrders = await dbHelpers.db.prepare(`
-      SELECT id, token, product, customer_name, customer_contact, sale_price, delivery_status, created_at
-      FROM sales
-      ORDER BY id DESC
+      SELECT s.id, s.token, s.product, s.customer_name, s.customer_contact, s.sale_price, s.delivery_status, s.created_at,
+             CASE WHEN p.provider_id IS NOT NULL THEN 1 ELSE 0 END as is_ggsoma,
+             p.emoji as product_emoji
+      FROM sales s
+      LEFT JOIN products p ON (s.product_id = p.id OR s.product = p.name)
+      ORDER BY s.id DESC
       LIMIT 8
     `).all();
 
     let recentMovements = [];
     try {
       recentMovements = await dbHelpers.db.prepare(`
-        SELECT id, customer_name, customer_contact, type, description, order_number, product_name, amount, created_at
-        FROM financial_transactions
-        ORDER BY id DESC
+        SELECT ft.id, ft.customer_name, ft.customer_contact, ft.type, ft.description, ft.order_number, ft.product_name, ft.amount, ft.created_at,
+               CASE WHEN p.provider_id IS NOT NULL THEN 1 ELSE 0 END as is_ggsoma
+        FROM financial_transactions ft
+        LEFT JOIN products p ON ft.product_name = p.name
+        ORDER BY ft.id DESC
         LIMIT 8
       `).all();
     } catch (e) {}
+
+    // 10. Métricas e Vendas Específicas da GGOSOMA
+    const ggosomaTotalRow = await dbHelpers.db.prepare(`
+      SELECT 
+        COUNT(s.id) as count,
+        COALESCE(SUM(s.sale_price), 0) as revenue,
+        COALESCE(SUM(s.cost_price), 0) as cost,
+        COALESCE(SUM(s.profit), 0) as profit
+      FROM sales s
+      LEFT JOIN products p ON (s.product_id = p.id OR s.product = p.name)
+      WHERE p.provider_id IS NOT NULL
+    `).get();
+
+    const ggosomaTodayRow = await dbHelpers.db.prepare(`
+      SELECT 
+        COUNT(s.id) as count,
+        COALESCE(SUM(s.sale_price), 0) as revenue,
+        COALESCE(SUM(s.profit), 0) as profit
+      FROM sales s
+      LEFT JOIN products p ON (s.product_id = p.id OR s.product = p.name)
+      WHERE p.provider_id IS NOT NULL AND s.created_at >= ?
+    `).get(todayIso);
+
+    const ggosomaCostUsdRow = await dbHelpers.db.prepare(`
+      SELECT COALESCE(SUM(p.cost_usd), 0) as cost_usd
+      FROM sales s
+      JOIN products p ON (s.product_id = p.id OR s.product = p.name)
+      WHERE p.provider_id IS NOT NULL
+    `).get();
+
+    const usdRate = await getUsdToBrlRate();
+    let ggosomaBalanceUsd = null;
+    let ggosomaBalanceBrl = null;
+    try {
+      const provs = await dbHelpers.getExternalProviders();
+      const gProv = provs.find(p => (p.api_key && p.api_key.startsWith('sk_live_')) || (p.api_url && p.api_url.includes('ggsoma')));
+      if (gProv && gProv.api_key) {
+        const balRes = await fetch('https://ggsoma.store/api/partner/v1/balance', {
+          headers: { 'Authorization': `Bearer ${gProv.api_key.trim()}` },
+          signal: AbortSignal.timeout(3000)
+        });
+        if (balRes.ok) {
+          const balData = await balRes.json();
+          if (balData && balData.ok && balData.balance !== undefined) {
+            ggosomaBalanceUsd = parseFloat(balData.balance);
+            ggosomaBalanceBrl = Math.round(ggosomaBalanceUsd * usdRate * 100) / 100;
+          }
+        }
+      }
+    } catch (e) {}
+
+    const ggosomaRevenue = Number(ggosomaTotalRow?.revenue || 0);
+    const ggosomaCost = Number(ggosomaTotalRow?.cost || 0);
+    const ggosomaProfit = Number(ggosomaTotalRow?.profit || 0);
+    const ggosomaOrders = Number(ggosomaTotalRow?.count || 0);
+    const ggosomaRevenueToday = Number(ggosomaTodayRow?.revenue || 0);
+    const ggosomaOrdersToday = Number(ggosomaTodayRow?.count || 0);
+    const ggosomaProfitToday = Number(ggosomaTodayRow?.profit || 0);
+    const ggosomaCostUsd = Number(ggosomaCostUsdRow?.cost_usd || 0);
+    const ggosomaMargin = ggosomaCost > 0 ? Math.round((ggosomaProfit / ggosomaCost) * 100) : 40;
 
     // Resellers stats legado
     const resellerStats = await dbHelpers.db.prepare(`
@@ -4321,6 +4386,20 @@ app.get('/api/admin/stats', adminAuth, async (req, res) => {
         platformGrossRevenue: totalRevenue.toFixed(2),
         errorsLast24h
       },
+      ggsoma: {
+        totalOrders: ggosomaOrders,
+        ordersToday: ggosomaOrdersToday,
+        revenue: ggosomaRevenue,
+        revenueToday: ggosomaRevenueToday,
+        cost: ggosomaCost,
+        costUsd: ggosomaCostUsd,
+        profit: ggosomaProfit,
+        profitToday: ggosomaProfitToday,
+        marginPercent: ggosomaMargin,
+        balanceUsd: ggosomaBalanceUsd,
+        balanceBrl: ggosomaBalanceBrl,
+        usdRate: usdRate
+      },
       charts: {
         timeline30d,
         generationsTimeline: timeline30d.slice(-7),
@@ -4334,6 +4413,8 @@ app.get('/api/admin/stats', adminAuth, async (req, res) => {
         customer_contact: o.customer_contact || '',
         sale_price: Number(o.sale_price || 0),
         delivery_status: o.delivery_status || 'Entregue',
+        is_ggsoma: Number(o.is_ggsoma) === 1,
+        product_emoji: o.product_emoji || '🎁',
         created_at: o.created_at
       })),
       recentMovements: (recentMovements || []).map(m => ({
@@ -4345,6 +4426,7 @@ app.get('/api/admin/stats', adminAuth, async (req, res) => {
         order_number: m.order_number,
         product_name: m.product_name,
         amount: Number(m.amount || 0),
+        is_ggsoma: Number(m.is_ggsoma) === 1,
         created_at: m.created_at
       }))
     });
@@ -4469,16 +4551,25 @@ app.get('/api/admin/all-sales', adminAuth, async (req, res) => {
       s.product, s.product_id, s.coupon_id, s.discount,
       s.sale_price, s.cost_price, s.profit, s.delivery_status, s.created_at,
       r.name as reseller_name, r.email as reseller_email,
+      CASE WHEN p.provider_id IS NOT NULL THEN 1 ELSE 0 END as is_ggsoma,
+      p.emoji as product_emoji,
       ${hasProductItems ? 'pi.type AS delivered_type, pi.login AS delivered_login, pi.password AS delivered_password, pi.content AS delivered_content' : 'NULL AS delivered_type, NULL AS delivered_login, NULL AS delivered_password, NULL AS delivered_content'}
     FROM sales s
     JOIN resellers r ON s.reseller_id = r.id
+    LEFT JOIN products p ON (s.product_id = p.id OR s.product = p.name)
     ${hasProductItems ? 'LEFT JOIN product_items pi ON pi.sale_id = s.id' : ''}
     ${where}
     ORDER BY s.id DESC
     LIMIT ?
   `).all(...params, limit);
 
-  res.json({ success: true, data: sales });
+  res.json({ 
+    success: true, 
+    data: sales.map(s => ({
+      ...s,
+      is_ggsoma: Number(s.is_ggsoma) === 1
+    }))
+  });
 });
 
 // ==========================================
@@ -5394,14 +5485,16 @@ app.get('/api/admin/financial-transactions', adminAuth, async (req, res) => {
     const clauses = [];
     const params = [];
 
-    if (type) {
-      clauses.push('type = ?');
+    if (type === 'ggsoma') {
+      clauses.push("ft.product_name IN (SELECT name FROM products WHERE provider_id IS NOT NULL)");
+    } else if (type) {
+      clauses.push('ft.type = ?');
       params.push(type);
     }
 
     if (search) {
       const cleanSearch = search.replace(/^[@tg_]+/, '').trim();
-      clauses.push('(customer_contact LIKE ? OR customer_contact LIKE ? OR customer_id LIKE ? OR customer_id LIKE ? OR customer_name LIKE ? OR order_number LIKE ? OR description LIKE ? OR product_name LIKE ?)');
+      clauses.push('(ft.customer_contact LIKE ? OR ft.customer_contact LIKE ? OR ft.customer_id LIKE ? OR ft.customer_id LIKE ? OR ft.customer_name LIKE ? OR ft.order_number LIKE ? OR ft.description LIKE ? OR ft.product_name LIKE ?)');
       const likeRaw = `%${search}%`;
       const likeClean = `%${cleanSearch}%`;
       params.push(likeRaw, likeClean, likeRaw, likeClean, likeRaw, likeRaw, likeRaw, likeRaw);
@@ -5410,23 +5503,79 @@ app.get('/api/admin/financial-transactions', adminAuth, async (req, res) => {
     const where = clauses.length > 0 ? ' WHERE ' + clauses.join(' AND ') : '';
 
     const transactions = await dbHelpers.db.prepare(`
-      SELECT id, customer_id, customer_name, customer_contact, type, description, order_number, product_name, amount, balance_before, balance_after, created_at
-      FROM financial_transactions${where}
-      ORDER BY id DESC
+      SELECT ft.id, ft.customer_id, ft.customer_name, ft.customer_contact, ft.type, ft.description, ft.order_number, ft.product_name, ft.amount, ft.balance_before, ft.balance_after, ft.created_at,
+             CASE WHEN p.provider_id IS NOT NULL THEN 1 ELSE 0 END as is_ggsoma
+      FROM financial_transactions ft
+      LEFT JOIN products p ON ft.product_name = p.name
+      ${where}
+      ORDER BY ft.id DESC
       LIMIT ? OFFSET ?
     `).all(...params, limit, offset);
 
-    const totalRow = await dbHelpers.db.prepare(`SELECT COUNT(*) AS count FROM financial_transactions${where}`).get(...params);
+    const totalRow = await dbHelpers.db.prepare(`
+      SELECT COUNT(*) AS count 
+      FROM financial_transactions ft
+      ${where}
+    `).get(...params);
 
-    // Métricas dos KPIs
+    // Métricas dos KPIs Gerais
     const depositsRow = await dbHelpers.db.prepare("SELECT COALESCE(SUM(amount), 0) AS total FROM financial_transactions WHERE type = 'deposit'").get();
     const purchasesRow = await dbHelpers.db.prepare("SELECT COALESCE(SUM(ABS(amount)), 0) AS total FROM financial_transactions WHERE type = 'purchase'").get();
     const refundsRow = await dbHelpers.db.prepare("SELECT COALESCE(SUM(amount), 0) AS total FROM financial_transactions WHERE type = 'refund'").get();
     const walletsRow = await dbHelpers.db.prepare("SELECT COALESCE(SUM(balance), 0) AS total FROM customers").get();
 
+    // Métricas Financeiras Específicas da GGOSOMA
+    const ggosomaFinRow = await dbHelpers.db.prepare(`
+      SELECT 
+        COUNT(*) as count,
+        COALESCE(SUM(ABS(amount)), 0) as total_revenue
+      FROM financial_transactions
+      WHERE type = 'purchase'
+        AND product_name IN (SELECT name FROM products WHERE provider_id IS NOT NULL)
+    `).get();
+
+    const ggosomaCostRow = await dbHelpers.db.prepare(`
+      SELECT 
+        COALESCE(SUM(s.cost_price), 0) as total_cost,
+        COALESCE(SUM(p.cost_usd), 0) as total_cost_usd,
+        COALESCE(SUM(s.profit), 0) as total_profit
+      FROM sales s
+      JOIN products p ON (s.product_id = p.id OR s.product = p.name)
+      WHERE p.provider_id IS NOT NULL
+    `).get();
+
+    const usdRate = await getUsdToBrlRate();
+    let ggosomaBalanceUsd = null;
+    let ggosomaBalanceBrl = null;
+    try {
+      const provs = await dbHelpers.getExternalProviders();
+      const gProv = provs.find(p => (p.api_key && p.api_key.startsWith('sk_live_')) || (p.api_url && p.api_url.includes('ggsoma')));
+      if (gProv && gProv.api_key) {
+        const balRes = await fetch('https://ggsoma.store/api/partner/v1/balance', {
+          headers: { 'Authorization': `Bearer ${gProv.api_key.trim()}` },
+          signal: AbortSignal.timeout(3000)
+        });
+        if (balRes.ok) {
+          const balData = await balRes.json();
+          if (balData && balData.ok && balData.balance !== undefined) {
+            ggosomaBalanceUsd = parseFloat(balData.balance);
+            ggosomaBalanceBrl = Math.round(ggosomaBalanceUsd * usdRate * 100) / 100;
+          }
+        }
+      }
+    } catch (e) {}
+
+    const ggosomaRev = Number(ggosomaFinRow?.total_revenue || 0);
+    const ggosomaCost = Number(ggosomaCostRow?.total_cost || 0);
+    const ggosomaProfit = Number(ggosomaCostRow?.total_profit || (ggosomaRev - ggosomaCost));
+    const ggosomaCostUsd = Number(ggosomaCostRow?.total_cost_usd || 0);
+
     res.json({
       success: true,
-      data: transactions,
+      data: transactions.map(t => ({
+        ...t,
+        is_ggsoma: Number(t.is_ggsoma) === 1
+      })),
       total: Number(totalRow.count || 0),
       kpi: {
         total_deposits: Number(depositsRow.total || 0),
@@ -5439,6 +5588,16 @@ app.get('/api/admin/financial-transactions', adminAuth, async (req, res) => {
         totalPurchases: Number(purchasesRow.total || 0).toFixed(2),
         totalRefunds: Number(refundsRow.total || 0).toFixed(2),
         totalInWallets: Number(walletsRow.total || 0).toFixed(2)
+      },
+      ggsoma: {
+        totalOrders: Number(ggosomaFinRow?.count || 0),
+        totalRevenue: ggosomaRev.toFixed(2),
+        totalCost: ggosomaCost.toFixed(2),
+        totalCostUsd: ggosomaCostUsd.toFixed(2),
+        totalProfit: ggosomaProfit.toFixed(2),
+        balanceUsd: ggosomaBalanceUsd,
+        balanceBrl: ggosomaBalanceBrl,
+        usdRate
       },
       limit,
       offset
