@@ -2422,7 +2422,7 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>
             <h4 class="text-sm font-bold text-white mb-1">Nenhum bot fornecedor conectado ainda</h4>
             <p class="text-xs text-slate-400 mb-4 max-w-md mx-auto">
-              Conecte outro bot informando o Nome e a API (Chave / Token) para importar seus produtos e exibi-los no seu bot do Telegram.
+              Conecte outro bot informando o Nome, a URL da API e a Chave de Acesso para importar seus produtos e exibi-los no seu bot do Telegram.
             </p>
             <button onclick="document.getElementById('btn-new-integration').click()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white rounded-xl shadow-lg shadow-emerald-600/20 transition-all inline-flex items-center gap-2">
               <i data-lucide="plus" class="w-4 h-4"></i>
@@ -2449,7 +2449,7 @@ document.addEventListener('DOMContentLoaded', () => {
                   </div>
                   <div>
                     <h4 class="text-sm font-bold text-white leading-tight">${escapeHtml(p.name)}</h4>
-                    <span class="text-[10px] text-slate-400 font-mono truncate block max-w-[200px]" title="API Conectada">API: ${escapeHtml(p.api_key ? (p.api_key.substring(0, 8) + '••••••••') : 'Configurada')}</span>
+                    <span class="text-[10px] text-slate-400 font-mono truncate block max-w-[200px]" title="${escapeHtml(p.api_url || '')}">${escapeHtml(p.api_url || 'Sem URL')}</span>
                   </div>
                 </div>
                 <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${Number(p.active) ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-500/30' : 'bg-slate-800 text-slate-400 border border-white/10'}">
@@ -2750,11 +2750,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const formTitle = document.getElementById('integration-form-title');
     const idInput = document.getElementById('integration-id');
     const nameInput = document.getElementById('integration-name');
+    const urlInput = document.getElementById('integration-url');
     const keyInput = document.getElementById('integration-key');
 
     if (formTitle) formTitle.innerText = `Editar Bot Fornecedor: ${provider.name}`;
     if (idInput) idInput.value = provider.id;
     if (nameInput) nameInput.value = provider.name || '';
+    if (urlInput) urlInput.value = provider.api_url || '';
     if (keyInput) {
       keyInput.value = '';
       keyInput.placeholder = 'Deixe em branco para manter a API atual';
@@ -2798,14 +2800,16 @@ document.addEventListener('DOMContentLoaded', () => {
   function resetIntegrationForm() {
     const idInput = document.getElementById('integration-id');
     const nameInput = document.getElementById('integration-name');
+    const urlInput = document.getElementById('integration-url');
     const keyInput = document.getElementById('integration-key');
     const title = document.getElementById('integration-form-title');
 
     if (idInput) idInput.value = '';
     if (nameInput) nameInput.value = '';
+    if (urlInput) urlInput.value = '';
     if (keyInput) {
       keyInput.value = '';
-      keyInput.placeholder = 'Cole aqui a API do bot (ex: rk_live_...)';
+      keyInput.placeholder = 'rk_live_... ou sk_live_...';
     }
     if (title) title.innerText = 'Conectar Bot Fornecedor';
     if (integrationFormCard) integrationFormCard.classList.add('hidden');
@@ -2832,10 +2836,12 @@ document.addEventListener('DOMContentLoaded', () => {
     btnSaveIntegration.addEventListener('click', async () => {
       const idInput = document.getElementById('integration-id');
       const nameInput = document.getElementById('integration-name');
+      const urlInput = document.getElementById('integration-url');
       const keyInput = document.getElementById('integration-key');
 
       const id = idInput ? idInput.value.trim() : '';
       const name = nameInput ? nameInput.value.trim() : '';
+      const api_url = urlInput ? urlInput.value.trim() : '';
       const api_key = keyInput ? keyInput.value.trim() : '';
 
       if (!name) {
@@ -2843,21 +2849,26 @@ document.addEventListener('DOMContentLoaded', () => {
         nameInput?.focus();
         return;
       }
+      if (!api_url) {
+        showToast('Informe a URL da API do bot fornecedor.', 'error');
+        urlInput?.focus();
+        return;
+      }
       if (!id && !api_key) {
-        showToast('Informe a API (Chave / Token) do bot.', 'error');
+        showToast('Informe a Chave de API (X-API-Key) do bot.', 'error');
         keyInput?.focus();
         return;
       }
 
       btnSaveIntegration.disabled = true;
-      btnSaveIntegration.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> <span>Conectando...</span>`;
+      btnSaveIntegration.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> <span>Testando & Conectando...</span>`;
       if (window.lucide) window.lucide.createIcons();
 
       try {
         let res, data;
         if (id) {
           // Atualização
-          const payload = { name };
+          const payload = { name, api_url };
           if (api_key) payload.api_key = api_key;
           res = await apiFetch(`/api/admin/integrations/${id}`, {
             method: 'PUT',
@@ -2870,10 +2881,10 @@ document.addEventListener('DOMContentLoaded', () => {
           // Nova Conexão
           res = await apiFetch('/api/admin/integrations', {
             method: 'POST',
-            body: JSON.stringify({ name, api_key })
+            body: JSON.stringify({ name, api_url, api_key })
           });
           data = await res.json();
-          if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao conectar o bot.');
+          if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao conectar com a API do bot.');
           showToast(data.message || 'Bot fornecedor conectado com sucesso!', 'success');
         }
 
