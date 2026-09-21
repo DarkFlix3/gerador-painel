@@ -554,6 +554,14 @@ async function mpCreatePixPayment({ resellerId, amount, reseller, telegramId, cu
   const roundedAmount = Math.round(parseFloat(amount) * 100) / 100;
   const expirationMinutes = parseInt(process.env.MP_PIX_EXPIRATION_MINUTES || '30', 10);
 
+  let payerEmail = (reseller && reseller.email ? String(reseller.email).trim() : '');
+  const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+  if (!payerEmail || !emailRegex.test(payerEmail) || payerEmail.endsWith('.local') || payerEmail.endsWith('.telegram') || payerEmail.endsWith('.internal')) {
+    const cleanId = String(telegramId || (reseller && reseller.telegram_id) || (reseller && reseller.id) || Date.now()).replace(/\D/g, '') || 'cliente';
+    payerEmail = `cliente_${cleanId}@gmail.com`;
+  }
+  const payerName = (customerName || (reseller && reseller.name) || 'Cliente').replace(/[^\p{L}\p{N}\s]/gu, '').trim() || 'Cliente';
+
   const payment = await mpFetch('/v1/payments', {
     method: 'POST',
     idempotencyKey: externalReference,
@@ -565,8 +573,8 @@ async function mpCreatePixPayment({ resellerId, amount, reseller, telegramId, cu
       notification_url: `${baseUrl}/api/v1/mp/webhook`,
       date_of_expiration: mpPixExpiration(expirationMinutes),
       payer: {
-        email: (reseller && reseller.email) || 'recarga@gerador-painel.local',
-        first_name: (reseller && reseller.name) || 'Revendedor'
+        email: payerEmail,
+        first_name: payerName
       }
     }
   });
@@ -957,7 +965,7 @@ const resellerBotAuth = async (req, res, next) => {
         const ins = await dbHelpers.db.prepare(`
           INSERT INTO resellers (name, email, credits, active, blocked, telegram_id, api_key, sale_price, created_at)
           VALUES (?, ?, ?, 1, ?, ?, ?, 2.99, ?) RETURNING id
-        `).run(autoName, `${cleanTg}@bot.telegram`, initialBalance, isBlocked, cleanTg, autoKey, now);
+        `).run(autoName, `cliente_${cleanTg}@gmail.com`, initialBalance, isBlocked, cleanTg, autoKey, now);
         const newId = ins.lastInsertRowid || (ins.rows && ins.rows[0] && ins.rows[0].id);
         if (newId) {
           byTg = await dbHelpers.db.prepare('SELECT * FROM resellers WHERE id = ?').get(newId);
