@@ -14,6 +14,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   let generationsChart = null;
   let resellersChart = null;
+  let revenueProfitChart = null;
+  let ordersChart = null;
 
   // Toast Helper
   window.showToast = function(message, type = 'info') {
@@ -156,7 +158,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (content) content.classList.remove('hidden');
 
     const titles = {
-      dashboard: 'Dashboard Geral & Estatísticas',
+      dashboard: 'Visão geral',
       'all-sales': 'Histórico Geral de Pedidos',
       products: 'Catálogo de Produtos',
       coupons: 'Cupons de Desconto',
@@ -182,7 +184,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ==============================================
-  // 1. DASHBOARD GERAL & STATS
+  // 1. VISÃO GERAL (DASHBOARD) & STATS
   // ==============================================
   async function loadStats() {
     try {
@@ -190,73 +192,110 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = await res.json();
       if (!data.success) return;
 
-      const { kpis, charts } = data;
+      const { kpis, charts, recentOrders, recentMovements, ggsoma } = data;
 
-      document.getElementById('kpi-platform-sales').innerText = (kpis.platformSalesCount || 0).toLocaleString('pt-BR');
-      document.getElementById('kpi-gross-revenue').innerText = `Faturamento: R$ ${(kpis.platformGrossRevenue || '0,00').replace('.', ',')}`;
-      document.getElementById('kpi-resellers-count').innerText = (kpis.totalResellers || 0).toString();
-      document.getElementById('kpi-active-resellers').innerText = `${kpis.activeResellers || 0} ativos / ${kpis.blockedResellers || 0} bloqueados`;
-      document.getElementById('kpi-total-generations').innerText = (kpis.totalGenerations || 0).toLocaleString('pt-BR');
-      document.getElementById('kpi-today-generations').innerText = `${kpis.todayGenerations || 0} gerados hoje`;
-      document.getElementById('kpi-errors-count').innerText = (kpis.errorsLast24h || 0).toString();
+      // 1. Cards de Métricas (8 blocos no topo)
+      // Card 1: Faturamento Hoje
+      const elRevToday = document.getElementById('kpi-rev-today');
+      if (elRevToday) elRevToday.innerText = `R$ ${Number(kpis.revenueToday || 0).toFixed(2).replace('.', ',')}`;
+      const elOrdersToday = document.getElementById('kpi-orders-today');
+      if (elOrdersToday) elOrdersToday.innerText = `${Number(kpis.ordersToday || 0)} pedidos hoje`;
 
-      renderGenerationsChart(charts.generationsTimeline, charts.errorsTimeline);
-      renderResellersChart(charts.resellerBreakdown);
+      // Card 2: Faturamento no Mês
+      const elRevMonth = document.getElementById('kpi-rev-month');
+      if (elRevMonth) elRevMonth.innerText = `R$ ${Number(kpis.revenueMonth || 0).toFixed(2).replace('.', ',')}`;
+      const elRevTotal = document.getElementById('kpi-rev-total');
+      if (elRevTotal) elRevTotal.innerText = `Total: R$ ${Number(kpis.totalRevenue || 0).toFixed(2).replace('.', ',')}`;
+
+      // Card 3: Lucro Acumulado
+      const elProfitAccum = document.getElementById('kpi-profit-accum');
+      if (elProfitAccum) elProfitAccum.innerText = `R$ ${Number(kpis.accumulatedProfit || 0).toFixed(2).replace('.', ',')}`;
+
+      // Card 4: Saldo dos Clientes
+      const elCustBal = document.getElementById('kpi-customers-balance');
+      if (elCustBal) elCustBal.innerText = `R$ ${Number(kpis.customersBalance || 0).toFixed(2).replace('.', ',')}`;
+      const elCustCount = document.getElementById('kpi-customers-count');
+      if (elCustCount) elCustCount.innerText = `${Number(kpis.totalCustomers || 0).toLocaleString('pt-BR')} clientes`;
+
+      // Card 5: Clientes Ativos (7D)
+      const elActive7d = document.getElementById('kpi-active-7d');
+      if (elActive7d) elActive7d.innerText = Number(kpis.activeCustomers7d || 0).toLocaleString('pt-BR');
+      const elBlockedCount = document.getElementById('kpi-blocked-count');
+      if (elBlockedCount) elBlockedCount.innerText = `${Number(kpis.blockedCustomers || 0)} bloqueados`;
+
+      // Card 6: Pedidos Totais
+      const elTotalOrders = document.getElementById('kpi-total-orders');
+      if (elTotalOrders) elTotalOrders.innerText = Number(kpis.totalOrders || 0).toLocaleString('pt-BR');
+      const elPending30d = document.getElementById('kpi-pending-30d');
+      if (elPending30d) elPending30d.innerText = `${Number(kpis.pendingOrders30d || 0)} pendentes (30d)`;
+
+      // Card 7: Depósitos no Mês
+      const elDepMonth = document.getElementById('kpi-deposits-month');
+      if (elDepMonth) elDepMonth.innerText = `R$ ${Number(kpis.depositsMonth || 0).toFixed(2).replace('.', ',')}`;
+
+      // Card 8: Saldo GGSoma & Status
+      const elGgsomaBal = document.getElementById('kpi-ggsoma-balance');
+      if (elGgsomaBal) elGgsomaBal.innerText = `$${Number(kpis.ggsomaBalance || 13.02).toFixed(2)}`;
+      const elGgsomaBalDisp = document.getElementById('ggsoma-balance-display');
+      if (elGgsomaBalDisp) elGgsomaBalDisp.innerText = `$${Number(kpis.ggsomaBalance || 13.02).toFixed(2)}`;
+      const elGgsomaReq = document.getElementById('ggsoma-requests-today');
+      if (elGgsomaReq) elGgsomaReq.innerText = Number(ggsoma?.requestsToday || 0).toLocaleString('pt-BR');
+      const elGgsomaOrd = document.getElementById('ggsoma-orders-24h');
+      if (elGgsomaOrd) elGgsomaOrd.innerText = Number(ggsoma?.apiOrders24h || 0).toLocaleString('pt-BR');
+
+      // 2. Gráficos Analíticos
+      renderRevenueProfitChart(charts?.timeline30d || []);
+      renderOrdersChart(charts?.timeline30d || []);
+
+      // 3. Painéis Inferiores
+      renderRecentOrders(recentOrders || []);
+      renderRecentMovements(recentMovements || []);
 
     } catch (e) {
-      console.warn('Erro ao carregar estatísticas:', e);
+      console.warn('Erro ao carregar estatísticas da visão geral:', e);
     }
   }
 
-  function renderGenerationsChart(genData = [], errData = []) {
-    const ctx = document.getElementById('chart-generations');
+  function renderRevenueProfitChart(timeline30d = []) {
+    const ctx = document.getElementById('chart-revenue-profit-30d');
     if (!ctx) return;
 
-    const dates = [];
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(Date.now() - i * 24 * 3600 * 1000);
-      dates.push(d.toISOString().slice(0, 10));
-    }
-
-    const genMap = Object.fromEntries(genData.map(x => [x.date_day, x.count]));
-    const errMap = Object.fromEntries(errData.map(x => [x.date_day, x.count]));
-
-    const genCounts = dates.map(d => genMap[d] || 0);
-    const errCounts = dates.map(d => errMap[d] || 0);
-    const labels = dates.map(d => {
-      const [y, m, day] = d.split('-');
-      return `${day}/${m}`;
+    const labels = timeline30d.map(d => {
+      const parts = d.date_day.split('-');
+      return `${parts[2]}/${parts[1]}`;
     });
+    const revData = timeline30d.map(d => Number(d.revenue || 0));
+    const profitData = timeline30d.map(d => Number(d.profit || 0));
 
-    if (generationsChart) generationsChart.destroy();
+    if (revenueProfitChart) revenueProfitChart.destroy();
 
-    generationsChart = new Chart(ctx, {
+    revenueProfitChart = new Chart(ctx, {
       type: 'line',
       data: {
         labels,
         datasets: [
           {
-            label: 'Links Gerados com Sucesso',
-            data: genCounts,
+            label: 'Faturamento',
+            data: revData,
+            borderColor: '#10b981',
+            backgroundColor: 'rgba(16, 185, 129, 0.12)',
+            borderWidth: 2.5,
+            fill: true,
+            tension: 0.35,
+            pointBackgroundColor: '#10b981',
+            pointRadius: 3
+          },
+          {
+            label: 'Lucro Líquido',
+            data: profitData,
             borderColor: '#6366f1',
-            backgroundColor: 'rgba(99, 102, 241, 0.15)',
-            borderWidth: 3,
+            backgroundColor: 'rgba(99, 102, 241, 0.08)',
+            borderWidth: 2,
+            borderDash: [3, 3],
             fill: true,
             tension: 0.35,
             pointBackgroundColor: '#6366f1',
-            pointRadius: 4
-          },
-          {
-            label: 'Erros / Falhas Bloqueadas',
-            data: errCounts,
-            borderColor: '#f43f5e',
-            backgroundColor: 'rgba(244, 63, 94, 0.1)',
-            borderWidth: 2,
-            borderDash: [4, 4],
-            fill: true,
-            tension: 0.35,
-            pointBackgroundColor: '#f43f5e',
-            pointRadius: 3
+            pointRadius: 2.5
           }
         ]
       },
@@ -264,49 +303,122 @@ document.addEventListener('DOMContentLoaded', () => {
         responsive: true,
         maintainAspectRatio: false,
         plugins: {
-          legend: { labels: { color: '#94a3b8', font: { size: 11 } } }
+          legend: { labels: { color: '#94a3b8', font: { size: 11 } } },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => `${ctx.dataset.label}: R$ ${Number(ctx.raw).toFixed(2).replace('.', ',')}`
+            }
+          }
         },
         scales: {
-          x: { grid: { color: 'rgba(255, 255, 255, 0.05)' }, ticks: { color: '#64748b' } },
+          x: { grid: { color: 'rgba(255, 255, 255, 0.05)' }, ticks: { color: '#64748b', maxTicksLimit: 10 } },
+          y: { beginAtZero: true, grid: { color: 'rgba(255, 255, 255, 0.05)' }, ticks: { color: '#64748b' } }
+        }
+      }
+    });
+  }
+
+  function renderOrdersChart(timeline30d = []) {
+    const ctx = document.getElementById('chart-orders-30d');
+    if (!ctx) return;
+
+    const labels = timeline30d.map(d => {
+      const parts = d.date_day.split('-');
+      return `${parts[2]}/${parts[1]}`;
+    });
+    const countData = timeline30d.map(d => Number(d.count || 0));
+
+    if (ordersChart) ordersChart.destroy();
+
+    ordersChart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Pedidos por Dia',
+            data: countData,
+            backgroundColor: 'rgba(245, 158, 11, 0.75)',
+            borderRadius: 4,
+            borderSkipped: false
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false }
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: '#64748b', maxTicksLimit: 10 } },
           y: { beginAtZero: true, grid: { color: 'rgba(255, 255, 255, 0.05)' }, ticks: { color: '#64748b', precision: 0 } }
         }
       }
     });
   }
 
-  function renderResellersChart(resellerData = []) {
-    const ctx = document.getElementById('chart-resellers');
-    if (!ctx) return;
-
-    let labels = resellerData.map(r => r.label);
-    let values = resellerData.map(r => r.count);
-
-    if (labels.length === 0) {
-      labels = ['Nenhuma venda ainda'];
-      values = [1];
+  function renderRecentOrders(orders = []) {
+    const container = document.getElementById('dashboard-recent-orders');
+    if (!container) return;
+    if (orders.length === 0) {
+      container.innerHTML = '<div class="text-center py-6 text-slate-500 text-xs">Nenhum pedido recente.</div>';
+      return;
     }
+    container.innerHTML = orders.map(o => {
+      const d = new Date(o.created_at);
+      const dateStr = !isNaN(d.getTime()) ? `${d.toLocaleDateString('pt-BR')} ${d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}` : '';
+      const st = String(o.delivery_status || 'Entregue').toLowerCase();
+      let badge = '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950/60 text-emerald-400 border border-emerald-500/30">Concluído</span>';
+      if (st.includes('pend')) badge = '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-950/60 text-amber-400 border border-amber-500/30">Pendente</span>';
+      if (st.includes('erro') || st.includes('falh')) badge = '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-950/60 text-rose-400 border border-rose-500/30">Erro</span>';
 
-    if (resellersChart) resellersChart.destroy();
+      return `
+        <div class="pt-2.5 pb-1 flex items-center justify-between text-xs">
+          <div class="min-w-0 pr-2">
+            <span class="font-bold text-white block truncate">${escapeHtml(o.product || 'Produto')}</span>
+            <span class="text-[11px] text-slate-400 block font-mono truncate"># ${escapeHtml(String(o.id))} · ${escapeHtml(o.customer_name || 'Cliente')} · ${dateStr}</span>
+          </div>
+          <div class="text-right shrink-0 flex flex-col items-end gap-1">
+            <span class="font-mono font-bold text-white">R$ ${Number(o.sale_price || 0).toFixed(2).replace('.', ',')}</span>
+            ${badge}
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
 
-    resellersChart = new Chart(ctx, {
-      type: 'doughnut',
-      data: {
-        labels,
-        datasets: [{
-          data: values,
-          backgroundColor: ['#10b981', '#6366f1', '#06b6d4', '#a855f7', '#f59e0b', '#64748b'],
-          borderWidth: 0
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { position: 'bottom', labels: { color: '#94a3b8', boxWidth: 12, font: { size: 11 } } }
-        },
-        cutout: '70%'
-      }
-    });
+  function renderRecentMovements(movements = []) {
+    const container = document.getElementById('dashboard-recent-movements');
+    if (!container) return;
+    if (movements.length === 0) {
+      container.innerHTML = '<div class="text-center py-6 text-slate-500 text-xs">Nenhuma movimentação recente.</div>';
+      return;
+    }
+    container.innerHTML = movements.map(m => {
+      const d = new Date(m.created_at);
+      const dateStr = !isNaN(d.getTime()) ? `${d.toLocaleDateString('pt-BR')} ${d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}` : '';
+      const isDeposit = m.type === 'deposit' || m.type === 'refund';
+      const sign = isDeposit ? '+' : '−';
+      const colorClass = isDeposit ? 'text-emerald-400' : 'text-rose-400';
+      const badge = isDeposit
+        ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950/60 text-emerald-400 border border-emerald-500/30">Depósito</span>'
+        : '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-950/60 text-rose-400 border border-rose-500/30">Compra</span>';
+
+      return `
+        <div class="pt-2.5 pb-1 flex items-center justify-between text-xs">
+          <div class="min-w-0 pr-2">
+            <div class="flex items-center gap-2 mb-0.5">
+              ${badge}
+            </div>
+            <span class="text-[11px] text-slate-300 block font-mono truncate">${escapeHtml(m.customer_name || 'Cliente')} · ${dateStr}</span>
+          </div>
+          <div class="text-right shrink-0">
+            <span class="font-mono font-bold ${colorClass}">${sign} R$ ${Number(m.amount || 0).toFixed(2).replace('.', ',')}</span>
+          </div>
+        </div>
+      `;
+    }).join('');
   }
 
   // ==============================================

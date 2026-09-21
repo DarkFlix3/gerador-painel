@@ -641,7 +641,9 @@ const defaultSettings = [
   { key: 'min_recharge_amount', value: '15.00' },
   { key: 'bot_status', value: 'active' }, // 'active', 'maintenance', 'offline'
   { key: 'maintenance_message', value: '⚠️ Estamos realizando uma manutenção preventiva no sistema. Em breve o bot estará de volta ao normal!' },
-  { key: 'bot_announcement', value: '' }
+  { key: 'bot_announcement', value: '' },
+  { key: 'ggsoma_balance', value: '13.02' },
+  { key: 'ggsoma_status', value: 'connected' }
 ];
 
 // ==========================================
