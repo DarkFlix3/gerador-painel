@@ -3741,25 +3741,97 @@ app.post('/api/admin/bot/broadcast', adminAuth, async (req, res) => {
 // CONFIGURAÇÃO DOS BOTS (PERFIL, COMANDOS & START)
 // ==========================================
 
-// Consulta dados dos perfis de ambos os bots, comandos e mensagem inicial
+// Consulta dados dos perfis de ambos os bots, comandos e mensagem inicial em TEMPO REAL
 app.get('/api/admin/bot/profiles', adminAuth, async (req, res) => {
   try {
     const settings = await dbHelpers.getSettings();
+    const salesToken = process.env.TELEGRAM_BOT_TOKEN;
+    const notifyToken = process.env.NOTIFIER_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
+
+    let salesName = settings.bot_sales_name || 'DarkFlix';
+    let salesBio = settings.bot_sales_bio || '';
+    let notifyName = settings.bot_notify_name || 'Dark Vendas';
+    let notifyBio = settings.bot_notify_bio || '';
+
+    // Sincronização em TEMPO REAL diretamente da API do Telegram (bot de vendas)
+    if (salesToken) {
+      try {
+        const [meRes, descRes, shortDescRes] = await Promise.all([
+          telegramGet(salesToken, 'getMyName'),
+          telegramGet(salesToken, 'getMyDescription'),
+          telegramGet(salesToken, 'getMyShortDescription')
+        ]);
+        if (meRes && meRes.ok && meRes.result && meRes.result.name) {
+          salesName = meRes.result.name;
+        }
+        if (descRes && descRes.ok && descRes.result && descRes.result.description && descRes.result.description.trim()) {
+          salesBio = descRes.result.description;
+        } else if (shortDescRes && shortDescRes.ok && shortDescRes.result && shortDescRes.result.short_description) {
+          salesBio = shortDescRes.result.short_description;
+        }
+      } catch (e) {}
+    }
+
+    // Sincronização em TEMPO REAL (bot de notificações se tiver token próprio)
+    if (process.env.NOTIFIER_BOT_TOKEN && process.env.NOTIFIER_BOT_TOKEN !== salesToken) {
+      try {
+        const [meRes, descRes] = await Promise.all([
+          telegramGet(process.env.NOTIFIER_BOT_TOKEN, 'getMyName'),
+          telegramGet(process.env.NOTIFIER_BOT_TOKEN, 'getMyDescription')
+        ]);
+        if (meRes && meRes.ok && meRes.result && meRes.result.name) {
+          notifyName = meRes.result.name;
+        }
+        if (descRes && descRes.ok && descRes.result && descRes.result.description && descRes.result.description.trim()) {
+          notifyBio = descRes.result.description;
+        }
+      } catch (e) {}
+    }
+
+    // Atualiza o banco de dados caso haja divergência
+    if (salesBio && salesBio !== settings.bot_sales_bio) {
+      await dbHelpers.updateSetting('bot_sales_bio', salesBio).catch(() => {});
+    }
+    if (salesName && salesName !== settings.bot_sales_name) {
+      await dbHelpers.updateSetting('bot_sales_name', salesName).catch(() => {});
+    }
+
     let commands = [];
     try {
-      commands = settings.bot_commands ? JSON.parse(settings.bot_commands) : [];
+      if (salesToken) {
+        const liveCmds = await telegramGet(salesToken, 'getMyCommands');
+        if (liveCmds && liveCmds.ok && Array.isArray(liveCmds.result) && liveCmds.result.length > 0) {
+          commands = liveCmds.result;
+        }
+      }
+      if (commands.length === 0 && settings.bot_commands) {
+        commands = JSON.parse(settings.bot_commands);
+      }
     } catch (e) {
       commands = [];
     }
+
+    const defaultRealStart =
+      `👋 Olá, <b>{nome}</b>! Seja muito bem-vindo(a) ao <b>DarkFlix</b>!\n\n` +
+      `⚡ <b>Entrega 100% Automática e Instantânea</b>\n` +
+      `🎧 Receba seu link exclusivo na hora direto aqui no chat.\n` +
+      `💰 Preço Especial: <b>R$ 15,00</b>`;
+
+    let startMessage = settings.bot_start_message || defaultRealStart;
+    if (!startMessage || startMessage.includes('Aqui você encontra os melhores planos, canais')) {
+      startMessage = defaultRealStart;
+      await dbHelpers.updateSetting('bot_start_message', defaultRealStart).catch(() => {});
+    }
+
     res.json({
       success: true,
       data: {
-        bot_sales_name: settings.bot_sales_name || 'DarkFlix',
-        bot_sales_bio: settings.bot_sales_bio || '',
-        bot_notify_name: settings.bot_notify_name || 'Dark Vendas',
-        bot_notify_bio: settings.bot_notify_bio || '',
+        bot_sales_name: salesName,
+        bot_sales_bio: salesBio,
+        bot_notify_name: notifyName,
+        bot_notify_bio: notifyBio,
         bot_commands: commands,
-        bot_start_message: settings.bot_start_message || '',
+        bot_start_message: startMessage,
         tokens: {
           sales_configured: !!process.env.TELEGRAM_BOT_TOKEN,
           notify_configured: !!(process.env.NOTIFIER_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN)
@@ -3932,7 +4004,7 @@ app.post('/api/admin/bot/start-message', adminAuth, async (req, res) => {
 // CONFIGURAÇÃO DA API DE PAGAMENTO
 // ==========================================
 
-// Consulta configuração atual de gateway de pagamento
+// Consulta configuração atual de gateway de pagamento com status em TEMPO REAL
 app.get('/api/admin/payment-config', adminAuth, async (req, res) => {
   try {
     const settings = await dbHelpers.getSettings();
@@ -3941,24 +4013,112 @@ app.get('/api/admin/payment-config', adminAuth, async (req, res) => {
     const rawToken = settings.payment_mp_access_token || '';
     const rawPublicKey = settings.payment_mp_public_key || '';
 
-    // Mascara token se existir para segurança
-    const maskedToken = rawToken
-      ? (rawToken.length > 10 ? `${rawToken.slice(0, 7)}...${rawToken.slice(-4)}` : '••••••••')
-      : (process.env.MERCADOPAGO_ACCESS_TOKEN ? 'Configurado via .env' : '');
+    const effectiveToken = (rawToken && rawToken.trim()) || process.env.MERCADOPAGO_ACCESS_TOKEN || '';
+    const effectivePublicKey = (rawPublicKey && rawPublicKey.trim()) || process.env.MERCADOPAGO_PUBLIC_KEY || '';
+
+    let realtimeStatus = {
+      connected: false,
+      status: effectiveToken ? 'pending' : 'not_configured',
+      message: effectiveToken ? 'Credencial presente, verificando conexão...' : 'Nenhum Access Token configurado no momento.'
+    };
+
+    if (effectiveToken) {
+      try {
+        const mpRes = await fetch('https://api.mercadopago.com/v1/users/me', {
+          headers: { Authorization: `Bearer ${effectiveToken}` },
+          signal: AbortSignal.timeout(4000)
+        });
+        const mpData = await mpRes.json().catch(() => ({}));
+        if (mpRes.ok && mpData && mpData.id) {
+          const isTest = effectiveToken.startsWith('TEST-');
+          const owner = mpData.nickname || [mpData.first_name, mpData.last_name].filter(Boolean).join(' ') || mpData.email || 'Conta Mercado Pago';
+          realtimeStatus = {
+            connected: true,
+            status: 'active',
+            account_id: mpData.id,
+            nickname: owner,
+            email: mpData.email || '',
+            site_id: mpData.site_id || 'MLB',
+            mode: isTest ? 'Sandbox / Teste' : 'Produção',
+            message: `🟢 Conectado em tempo real: ${owner} (${isTest ? 'Sandbox' : 'Produção'})`
+          };
+        } else {
+          realtimeStatus = {
+            connected: false,
+            status: 'error',
+            message: `🔴 Token rejeitado pelo Mercado Pago: ${mpData.message || ('HTTP ' + mpRes.status)}`
+          };
+        }
+      } catch (e) {
+        realtimeStatus = {
+          connected: false,
+          status: 'timeout',
+          message: `⚠️ Falha ao verificar conexão com o Mercado Pago: ${e.message}`
+        };
+      }
+    }
+
+    const maskedToken = effectiveToken
+      ? (effectiveToken.length > 10 ? `${effectiveToken.slice(0, 7)}...${effectiveToken.slice(-4)}` : '••••••••')
+      : '';
 
     res.json({
       success: true,
       data: {
         active,
         gateway_type: type,
+        mp_access_token: effectiveToken,
         mp_access_token_masked: maskedToken,
         has_custom_token: !!(rawToken && rawToken.trim()),
-        mp_public_key: rawPublicKey,
-        env_configured: !!process.env.MERCADOPAGO_ACCESS_TOKEN
+        mp_public_key: effectivePublicKey,
+        env_configured: !!process.env.MERCADOPAGO_ACCESS_TOKEN,
+        realtime_status: realtimeStatus
       }
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message || 'Erro ao carregar configurações de pagamento.' });
+  }
+});
+
+// Teste em tempo real de credencial Mercado Pago fornecida no painel
+app.post('/api/admin/payment-config/test', adminAuth, async (req, res) => {
+  try {
+    const { token } = req.body || {};
+    const settings = await dbHelpers.getSettings();
+    const effectiveToken = String(token || settings.payment_mp_access_token || process.env.MERCADOPAGO_ACCESS_TOKEN || '').trim();
+
+    if (!effectiveToken) {
+      return res.status(400).json({ success: false, error: 'Nenhum Access Token informado para teste.' });
+    }
+
+    const mpRes = await fetch('https://api.mercadopago.com/v1/users/me', {
+      headers: { Authorization: `Bearer ${effectiveToken}` },
+      signal: AbortSignal.timeout(5000)
+    });
+    const mpData = await mpRes.json().catch(() => ({}));
+    if (mpRes.ok && mpData && mpData.id) {
+      const isTest = effectiveToken.startsWith('TEST-');
+      const owner = mpData.nickname || [mpData.first_name, mpData.last_name].filter(Boolean).join(' ') || mpData.email || 'Conta Mercado Pago';
+      return res.json({
+        success: true,
+        connected: true,
+        data: {
+          account_id: mpData.id,
+          nickname: owner,
+          email: mpData.email || '',
+          mode: isTest ? 'Sandbox / Teste' : 'Produção'
+        },
+        message: `Conexão validada em tempo real com sucesso! Conta: ${owner} (${isTest ? 'Sandbox' : 'Produção'}).`
+      });
+    } else {
+      return res.status(400).json({
+        success: false,
+        connected: false,
+        error: mpData.message || `Token rejeitado pelo Mercado Pago (HTTP ${mpRes.status}). Verifique as credenciais.`
+      });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Falha de conexão com os servidores do Mercado Pago: ' + err.message });
   }
 });
 
@@ -3974,11 +4134,8 @@ app.post('/api/admin/payment-config', adminAuth, async (req, res) => {
       await dbHelpers.updateSetting('payment_gateway_type', String(gateway_type).trim().toLowerCase());
     }
     if (mp_access_token !== undefined) {
-      // Se não for mascara '••••' ou 'Configurado via .env', salva o novo token
       const cleanToken = String(mp_access_token).trim();
-      if (!cleanToken.includes('••••') && !cleanToken.includes('via .env')) {
-        await dbHelpers.updateSetting('payment_mp_access_token', cleanToken);
-      }
+      await dbHelpers.updateSetting('payment_mp_access_token', cleanToken);
     }
     if (mp_public_key !== undefined) {
       await dbHelpers.updateSetting('payment_mp_public_key', String(mp_public_key).trim());

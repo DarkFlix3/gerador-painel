@@ -649,7 +649,7 @@ const defaultSettings = [
   { key: 'maintenance_message', value: '⚠️ Estamos realizando uma manutenção preventiva no sistema. Em breve o bot estará de volta ao normal!' },
   { key: 'bot_announcement', value: '' },
   { key: 'bot_sales_name', value: 'DarkFlix' },
-  { key: 'bot_sales_bio', value: 'DarkFlix • A melhor plataforma de streaming e assinaturas digitais com entrega automática 24/7.' },
+  { key: 'bot_sales_bio', value: '🤖 Bot de vendas de produtos digitais com entrega automática!\n\n🎧 Produto: Spotify Premium 3 Meses (Acesso Individual)\n🛒 Use /start para comprar seu acesso com pagamento rápido e seguro.' },
   { key: 'bot_notify_name', value: 'Dark Vendas' },
   { key: 'bot_notify_bio', value: 'Bot oficial de notificações de vendas DarkFlix.' },
   { key: 'bot_commands', value: JSON.stringify([
@@ -659,7 +659,7 @@ const defaultSettings = [
     { command: 'ajuda', description: 'Como Funciona' },
     { command: 'recarga', description: 'Adicionar Saldo via PIX' }
   ]) },
-  { key: 'bot_start_message', value: '👋 Olá! Bem-vindo ao <b>DarkFlix</b>!\n\nAqui você encontra os melhores planos, canais e assinaturas digitais com entrega automática e segura.\n\nEscolha uma opção no menu abaixo para continuar:' },
+  { key: 'bot_start_message', value: '👋 Olá, <b>{nome}</b>! Seja muito bem-vindo(a) ao <b>DarkFlix</b>!\n\n⚡ <b>Entrega 100% Automática e Instantânea</b>\n🎧 Receba seu link exclusivo na hora direto aqui no chat.\n💰 Preço Especial: <b>R$ 15,00</b>' },
   { key: 'payment_gateway_active', value: '1' },
   { key: 'payment_gateway_type', value: 'mercadopago' },
   { key: 'payment_mp_access_token', value: '' },

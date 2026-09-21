@@ -1948,7 +1948,7 @@ document.addEventListener('DOMContentLoaded', () => {
         renderBotCommandsTable();
       }
 
-      // 3. Configurações da API de Pagamento
+      // 3. Configurações da API de Pagamento com status em TEMPO REAL
       const resPayment = await apiFetch('/api/admin/payment-config');
       const dataPayment = await resPayment.json();
       if (dataPayment.success && dataPayment.data) {
@@ -1969,13 +1969,42 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (selectType) selectType.value = pay.gateway_type || 'mercadopago';
         if (inputToken) {
-          inputToken.value = '';
-          inputToken.placeholder = pay.mp_access_token_masked || (pay.env_configured ? 'Configurado via .env' : 'Cole aqui seu Access Token');
+          inputToken.value = pay.mp_access_token || '';
+          inputToken.placeholder = 'Cole aqui o Access Token (APP_USR-... ou TEST-...)';
         }
         if (inputKey) inputKey.value = pay.mp_public_key || '';
+
+        updatePaymentLiveBanner(pay.realtime_status);
       }
     } catch (e) {
       console.warn('Erro ao carregar dados do bot:', e);
+    }
+  }
+
+  function updatePaymentLiveBanner(status) {
+    const dot = document.getElementById('payment-live-dot');
+    const title = document.getElementById('payment-live-title');
+    const subtitle = document.getElementById('payment-live-subtitle');
+    if (!dot || !title || !subtitle) return;
+
+    dot.className = 'w-2.5 h-2.5 rounded-full shrink-0';
+
+    if (status && status.connected) {
+      dot.classList.add('bg-emerald-500', 'shadow-sm', 'shadow-emerald-500/50');
+      title.innerText = 'Mercado Pago Conectado em Tempo Real';
+      subtitle.innerText = status.message || 'Pronto para gerar cobranças PIX e aprovar automaticamente no chat.';
+    } else if (status && status.status === 'error') {
+      dot.classList.add('bg-rose-500');
+      title.innerText = 'Erro na Credencial do Mercado Pago';
+      subtitle.innerText = status.message || 'Verifique se o Access Token digitado é válido no Mercado Pago.';
+    } else if (status && status.status === 'timeout') {
+      dot.classList.add('bg-amber-500');
+      title.innerText = 'Conexão com Mercado Pago Instável';
+      subtitle.innerText = status.message || 'Tentando reestabelecer conexão...';
+    } else {
+      dot.classList.add('bg-amber-500', 'animate-pulse');
+      title.innerText = 'Aguardando Credencial da API';
+      subtitle.innerText = 'Insira o Access Token do Mercado Pago abaixo para ativar as recargas PIX automáticas.';
     }
   }
 
@@ -1999,6 +2028,51 @@ document.addEventListener('DOMContentLoaded', () => {
       const tokenInput = document.getElementById('payment-mp-access-token');
       if (!tokenInput) return;
       tokenInput.type = tokenInput.type === 'password' ? 'text' : 'password';
+    });
+  }
+
+  // Testar Conexão da API de Pagamento em Tempo Real
+  const btnTestPayment = document.getElementById('btn-test-payment-token');
+  if (btnTestPayment) {
+    btnTestPayment.addEventListener('click', async () => {
+      const inputToken = document.getElementById('payment-mp-access-token');
+      const token = inputToken ? inputToken.value.trim() : '';
+      if (!token) {
+        showToast('Informe ou cole um Access Token para testar em tempo real.', 'warning');
+        return;
+      }
+
+      btnTestPayment.disabled = true;
+      btnTestPayment.innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> <span>Testando...</span>`;
+
+      try {
+        const res = await apiFetch('/api/admin/payment-config/test', {
+          method: 'POST',
+          body: JSON.stringify({ token })
+        });
+        const data = await res.json();
+        if (data.success && data.connected) {
+          showToast(data.message || 'Conexão validada em tempo real com o Mercado Pago!', 'success');
+          updatePaymentLiveBanner({
+            connected: true,
+            status: 'active',
+            message: data.message
+          });
+        } else {
+          showToast(data.error || 'Token rejeitado pelo Mercado Pago.', 'error');
+          updatePaymentLiveBanner({
+            connected: false,
+            status: 'error',
+            message: data.error || 'Credencial inválida'
+          });
+        }
+      } catch (err) {
+        showToast('Erro de conexão: ' + err.message, 'error');
+      } finally {
+        btnTestPayment.disabled = false;
+        btnTestPayment.innerHTML = `<i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> <span>Testar Conexão em Tempo Real</span>`;
+        if (window.lucide) window.lucide.createIcons();
+      }
     });
   }
 
@@ -2080,11 +2154,10 @@ document.addEventListener('DOMContentLoaded', () => {
       renderBotCommandsTable();
       if (nameInput) nameInput.value = '';
       if (descInput) descInput.value = '';
-      showToast(`Comando /${cmdName} adicionado à lista. Clique em "Sincronizar Comandos no Telegram" para salvar.`, 'info');
     });
   }
 
-  // Salvar Comandos no Telegram
+  // Sincronizar Comandos no Telegram
   const btnSaveBotCmds = document.getElementById('btn-save-bot-commands');
   if (btnSaveBotCmds) {
     btnSaveBotCmds.addEventListener('click', async () => {
@@ -2128,18 +2201,19 @@ document.addEventListener('DOMContentLoaded', () => {
           body: JSON.stringify({
             active,
             gateway_type,
-            mp_access_token: mp_access_token || undefined,
-            mp_public_key: mp_public_key !== undefined ? mp_public_key : undefined
+            mp_access_token: mp_access_token !== undefined ? mp_access_token : '',
+            mp_public_key: mp_public_key !== undefined ? mp_public_key : ''
           })
         });
         const data = await res.json();
         if (!res.ok || !data.success) throw new Error(data.error || 'Falha ao salvar configurações de pagamento.');
 
-        showToast('Configurações da API de pagamento atualizadas com sucesso!', 'success');
-        const inputToken = document.getElementById('payment-mp-access-token');
-        if (inputToken && mp_access_token) {
-          inputToken.value = '';
-          inputToken.placeholder = 'Token atualizado com sucesso';
+        showToast('Configurações da API de pagamento salvas com sucesso!', 'success');
+        // Recarrega o status em tempo real sem apagar o token
+        const resReload = await apiFetch('/api/admin/payment-config');
+        const dataReload = await resReload.json();
+        if (dataReload.success && dataReload.data) {
+          updatePaymentLiveBanner(dataReload.data.realtime_status);
         }
       } catch (err) {
         showToast(err.message, 'error');
