@@ -1020,6 +1020,47 @@
             </button>
           </div>
 
+          <!-- Barra de Câmbio USD/BRL & Margem de Lucro -->
+          <div class="glass-panel p-4 flex flex-wrap items-center justify-between gap-4 border border-indigo-500/30 bg-indigo-950/20">
+            <div class="flex flex-wrap items-center gap-5">
+              <div class="flex items-center gap-2.5">
+                <div class="w-9 h-9 rounded-xl bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0">
+                  <i data-lucide="badge-dollar-sign" class="w-5 h-5"></i>
+                </div>
+                <div>
+                  <div class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Cotação Atual do Dólar</div>
+                  <div class="text-sm font-black text-white flex items-center gap-1.5">
+                    <span>1 USD = R$</span>
+                    <span id="currency-rate-display" class="text-indigo-300 font-mono">5.15</span>
+                    <span class="text-[10px] text-slate-500 font-normal" id="currency-last-update">(automático)</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="h-8 w-px bg-white/10 hidden sm:block"></div>
+
+              <div class="flex items-center gap-2.5">
+                <div class="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+                  <i data-lucide="trending-up" class="w-5 h-5"></i>
+                </div>
+                <div>
+                  <div class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Margem de Lucro Padrão</div>
+                  <div class="flex items-center gap-1.5">
+                    <input type="number" id="currency-margin-input" value="40" min="0" max="500" step="1" class="w-16 px-2 py-1 bg-slate-900 border border-white/15 rounded-lg text-xs font-bold text-emerald-400 text-center focus:outline-none focus:border-emerald-500">
+                    <span class="text-xs font-bold text-slate-300">%</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-2">
+              <button type="button" id="btn-refresh-currency" class="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white rounded-xl flex items-center gap-1.5 transition-all shadow-lg shadow-indigo-600/20" title="Atualiza a cotação oficial do dólar e recalcula o preço de venda de todos os produtos">
+                <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+                <span>Atualizar Cotação & Recalcular Preços</span>
+              </button>
+            </div>
+          </div>
+
           <!-- Formulário: Conectar Novo Bot Fornecedor -->
           <div id="integration-form-card" class="glass-panel p-5 hidden space-y-4 border border-emerald-500/30">
             <div class="flex items-center justify-between">
@@ -1058,7 +1099,7 @@
               Bots Fornecedores Conectados
             </h3>
             <div id="integrations-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              <div class="text-slate-400 text-xs py-4 col-span-full">Carregando integrações...</div>
+              <!-- Renderizado via admin.js -->
             </div>
           </div>
 
@@ -1091,7 +1132,7 @@
                     <th class="py-3 px-3">Emoji</th>
                     <th class="py-3 px-3">Nome no Bot</th>
                     <th class="py-3 px-4">Descrição no Bot</th>
-                    <th class="py-3 px-3">Custo Fornec.</th>
+                    <th class="py-3 px-3">Custo Orig. / R$</th>
                     <th class="py-3 px-3">Preço de Venda</th>
                     <th class="py-3 px-2 text-center">Ordem</th>
                     <th class="py-3 px-3 text-center">Ações</th>

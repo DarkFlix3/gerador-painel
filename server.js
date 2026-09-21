@@ -2244,6 +2244,53 @@ app.delete('/api/admin/products/:id/items/:itemId', adminAuth, async (req, res) 
 
 // ---------- INTEGRAÇÕES DE BOTS (API DE FORNECEDORES) ----------
 
+// Cotação do Dólar (USD -> BRL) com cache e fallback
+let cachedUsdRate = null;
+let lastUsdFetchTime = 0;
+
+async function getUsdToBrlRate(force = false) {
+  const now = Date.now();
+  if (!force && cachedUsdRate && (now - lastUsdFetchTime) < 30 * 60 * 1000) {
+    return cachedUsdRate;
+  }
+
+  try {
+    const res = await fetch('https://economia.awesomeapi.com.br/last/USD-BRL', {
+      signal: AbortSignal.timeout(5000)
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.USDBRL && data.USDBRL.bid) {
+        const rate = parseFloat(data.USDBRL.bid);
+        if (rate > 0) {
+          cachedUsdRate = rate;
+          lastUsdFetchTime = now;
+          try {
+            await dbHelpers.setSetting('usd_to_brl_rate', String(rate));
+            await dbHelpers.setSetting('usd_rate_last_update', new Date().toISOString());
+          } catch (e) {}
+          return rate;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[currency] aviso ao consultar AwesomeAPI USD-BRL:', err.message);
+  }
+
+  // Fallback 1: banco de dados
+  try {
+    const savedRate = await dbHelpers.getSetting('usd_to_brl_rate');
+    if (savedRate && parseFloat(savedRate) > 0) {
+      cachedUsdRate = parseFloat(savedRate);
+      return cachedUsdRate;
+    }
+  } catch (e) {}
+
+  // Fallback padrão
+  cachedUsdRate = 5.15;
+  return cachedUsdRate;
+}
+
 // Helper universal para buscar produtos de bots fornecedores
 // Suporta o ecossistema Quantum (GET /api/v1/products com X-API-Key)
 // e a Partner API do GGSoma (GET /catalog/products com Bearer sk_live_...)
@@ -2276,11 +2323,22 @@ async function fetchProviderProducts(apiUrl, apiKey) {
       throw new Error(`Falha ao consultar API do GGSoma: ${errMsg}`);
     }
 
+    const usdRate = await getUsdToBrlRate();
+    let marginPercent = 40;
+    try {
+      const savedMargin = await dbHelpers.getSetting('partner_profit_margin_percent');
+      if (savedMargin && parseFloat(savedMargin) > 0) marginPercent = parseFloat(savedMargin);
+    } catch (e) {}
+
     return {
       resolvedUrl: cleanUrl,
+      currency: 'USD',
+      usdRate,
+      marginPercent,
       products: data.data.map(p => {
-        const costPrice = parseFloat(p.yourPrice || p.catalogPrice || 0);
-        const defaultSalePrice = Math.round(costPrice * 1.35 * 100) / 100;
+        const costUsd = parseFloat(p.yourPrice || p.catalogPrice || 0);
+        const costBrl = Math.round(costUsd * usdRate * 100) / 100;
+        const defaultSalePrice = Math.round(costBrl * (1 + marginPercent / 100) * 100) / 100;
         const normalEmoji = (p.emoji && p.emoji.normal) || (p.provider && p.provider.emoji && p.provider.emoji.normal) || '🎁';
 
         return {
@@ -2289,7 +2347,8 @@ async function fetchProviderProducts(apiUrl, apiKey) {
           name: p.name,
           description: p.deliveryType ? `Entrega: ${p.deliveryType}${p.durationDays ? ` • Duração: ${p.durationDays} dias` : ''}` : null,
           emoji: normalEmoji,
-          cost_price: costPrice,
+          cost_usd: costUsd,
+          cost_price: costBrl,
           sale_price: defaultSalePrice,
           stock: (p.stock && typeof p.stock.count === 'number') ? p.stock.count : null,
           delivery_type: p.deliveryType
@@ -2321,12 +2380,16 @@ async function fetchProviderProducts(apiUrl, apiKey) {
 
   return {
     resolvedUrl: cleanUrl,
+    currency: 'BRL',
+    usdRate: 1,
+    marginPercent: 0,
     products: data.data.map(p => ({
       id: String(p.id || p.product_id || p.name),
       external_product_id: String(p.id || p.product_id || p.name),
       name: p.name || 'Produto',
       description: p.description || null,
       emoji: p.emoji || '🎁',
+      cost_usd: 0,
       cost_price: Number(p.sale_price || p.cost_price || p.price || 0),
       sale_price: Number(p.sale_price || p.price || (Number(p.cost_price || 0) * 1.3).toFixed(2)),
       stock: (p.stock !== null && p.stock !== undefined) ? Number(p.stock) : null
@@ -2334,7 +2397,7 @@ async function fetchProviderProducts(apiUrl, apiKey) {
   };
 }
 
-// 1. Lista todos os bots integrados com contagem de produtos sincronizados
+// 1. Lista todos os bots integrados com contagem de produtos sincronizados e saldo de carteira ao vivo
 app.get('/api/admin/integrations', adminAuth, async (req, res) => {
   try {
     const providers = await dbHelpers.getExternalProviders();
@@ -2346,13 +2409,46 @@ app.get('/api/admin/integrations', adminAuth, async (req, res) => {
       }
     } catch (e) {}
 
-    res.json({
-      success: true,
-      data: providers.map(p => ({
+    const usdRate = await getUsdToBrlRate();
+
+    const dataWithBalance = await Promise.all(providers.map(async (p) => {
+      let balanceUsd = null;
+      let balanceCurrency = null;
+      let balanceBrl = null;
+
+      const isGgsoma = (p.api_key && p.api_key.startsWith('sk_live_')) || (p.api_url && p.api_url.includes('ggsoma'));
+      if (isGgsoma && p.api_key) {
+        try {
+          const balRes = await fetch('https://ggsoma.store/api/partner/v1/balance', {
+            headers: { 'Authorization': `Bearer ${p.api_key.trim()}` },
+            signal: AbortSignal.timeout(4000)
+          });
+          if (balRes.ok) {
+            const balData = await balRes.json();
+            if (balData && balData.ok && balData.balance !== undefined) {
+              balanceUsd = parseFloat(balData.balance);
+              balanceCurrency = balData.currency || 'USD';
+              balanceBrl = Math.round(balanceUsd * usdRate * 100) / 100;
+            }
+          }
+        } catch (e) {}
+      }
+
+      return {
         ...p,
         id: Number(p.id),
-        products_count: productCounts.get(Number(p.id)) || 0
-      }))
+        products_count: productCounts.get(Number(p.id)) || 0,
+        balance_usd: balanceUsd,
+        balance_currency: balanceCurrency,
+        balance_brl: balanceBrl,
+        is_ggsoma: isGgsoma
+      };
+    }));
+
+    res.json({
+      success: true,
+      usd_rate: usdRate,
+      data: dataWithBalance
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -2401,8 +2497,8 @@ app.post('/api/admin/integrations', adminAuth, async (req, res) => {
       for (const p of fetched.products) {
         const now = new Date().toISOString();
         await dbHelpers.db.prepare(`
-          INSERT INTO products (name, description, emoji, cost_price, price_type, price_value, active, visible_in_bot, sort_order, stock, provider_id, external_product_id, created_at)
-          VALUES (?, ?, ?, ?, 'fixed', ?, 1, 1, 0, ?, ?, ?, ?)
+          INSERT INTO products (name, description, emoji, cost_price, price_type, price_value, active, visible_in_bot, sort_order, stock, provider_id, external_product_id, cost_usd, created_at)
+          VALUES (?, ?, ?, ?, 'fixed', ?, 1, 1, 0, ?, ?, ?, ?, ?)
         `).run(
           String(p.name).trim(),
           p.description ? String(p.description).trim() : null,
@@ -2412,6 +2508,7 @@ app.post('/api/admin/integrations', adminAuth, async (req, res) => {
           p.stock,
           provider.id,
           p.external_product_id,
+          p.cost_usd || 0,
           now
         );
         syncedCount++;
@@ -2480,13 +2577,13 @@ app.post('/api/admin/integrations/:id/sync', adminAuth, async (req, res) => {
     for (const p of fetched.products) {
       const existing = await dbHelpers.db.prepare('SELECT * FROM products WHERE provider_id = ? AND external_product_id = ?').get(provider.id, p.external_product_id);
       if (existing) {
-        // Atualiza custo e estoque, mas PRESERVA as personalizações do admin
-        await dbHelpers.db.prepare('UPDATE products SET cost_price = ?, stock = ? WHERE id = ?').run(p.cost_price, p.stock, existing.id);
+        // Atualiza custo e estoque, preservando preço de venda se customizado manualmente
+        await dbHelpers.db.prepare('UPDATE products SET cost_price = ?, cost_usd = ?, stock = ? WHERE id = ?').run(p.cost_price, p.cost_usd || 0, p.stock, existing.id);
         updated++;
       } else {
         await dbHelpers.db.prepare(`
-          INSERT INTO products (name, description, emoji, cost_price, price_type, price_value, active, visible_in_bot, sort_order, stock, provider_id, external_product_id, created_at)
-          VALUES (?, ?, ?, ?, 'fixed', ?, 1, 1, 0, ?, ?, ?, ?)
+          INSERT INTO products (name, description, emoji, cost_price, price_type, price_value, active, visible_in_bot, sort_order, stock, provider_id, external_product_id, cost_usd, created_at)
+          VALUES (?, ?, ?, ?, 'fixed', ?, 1, 1, 0, ?, ?, ?, ?, ?)
         `).run(
           String(p.name).trim(),
           p.description ? String(p.description).trim() : null,
@@ -2496,6 +2593,7 @@ app.post('/api/admin/integrations/:id/sync', adminAuth, async (req, res) => {
           p.stock,
           provider.id,
           p.external_product_id,
+          p.cost_usd || 0,
           new Date().toISOString()
         );
         inserted++;
@@ -2507,14 +2605,120 @@ app.post('/api/admin/integrations/:id/sync', adminAuth, async (req, res) => {
 
     res.json({
       success: true,
-      message: `Sincronização concluída! ${inserted} novo(s) produto(s), ${updated} atualizado(s). Total: ${fetched.products.length} produtos.`,
+      message: `Sincronização concluída! ${inserted} novo(s) produto(s), ${updated} atualizado(s). Total: ${fetched.products.length} produtos (Cotação USD: R$ ${fetched.usdRate ? fetched.usdRate.toFixed(2) : '1.00'}).`,
       inserted,
       updated,
       total: fetched.products.length,
+      usd_rate: fetched.usdRate,
       last_sync: now
     });
   } catch (err) {
     res.status(500).json({ success: false, error: `Erro na sincronização: ${err.message}` });
+  }
+});
+
+// 5b. Recalcular preços de um fornecedor com a cotação atual e margem de lucro
+app.post('/api/admin/integrations/:id/recalculate', adminAuth, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const rate = await getUsdToBrlRate(true);
+    let margin = 40;
+    try {
+      const m = await dbHelpers.getSetting('partner_profit_margin_percent');
+      if (m && parseFloat(m) > 0) margin = parseFloat(m);
+    } catch (e) {}
+
+    const prods = await dbHelpers.db.prepare('SELECT id, cost_usd, cost_price FROM products WHERE provider_id = ?').all(id);
+    let recalculated = 0;
+    for (const prod of prods) {
+      let costUsd = Number(prod.cost_usd || 0);
+      // Se cost_usd for zero mas cost_price tiver valor antigo, usa como base
+      if (!costUsd && Number(prod.cost_price || 0) > 0) costUsd = Number(prod.cost_price);
+      if (costUsd > 0) {
+        const costBrl = Math.round(costUsd * rate * 100) / 100;
+        const saleBrl = Math.round(costBrl * (1 + margin / 100) * 100) / 100;
+        await dbHelpers.db.prepare('UPDATE products SET cost_price = ?, cost_usd = ?, price_value = ? WHERE id = ?').run(costBrl, costUsd, saleBrl, prod.id);
+        recalculated++;
+      }
+    }
+
+    res.json({
+      success: true,
+      recalculated,
+      usd_rate: rate,
+      margin_percent: margin,
+      message: `${recalculated} produto(s) recalculado(s) com sucesso! Cotação: R$ ${rate.toFixed(2)} | Margem: ${margin}%.`
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 5c. Consultar e atualizar Cotação do Dólar e Margem de Lucro Geral
+app.get('/api/admin/currency/usd', adminAuth, async (req, res) => {
+  try {
+    const rate = await getUsdToBrlRate();
+    const lastUpdate = await dbHelpers.getSetting('usd_rate_last_update');
+    let margin = 40;
+    try {
+      const m = await dbHelpers.getSetting('partner_profit_margin_percent');
+      if (m && parseFloat(m) >= 0) margin = parseFloat(m);
+    } catch (e) {}
+    res.json({ success: true, rate, last_update: lastUpdate, margin_percent: margin });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/currency/usd', adminAuth, async (req, res) => {
+  try {
+    const { rate, margin_percent, force_fetch, recalculate_all } = req.body || {};
+    let finalRate = null;
+    if (force_fetch) {
+      finalRate = await getUsdToBrlRate(true);
+    } else if (rate && parseFloat(rate) > 0) {
+      finalRate = parseFloat(rate);
+      await dbHelpers.setSetting('usd_to_brl_rate', String(finalRate));
+      await dbHelpers.setSetting('usd_rate_last_update', new Date().toISOString());
+      cachedUsdRate = finalRate;
+      lastUsdFetchTime = Date.now();
+    } else {
+      finalRate = await getUsdToBrlRate();
+    }
+
+    let finalMargin = 40;
+    if (margin_percent !== undefined && parseFloat(margin_percent) >= 0) {
+      finalMargin = parseFloat(margin_percent);
+      await dbHelpers.setSetting('partner_profit_margin_percent', String(finalMargin));
+    } else {
+      const m = await dbHelpers.getSetting('partner_profit_margin_percent');
+      if (m) finalMargin = parseFloat(m);
+    }
+
+    let recalculatedCount = 0;
+    if (recalculate_all) {
+      const prods = await dbHelpers.db.prepare('SELECT id, cost_usd, cost_price FROM products WHERE provider_id IS NOT NULL').all();
+      for (const prod of prods) {
+        let costUsd = Number(prod.cost_usd || 0);
+        if (!costUsd && Number(prod.cost_price || 0) > 0) costUsd = Number(prod.cost_price);
+        if (costUsd > 0) {
+          const costBrl = Math.round(costUsd * finalRate * 100) / 100;
+          const saleBrl = Math.round(costBrl * (1 + finalMargin / 100) * 100) / 100;
+          await dbHelpers.db.prepare('UPDATE products SET cost_price = ?, cost_usd = ?, price_value = ? WHERE id = ?').run(costBrl, costUsd, saleBrl, prod.id);
+          recalculatedCount++;
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      rate: finalRate,
+      margin_percent: finalMargin,
+      recalculated_count: recalculatedCount,
+      message: `Configurações atualizadas! Dólar: R$ ${finalRate.toFixed(2)} | Margem: ${finalMargin}%${recalculatedCount ? ` (${recalculatedCount} produtos recalculados).` : '.'}`
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -2529,6 +2733,7 @@ app.get('/api/admin/integrations/:id/products', adminAuth, async (req, res) => {
         ...p,
         id: Number(p.id),
         emoji: p.emoji || '🎁',
+        cost_usd: Number(p.cost_usd || 0),
         cost_price: Number(p.cost_price || 0),
         price_value: Number(p.price_value || 0),
         sale_price: Number(p.price_value || p.price || 0),
@@ -2794,6 +2999,97 @@ app.post('/api/v1/validate-coupon', resellerBotAuth, async (req, res) => {
   });
 });
 
+// Despacho de pedidos para bots fornecedores integrados (GGSoma ou padrão Quantum)
+async function fulfillExternalProviderOrder(pricing, info) {
+  if (!pricing.product || !pricing.product.provider_id) return null;
+  try {
+    const provider = await dbHelpers.getExternalProviderById(pricing.product.provider_id);
+    if (!provider || !provider.api_url || !provider.api_key) return null;
+
+    const cleanProviderUrl = String(provider.api_url).replace(/\/+$/, '');
+    const isGgsoma = provider.api_key.startsWith('sk_live_') || cleanProviderUrl.includes('ggsoma');
+
+    if (isGgsoma) {
+      const extRes = await fetch(`${cleanProviderUrl}/orders`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${provider.api_key.trim()}`
+        },
+        body: JSON.stringify({
+          productSlug: pricing.product.external_product_id,
+          quantity: 1,
+          externalOrderId: `DF-${Date.now()}-${info.customerId || info.resellerId || 'direct'}`
+        }),
+        signal: AbortSignal.timeout(20000)
+      });
+      const extData = await extRes.json();
+      if (extRes.ok && (extData.ok || extData.success)) {
+        const del = extData.delivery || {};
+        const instructions = del.instructions || extData.instructions || null;
+        if (del.link) {
+          return { type: 'link', content: del.link, instructions };
+        } else if (del.code) {
+          return { type: 'coupon', content: del.code, password: del.code, instructions };
+        } else if (del.content) {
+          return { type: 'account', content: del.content, instructions };
+        } else {
+          return { type: 'link', content: `Pedido aprovado: ${extData.orderCode || 'sucesso'}`, instructions };
+        }
+      } else {
+        console.warn('[ggsoma-delivery] retorno de erro do fornecedor:', extData);
+        const errCode = extData?.error?.code;
+        if (errCode === 'INSUFFICIENT_BALANCE') {
+          const reqVal = extData?.error?.required || '?';
+          const balVal = extData?.error?.balance || '0.00';
+          console.error(`🚨 [ALERTA GGOSOMA] Saldo insuficiente no @Ggsomabot! Necessário: $${reqVal} USD | Disponível: $${balVal} USD.`);
+          if (info.saleId) {
+            await dbHelpers.db.prepare('UPDATE sales SET delivery_status = ? WHERE id = ?').run('Pendente (Saldo Fornecedor)', info.saleId);
+          }
+          notifyNewSale({
+            service: `⚠️ [SALDO FORNECEDOR ZERADO] ${pricing.product.name}`,
+            customerName: info.customerName,
+            customerId: info.customerId,
+            customerContact: info.customerContact,
+            plan: `Falta de saldo na conta GGOSOMA (Necessário: $${reqVal} USD / Disp: $${balVal} USD)`,
+            orderNumber: info.orderNumber,
+            qty: 1
+          }).catch(() => {});
+          return {
+            type: 'account',
+            content: 'Seu pagamento foi confirmado! O seu acesso está sendo preparado pela nossa equipe e será enviado aqui em instantes.',
+            instructions: 'Por favor, aguarde alguns minutos enquanto processamos a liberação.'
+          };
+        }
+      }
+    } else {
+      const extRes = await fetch(`${cleanProviderUrl}/api/v1/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': provider.api_key
+        },
+        body: JSON.stringify({
+          customer_name: info.customerName,
+          customer_id: info.customerId,
+          customer_contact: info.customerContact,
+          product_id: pricing.product.external_product_id || undefined,
+          product: pricing.product.name
+        }),
+        signal: AbortSignal.timeout(15000)
+      });
+      const extData = await extRes.json();
+      if (extRes.ok && extData.success) {
+        if (extData.item) return extData.item;
+        if (extData.link) return { type: 'link', content: extData.link };
+      }
+    }
+  } catch (extDeliveryErr) {
+    console.warn('[external-delivery] aviso ao acionar bot parceiro:', extDeliveryErr.message);
+  }
+  return null;
+}
+
 app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => {
   const ip = getClientIp(req);
   const reseller = req.reseller;
@@ -2910,6 +3206,18 @@ app.post('/api/reseller/generate-manual', resellerUserAuth, async (req, res) => 
         password: itemConsumed.password || null,
         content: itemConsumed.content || null
       };
+    }
+
+    // Se for produto de bot parceiro e não tinha estoque interno, despacha para a API parceira
+    if (!deliveredItem && pricing.product && pricing.product.provider_id) {
+      deliveredItem = await fulfillExternalProviderOrder(pricing, {
+        customerName: finalCustomerName,
+        customerId: reseller.name,
+        customerContact: finalContact,
+        resellerId: reseller.id,
+        saleId: saleResult.lastInsertRowid,
+        orderNumber: generation.token
+      });
     }
 
     const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);
@@ -3183,70 +3491,14 @@ app.post('/api/v1/generate', resellerBotAuth, async (req, res) => {
 
     // Se o produto for de um bot fornecedor parceiro, aciona a API externa para entrega
     if (!deliveredItem && pricing.product && pricing.product.provider_id) {
-      try {
-        const provider = await dbHelpers.getExternalProviderById(pricing.product.provider_id);
-        if (provider && provider.api_url && provider.api_key) {
-          const cleanProviderUrl = String(provider.api_url).replace(/\/+$/, '');
-          const isGgsoma = provider.api_key.startsWith('sk_live_') || cleanProviderUrl.includes('ggsoma');
-
-          if (isGgsoma) {
-            const extRes = await fetch(`${cleanProviderUrl}/orders`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${provider.api_key.trim()}`
-              },
-              body: JSON.stringify({
-                productSlug: pricing.product.external_product_id,
-                quantity: 1,
-                externalOrderId: `DF-${Date.now()}-${finalCustomerId || reseller.id}`
-              }),
-              signal: AbortSignal.timeout(20000)
-            });
-            const extData = await extRes.json();
-            if (extRes.ok && (extData.ok || extData.success)) {
-              const del = extData.delivery || {};
-              if (del.link) {
-                deliveredItem = { type: 'link', content: del.link };
-              } else if (del.code) {
-                deliveredItem = { type: 'account', content: del.code, password: del.code };
-              } else if (del.content) {
-                deliveredItem = { type: 'account', content: del.content };
-              } else {
-                deliveredItem = { type: 'link', content: `Pedido aprovado: ${extData.orderCode || 'sucesso'}` };
-              }
-            } else {
-              console.warn('[ggsoma-delivery] erro no pedido parceiro:', extData);
-            }
-          } else {
-            const extRes = await fetch(`${cleanProviderUrl}/api/v1/generate`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'X-API-Key': provider.api_key
-              },
-              body: JSON.stringify({
-                customer_name: finalCustomerName,
-                customer_id: finalCustomerId,
-                customer_contact: finalContact,
-                product_id: pricing.product.external_product_id || undefined,
-                product: pricing.product.name
-              }),
-              signal: AbortSignal.timeout(15000)
-            });
-            const extData = await extRes.json();
-            if (extRes.ok && extData.success) {
-              if (extData.item) {
-                deliveredItem = extData.item;
-              } else if (extData.link) {
-                deliveredItem = { type: 'link', content: extData.link };
-              }
-            }
-          }
-        }
-      } catch (extDeliveryErr) {
-        console.warn('[external-delivery] aviso ao acionar bot parceiro:', extDeliveryErr.message);
-      }
+      deliveredItem = await fulfillExternalProviderOrder(pricing, {
+        customerName: finalCustomerName,
+        customerId: finalCustomerId,
+        customerContact: finalContact,
+        resellerId: reseller.id,
+        saleId: saleResult.lastInsertRowid,
+        orderNumber: generation.token
+      });
     }
 
     const updated = await dbHelpers.db.prepare('SELECT credits FROM resellers WHERE id = ?').get(reseller.id);

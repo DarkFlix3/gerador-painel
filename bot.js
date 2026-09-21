@@ -1217,10 +1217,20 @@ async function handlePurchase(chatId, user, messageId, opts) {
       if (data.delivered_item) {
         // Entrega de item do estoque (conta ou link cadastrado no painel)
         const item = data.delivered_item;
-        const detailBlock = item.type === 'link'
-          ? `🔗 <b>Seu Link:</b>\n👉 ${escapeHtml(item.content)}\n\n`
-          : `🔑 <b>Login:</b> <code>${escapeHtml(item.login || '')}</code>\n` +
-            `🔒 <b>Senha:</b> <code>${escapeHtml(item.password || '')}</code>\n\n`;
+        let detailBlock = '';
+        if (item.type === 'link') {
+          detailBlock = `🔗 <b>Seu Link de Ativação:</b>\n👉 ${escapeHtml(item.content)}\n\n`;
+        } else if (item.type === 'coupon') {
+          detailBlock = `🎟 <b>Seu Código / Chave de Resgate:</b>\n<code>${escapeHtml(item.content || item.password || '')}</code>\n\n`;
+        } else if (item.login || item.password) {
+          detailBlock = (item.login ? `🔑 <b>Login:</b> <code>${escapeHtml(item.login)}</code>\n` : '') +
+                        (item.password ? `🔒 <b>Senha:</b> <code>${escapeHtml(item.password)}</code>\n\n` : '\n');
+        } else {
+          detailBlock = `📦 <b>Dados de Acesso:</b>\n<code>${escapeHtml(item.content || '')}</code>\n\n`;
+        }
+        if (item.instructions) {
+          detailBlock += `ℹ️ <b>Instruções de Uso:</b>\n${escapeHtml(item.instructions)}\n\n`;
+        }
         deliveryText = 
           `🎉 <b>PAGAMENTO CONFIRMADO & ACESSO LIBERADO!</b>\n\n` +
           `${prodIcon} <b>Produto:</b> ${escapeHtml(productLabel)}\n` +

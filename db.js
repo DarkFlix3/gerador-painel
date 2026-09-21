@@ -659,7 +659,8 @@ const EXTRA_COLUMNS = {
     'visible_in_bot INTEGER DEFAULT 1',
     'sort_order INTEGER DEFAULT 0',
     "price_type TEXT DEFAULT 'fixed'",
-    'price_value DOUBLE PRECISION DEFAULT 0.00'
+    'price_value DOUBLE PRECISION DEFAULT 0.00',
+    'cost_usd DOUBLE PRECISION DEFAULT 0.00'
   ],
   mp_payments: [
     'telegram_id TEXT',
@@ -710,7 +711,10 @@ const defaultSettings = [
   { key: 'payment_gateway_active', value: '1' },
   { key: 'payment_gateway_type', value: 'mercadopago' },
   { key: 'payment_mp_access_token', value: '' },
-  { key: 'payment_mp_public_key', value: '' }
+  { key: 'payment_mp_public_key', value: '' },
+  { key: 'usd_to_brl_rate', value: '5.15' },
+  { key: 'usd_rate_last_update', value: '' },
+  { key: 'partner_profit_margin_percent', value: '40' }
 ];
 
 // ==========================================
@@ -880,6 +884,15 @@ const helpers = {
     } else {
       await db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(key, value);
     }
+  },
+
+  async getSetting(key) {
+    const row = await db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+    return row ? row.value : null;
+  },
+
+  async setSetting(key, value) {
+    return helpers.updateSetting(key, value);
   },
 
   // Ficha do cliente (usuário final do bot): cria se não existir e atualiza

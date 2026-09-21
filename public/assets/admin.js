@@ -2439,6 +2439,39 @@ document.addEventListener('DOMContentLoaded', () => {
           ? new Date(p.last_sync).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
           : 'Nunca';
 
+        let balanceHtml = '';
+        if (p.is_ggsoma) {
+          const balUsd = typeof p.balance_usd === 'number' ? p.balance_usd.toFixed(2) : '0.00';
+          const balBrl = typeof p.balance_brl === 'number' ? p.balance_brl.toFixed(2).replace('.', ',') : '0,00';
+          const isZero = !p.balance_usd || p.balance_usd <= 0;
+          const isLow = p.balance_usd > 0 && p.balance_usd < 5.0;
+
+          balanceHtml = `
+            <div class="mt-2.5 pt-2 border-t border-white/5 space-y-1.5">
+              <div class="flex items-center justify-between text-xs">
+                <span class="text-slate-400 flex items-center gap-1 font-medium">
+                  <i data-lucide="wallet" class="w-3.5 h-3.5 text-emerald-400"></i>
+                  Saldo GGOSOMA:
+                </span>
+                <span class="font-bold font-mono ${isZero ? 'text-rose-400' : 'text-emerald-400'}">
+                  $${balUsd} USD <span class="text-[10px] text-slate-400 font-normal">(~R$ ${balBrl})</span>
+                </span>
+              </div>
+              ${isZero ? `
+                <div class="p-2 rounded-xl bg-rose-500/10 border border-rose-500/30 text-[10px] text-rose-300 flex items-start gap-1.5">
+                  <i data-lucide="alert-triangle" class="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5"></i>
+                  <span><b>Saldo Zerado!</b> Recarregue no bot <b>@Ggsomabot</b> para que as entregas automáticas via API funcionem.</span>
+                </div>
+              ` : isLow ? `
+                <div class="p-1.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-[10px] text-amber-300 flex items-center gap-1.5">
+                  <i data-lucide="alert-circle" class="w-3.5 h-3.5 text-amber-400 shrink-0"></i>
+                  <span>Saldo baixo ($${balUsd} USD). Recarregue no @Ggsomabot para manter o estoque.</span>
+                </div>
+              ` : ''}
+            </div>
+          `;
+        }
+
         return `
           <div class="bg-slate-900/80 border border-white/10 rounded-2xl p-4 flex flex-col justify-between hover:border-emerald-500/40 transition-all group shadow-sm">
             <div class="space-y-2">
@@ -2457,6 +2490,8 @@ document.addEventListener('DOMContentLoaded', () => {
                   ${Number(p.active) ? 'CONECTADO' : 'PAUSADO'}
                 </span>
               </div>
+
+              ${balanceHtml}
 
               <div class="pt-2 border-t border-white/5 flex items-center justify-between text-[11px] text-slate-400">
                 <span class="flex items-center gap-1 font-medium text-indigo-300">
@@ -2547,8 +2582,12 @@ document.addEventListener('DOMContentLoaded', () => {
       tbody.innerHTML = integrated.map(p => {
         const isVisible = p.visible_in_bot === 1 || p.visible_in_bot === true || p.visible_in_bot === '1' || p.visible_in_bot === undefined;
         const provName = providerMap.get(Number(p.provider_id)) || `Fornecedor #${p.provider_id}`;
-        const salePriceVal = Number(p.price_value || p.sale_price || 0).toFixed(2);
-        const costPriceVal = Number(p.cost_price || 0).toFixed(2);
+        const costNum = Number(p.cost_price || 0);
+        const saleNum = Number(p.price_value || p.sale_price || 0);
+        const estProfit = Math.round((saleNum - costNum) * 100) / 100;
+        const estMargin = costNum > 0 ? Math.round(((saleNum - costNum) / costNum) * 100) : 0;
+        const salePriceVal = saleNum.toFixed(2);
+        const costPriceVal = costNum.toFixed(2);
 
         return `
           <tr class="hover:bg-white/[0.02] transition-colors border-b border-white/5" data-product-id="${p.id}">
@@ -2584,18 +2623,21 @@ document.addEventListener('DOMContentLoaded', () => {
               <textarea id="prod-desc-${p.id}" rows="2" class="w-full min-w-[200px] bg-slate-900 border border-white/10 rounded-xl px-3 py-1.5 text-[11px] text-slate-300 focus:border-indigo-500 focus:outline-none transition-all resize-y shadow-inner" placeholder="Descrição ou benefícios exibidos no Telegram">${escapeHtml(p.description || '')}</textarea>
             </td>
 
-            <!-- 5. Custo Fornecedor -->
+            <!-- 5. Custo Fornecedor (USD e BRL) -->
             <td class="py-3 px-3 whitespace-nowrap">
-              <span class="font-mono text-xs font-semibold text-slate-400 block">R$ ${costPriceVal.replace('.', ',')}</span>
-              <span class="text-[9px] text-slate-600 block">custo API</span>
+              <span class="font-mono text-xs font-semibold text-slate-300 block">R$ ${costPriceVal.replace('.', ',')}</span>
+              ${p.cost_usd ? `<span class="text-[10px] font-mono text-indigo-400 block">$${Number(p.cost_usd).toFixed(2)} USD</span>` : `<span class="text-[9px] text-slate-600 block">custo API</span>`}
             </td>
 
-            <!-- 6. Preço de Venda ao Cliente -->
+            <!-- 6. Preço de Venda ao Cliente & Lucro -->
             <td class="py-3 px-3 whitespace-nowrap">
               <div class="flex items-center gap-1">
                 <span class="text-slate-500 font-mono text-xs">R$</span>
-                <input type="number" step="0.01" min="0" id="prod-price-${p.id}" value="${salePriceVal}" class="w-20 bg-slate-900 border border-white/10 rounded-xl px-2.5 py-1.5 text-xs font-mono font-bold text-emerald-400 focus:border-emerald-500 focus:outline-none transition-all shadow-inner">
+                <input type="number" step="0.01" min="0" id="prod-price-${p.id}" value="${salePriceVal}" class="w-20 bg-slate-900 border border-white/10 rounded-xl px-2.5 py-1.5 text-xs font-mono font-bold text-emerald-400 focus:border-emerald-500 focus:outline-none transition-all shadow-inner" oninput="updateRowProfit(${p.id}, ${costPriceVal})">
               </div>
+              <span id="prod-profit-${p.id}" class="text-[10px] font-mono block mt-1 ${estProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
+                Lucro: R$ ${estProfit.toFixed(2).replace('.', ',')} (${estMargin}%)
+              </span>
             </td>
 
             <!-- 7. Ordem no Menu -->
@@ -2620,6 +2662,36 @@ document.addEventListener('DOMContentLoaded', () => {
         tbody.innerHTML = `<tr><td colspan="8" class="text-center py-6 text-rose-400 text-xs">${escapeHtml(err.message)}</td></tr>`;
       }
     }
+  }
+
+  window.updateRowProfit = (id, cost) => {
+    const priceInput = document.getElementById(`prod-price-${id}`);
+    const profitEl = document.getElementById(`prod-profit-${id}`);
+    if (!priceInput || !profitEl) return;
+    const sale = parseFloat(priceInput.value) || 0;
+    const profit = Math.round((sale - cost) * 100) / 100;
+    const margin = cost > 0 ? Math.round(((sale - cost) / cost) * 100) : 0;
+    profitEl.className = `text-[10px] font-mono block mt-1 ${profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+    profitEl.innerText = `Lucro: R$ ${profit.toFixed(2).replace('.', ',')} (${margin}%)`;
+  };
+
+  async function loadCurrencySettings() {
+    const rateEl = document.getElementById('currency-rate-display');
+    const updateEl = document.getElementById('currency-last-update');
+    const marginInput = document.getElementById('currency-margin-input');
+    if (!rateEl) return;
+
+    try {
+      const res = await apiFetch('/api/admin/currency/usd');
+      const data = await res.json();
+      if (res.ok && data.success) {
+        if (rateEl) rateEl.innerText = Number(data.rate || 5.15).toFixed(2);
+        if (marginInput && data.margin_percent !== undefined) marginInput.value = data.margin_percent;
+        if (updateEl && data.last_update) {
+          updateEl.innerText = `(atualizado ${new Date(data.last_update).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })})`;
+        }
+      }
+    } catch (e) {}
   }
 
   // Ações de Produtos Integrados
@@ -2950,7 +3022,45 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  const btnRefreshCurrency = document.getElementById('btn-refresh-currency');
+  if (btnRefreshCurrency) {
+    btnRefreshCurrency.addEventListener('click', async () => {
+      const marginInput = document.getElementById('currency-margin-input');
+      const marginVal = marginInput ? parseFloat(marginInput.value) : 40;
+
+      btnRefreshCurrency.disabled = true;
+      btnRefreshCurrency.innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> <span>Atualizando...</span>`;
+      if (window.lucide) window.lucide.createIcons();
+
+      try {
+        const res = await apiFetch('/api/admin/currency/usd', {
+          method: 'POST',
+          body: JSON.stringify({
+            force_fetch: true,
+            margin_percent: marginVal,
+            recalculate_all: true
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Erro ao atualizar cotação.');
+        showToast(data.message || 'Cotação atualizada e produtos recalculados com sucesso!', 'success');
+        await loadCurrencySettings();
+        await loadIntegrations();
+        await loadIntegratedProducts(filterIntegrationProvider ? filterIntegrationProvider.value : 'all');
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        btnRefreshCurrency.disabled = false;
+        btnRefreshCurrency.innerHTML = `<i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> <span>Atualizar Cotação & Recalcular Preços</span>`;
+        if (window.lucide) window.lucide.createIcons();
+      }
+    });
+  }
+
   checkAuth().then(isAuth => {
-    if (isAuth) loadAllDashboardData();
+    if (isAuth) {
+      loadAllDashboardData();
+      loadCurrencySettings();
+    }
   });
 });
