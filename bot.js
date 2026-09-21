@@ -40,8 +40,9 @@ const bot = new TelegramBot(BOT_TOKEN, { polling: true });
       { command: 'start', description: 'Menu Principal' },
       { command: 'saldo', description: 'Consultar Saldo' },
       { command: 'perfil', description: 'Meu ID de Perfil' },
-      { command: 'ajuda', description: 'Como Funciona' },
-      { command: 'recarga', description: 'Adicionar Saldo via PIX' }
+      { command: 'recarga', description: 'Adicionar Saldo via PIX' },
+      { command: 'notificacoes', description: 'Ver Vendas em Tempo Real' },
+      { command: 'ajuda', description: 'Como Funciona' }
     ]);
   } catch (e) { /* silencioso */ }
 })();
@@ -299,7 +300,6 @@ function sendProfileId(chatId, user, messageId) {
     `🆔 <b>Seu ID de Perfil:</b> <code>${profileId}</code>\n\n` +
     `Este ID é o seu identificador único no bot e no site do gerador.\n` +
     `💡 <b>Para vincular seu saldo:</b> envie este ID ao suporte do gerador para fazer o vínculo na sua conta.\n\n` +
-    `Depois de vinculado, o comando /saldo mostra o saldo da SUA conta.\n\n` +
     `📦 Toque em <b>Minhas Compras</b> para baixar um arquivo <b>.txt</b> com todos os acessos que você já recebeu.`;
 
   const profileKeyboard = {
@@ -379,7 +379,8 @@ function getMainKeyboard() {
           { text: '🔑 Minha API (Revendedor)', callback_data: 'my_api' }
         ],
         [
-          { text: '🆔 Meu ID de Perfil', callback_data: 'my_id' }
+          { text: '🆔 Meu ID de Perfil', callback_data: 'my_id' },
+          { text: '🔔 Notificações de Vendas', callback_data: 'view_notifications' }
         ]
       ]
     }
@@ -436,6 +437,76 @@ bot.onText(/\/ajuda/, async (msg) => {
   sendHelpMessage(msg.chat.id);
 });
 
+// Comando /notificacoes (ou /vendas /alertas) — exibe as últimas vendas e ativa alertas no chat
+bot.onText(/\/(notificacoes|vendas|alertas)/, async (msg) => {
+  if (await isMaintenanceBlocked(msg.chat.id, msg.from)) return;
+  await handleShowNotifications(msg.chat.id, msg.from, null);
+});
+
+// Exibe o feed de notificações e inscreve o chat para receber em tempo real
+async function handleShowNotifications(chatId, user, messageId) {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/notifications/subscribe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        first_name: user && user.first_name,
+        username: user && user.username
+      }),
+      signal: AbortSignal.timeout(6000)
+    });
+    const data = await res.json();
+    const feed = (data && data.feed) || '<i>Nenhuma notificação recente registrada no momento.</i>';
+    const text =
+      `🔔 <b>DARK VENDAS — NOTIFICAÇÕES EM TEMPO REAL</b>\n\n` +
+      `✅ <b>Inscrição Ativada com Sucesso!</b>\n` +
+      `Você agora receberá aqui em tempo real cada nova compra e recarga aprovada!\n\n` +
+      `━━━━━━━━━━━━━━━\n` +
+      `📊 <b>ÚLTIMAS NOTIFICAÇÕES:</b>\n` +
+      `━━━━━━━━━━━━━━━\n\n` +
+      feed;
+    const keyboard = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🔄 Atualizar Notificações', callback_data: 'refresh_notify_feed' }],
+          [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
+        ]
+      }
+    };
+    sendOrEdit(chatId, messageId, text, { parse_mode: 'HTML', ...keyboard });
+  } catch (e) {
+    sendOrEdit(chatId, messageId, '❌ Erro ao consultar notificações no servidor.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
+  }
+}
+
+// Atualiza o feed de notificações na mesma mensagem
+async function handleRefreshNotifications(chatId, messageId) {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/notifications/feed`, { signal: AbortSignal.timeout(6000) });
+    const data = await res.json();
+    const feed = (data && data.feed) || '<i>Nenhuma notificação recente registrada no momento.</i>';
+    const text =
+      `🔔 <b>DARK VENDAS — NOTIFICAÇÕES EM TEMPO REAL</b>\n\n` +
+      `✅ <b>Inscrição Ativa!</b> Alertas em tempo real ativados.\n\n` +
+      `━━━━━━━━━━━━━━━\n` +
+      `📊 <b>ÚLTIMAS NOTIFICAÇÕES (Atualizado):</b>\n` +
+      `━━━━━━━━━━━━━━━\n\n` +
+      feed;
+    const keyboard = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🔄 Atualizar Notificações', callback_data: 'refresh_notify_feed' }],
+          [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
+        ]
+      }
+    };
+    sendOrEdit(chatId, messageId, text, { parse_mode: 'HTML', ...keyboard });
+  } catch (e) {
+    /* silencioso */
+  }
+}
+
 // ----------------------------------------------------------------
 // RECARGA DE SALDO VIA MERCADO PAGO
 // ----------------------------------------------------------------
@@ -446,13 +517,14 @@ async function sendMpRechargeMenu(chatId, messageId) {
     `💰 <b>RECARGA DE SALDO — PIX NA HORA</b>\n\n` +
     `Escolha um valor e o <b>QR Code PIX + código copia-e-cola</b> aparecem aqui mesmo no chat.\n\n` +
     `⚡ O saldo é creditado <b>automaticamente</b> assim que o pagamento for confirmado.\n\n` +
-    `💡 Ou use o comando <code>/recarga 50</code> com um valor personalizado (mínimo R$ 15,00).`;
+    `💡 Ou use o comando <code>/recarga 50</code> com um valor personalizado (mínimo R$ 5,00).`;
 
   const keyboard = {
     reply_markup: {
       inline_keyboard: [
-        [{ text: '💳 R$ 15,00', callback_data: 'mp_recharge_15' }, { text: '💳 R$ 30,00', callback_data: 'mp_recharge_30' }],
-        [{ text: '💳 R$ 50,00', callback_data: 'mp_recharge_50' }, { text: '💳 R$ 100,00', callback_data: 'mp_recharge_100' }],
+        [{ text: '💳 R$ 5,00', callback_data: 'mp_recharge_5' }, { text: '💳 R$ 15,00', callback_data: 'mp_recharge_15' }],
+        [{ text: '💳 R$ 30,00', callback_data: 'mp_recharge_30' }, { text: '💳 R$ 50,00', callback_data: 'mp_recharge_50' }],
+        [{ text: '💳 R$ 100,00', callback_data: 'mp_recharge_100' }],
         [{ text: '⬅️ Voltar ao Menu', callback_data: 'back_to_menu' }]
       ]
     }
@@ -481,8 +553,8 @@ async function handleMpRecharge(chatId, user, amount, messageId) {
   }
 
   const amountValue = Math.round(parseFloat(amount) * 100) / 100;
-  if (isNaN(amountValue) || amountValue < 15) {
-    return sendOrEdit(chatId, messageId, '⚠️ O valor mínimo para recarga é <b>R$ 15,00</b>.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
+  if (isNaN(amountValue) || amountValue < 5) {
+    return sendOrEdit(chatId, messageId, '⚠️ O valor mínimo para recarga é <b>R$ 5,00</b>.', { parse_mode: 'HTML', ...backToMenuKeyboard() });
   }
 
   // Indicador de processamento: em CLIQUE no menu, a própria mensagem clicada vira o
@@ -750,6 +822,10 @@ async function handleCallback(query) {
     await checkPixStatus(chatId, query.from, action.slice('mp_pix_check_'.length), query.message.message_id);
   } else if (action === 'my_id') {
     sendProfileId(chatId, query.from, query.message.message_id);
+  } else if (action === 'view_notifications') {
+    await handleShowNotifications(chatId, query.from, query.message.message_id);
+  } else if (action === 'refresh_notify_feed') {
+    await handleRefreshNotifications(chatId, query.message.message_id);
   } else if (action === 'my_api') {
     await handleMyApi(chatId, query.from, query.message.message_id);
   } else if (action === 'my_api_rotate') {

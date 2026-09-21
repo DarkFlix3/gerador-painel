@@ -358,6 +358,16 @@ const SQLITE_DDL = `
   );
   CREATE INDEX IF NOT EXISTS idx_fin_tx_cust ON financial_transactions(customer_id);
   CREATE INDEX IF NOT EXISTS idx_fin_tx_created ON financial_transactions(created_at);
+
+  CREATE TABLE IF NOT EXISTS notification_subscribers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id TEXT UNIQUE NOT NULL,
+    first_name TEXT,
+    username TEXT,
+    active INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_notify_subs_chat ON notification_subscribers(chat_id);
 `;
 
 const POSTGRES_DDL = `
@@ -586,6 +596,16 @@ const POSTGRES_DDL = `
   );
   CREATE INDEX IF NOT EXISTS idx_fin_tx_cust ON financial_transactions(customer_id);
   CREATE INDEX IF NOT EXISTS idx_fin_tx_created ON financial_transactions(created_at);
+
+  CREATE TABLE IF NOT EXISTS notification_subscribers (
+    id BIGSERIAL PRIMARY KEY,
+    chat_id TEXT UNIQUE NOT NULL,
+    first_name TEXT,
+    username TEXT,
+    active INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_notify_subs_chat ON notification_subscribers(chat_id);
 `;
 
 // Colunas adicionadas em versões posteriores (migração segura)
@@ -644,7 +664,7 @@ const defaultSettings = [
   { key: 'default_expiry_hours', value: '24' },
   { key: 'public_generation_enabled', value: '0' },
   { key: 'admin_cost_per_link', value: '2.99' },
-  { key: 'min_recharge_amount', value: '15.00' },
+  { key: 'min_recharge_amount', value: '5.00' },
   { key: 'bot_status', value: 'active' }, // 'active', 'maintenance', 'offline'
   { key: 'maintenance_message', value: '⚠️ Estamos realizando uma manutenção preventiva no sistema. Em breve o bot estará de volta ao normal!' },
   { key: 'bot_announcement', value: '' },
@@ -1011,6 +1031,32 @@ const helpers = {
       );
     } catch (e) {
       console.warn('Erro ao registrar transação financeira:', e && e.message ? e.message : e);
+    }
+  },
+
+  addNotificationSubscriber: async ({ chatId, firstName, username }) => {
+    const cid = String(chatId);
+    const now = new Date().toISOString();
+    try {
+      const existing = await db.prepare('SELECT id FROM notification_subscribers WHERE chat_id = ?').get(cid);
+      if (existing) {
+        await db.prepare('UPDATE notification_subscribers SET active = 1, first_name = ?, username = ? WHERE chat_id = ?').run(firstName || null, username || null, cid);
+      } else {
+        await db.prepare('INSERT INTO notification_subscribers (chat_id, first_name, username, active, created_at) VALUES (?, ?, ?, 1, ?)').run(cid, firstName || null, username || null, now);
+      }
+      return true;
+    } catch (e) {
+      console.warn('Erro ao salvar notification_subscriber:', e && e.message ? e.message : e);
+      return false;
+    }
+  },
+
+  getNotificationSubscribers: async () => {
+    try {
+      const rows = await db.prepare('SELECT chat_id FROM notification_subscribers WHERE active = 1').all();
+      return rows.map(r => String(r.chat_id));
+    } catch (e) {
+      return [];
     }
   }
 };

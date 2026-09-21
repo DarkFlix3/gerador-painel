@@ -121,6 +121,146 @@ async function sendTelegramAlert(text, chatId, orderNumber) {
   console.log(`🔔 Alerta enviado: pedido ${orderNumber || 'INIT'}`);
 }
 
+// Retorna todos os IDs de chat que devem receber alertas (NOTIFY_CHAT_ID + inscritos no bot)
+async function getNotificationChatIds() {
+  const ids = new Set();
+  if (NOTIFY_CHAT_ID && String(NOTIFY_CHAT_ID).trim()) {
+    ids.add(String(NOTIFY_CHAT_ID).trim());
+  }
+  const adminChatId = (process.env.NOTIFY_ADMIN_CHAT_ID || '').trim();
+  if (adminChatId) ids.add(adminChatId);
+
+  try {
+    const subs = await dbHelpers.getNotificationSubscribers();
+    for (const s of subs) {
+      if (s && String(s).trim()) ids.add(String(s).trim());
+    }
+  } catch (e) {
+    console.warn('Erro ao carregar inscritos de notificação:', e.message);
+  }
+  return Array.from(ids);
+}
+
+// Monta o feed das últimas notificações registradas para exibir no bot
+async function getRecentNotificationsFeed() {
+  try {
+    const txs = await dbHelpers.db.prepare(`
+      SELECT customer_name, customer_contact, type, description, product_name, amount, created_at, order_number
+      FROM financial_transactions
+      ORDER BY id DESC
+      LIMIT 5
+    `).all();
+
+    if (!txs || txs.length === 0) {
+      return '<i>Nenhuma notificação recente registrada no momento.</i>';
+    }
+
+    const items = txs.map((t, idx) => {
+      const isDeposit = t.type === 'deposit';
+      const title = isDeposit ? '💳 Recarga PIX Aprovada!' : '🎉 Nova Compra!';
+      const prod = t.product_name || (isDeposit ? 'Depósito de Saldo' : 'Spotify Premium');
+      const val = formatMoneyBr(Math.abs(Number(t.amount || 0)));
+      const client = t.customer_name || (t.customer_contact ? t.customer_contact : 'Cliente');
+      const date = t.created_at ? new Date(t.created_at).toLocaleString('pt-BR') : '';
+      const order = t.order_number ? `\n🔖 Nº do Pedido: <code>${escHtml(t.order_number)}</code>` : '';
+
+      return (
+        `<b>${idx + 1}. ${title}</b>\n` +
+        `▪️ Serviço: ${escHtml(prod)}\n` +
+        `👤 Cliente: ${escHtml(client)}\n` +
+        `📈 Valor: <b>${val}</b>` +
+        order +
+        (date ? `\n🕒 ${date}` : '')
+      );
+    });
+
+    return items.join('\n\n━━━━━━━━━━━━━━━\n\n');
+  } catch (e) {
+    return '<i>Erro ao carregar notificações recentes.</i>';
+  }
+}
+
+// Instância e inicializador do bot de notificações (Dark Vendas) para novos inscritos
+let notifierBotInstance = null;
+function initNotifierBotListener() {
+  if (!NOTIFIER_BOT_TOKEN) return;
+  // Se for token diferente do bot de vendas, inicia polling para o bot de notificações
+  if (NOTIFIER_BOT_TOKEN !== process.env.TELEGRAM_BOT_TOKEN) {
+    try {
+      const TelegramBot = require('node-telegram-bot-api');
+      notifierBotInstance = new TelegramBot(NOTIFIER_BOT_TOKEN, { polling: true });
+
+      notifierBotInstance.on('polling_error', (e) => {
+        console.warn('[notifierBot polling_error]:', e && e.message ? e.message : e);
+      });
+
+      const sendWelcome = async (msg) => {
+        const chatId = msg.chat.id;
+        await dbHelpers.addNotificationSubscriber({
+          chatId,
+          firstName: msg.from && msg.from.first_name,
+          username: msg.from && msg.from.username
+        });
+        const recent = await getRecentNotificationsFeed();
+        const text =
+          `🔔 <b>DARK VENDAS — NOTIFICAÇÕES EM TEMPO REAL</b>\n\n` +
+          `✅ <b>Inscrição Ativada com Sucesso!</b>\n` +
+          `Você agora receberá aqui em tempo real cada nova compra e recarga aprovada!\n\n` +
+          `━━━━━━━━━━━━━━━\n` +
+          `📊 <b>ÚLTIMAS NOTIFICAÇÕES:</b>\n` +
+          `━━━━━━━━━━━━━━━\n\n` +
+          recent;
+
+        const keyboard = {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🔄 Atualizar Notificações', callback_data: 'refresh_feed' }]
+            ]
+          }
+        };
+        await notifierBotInstance.sendMessage(chatId, text, { parse_mode: 'HTML', ...keyboard }).catch(() => {});
+      };
+
+      notifierBotInstance.onText(/\/start|\/notificacoes|\/vendas/, sendWelcome);
+      notifierBotInstance.on('message', async (msg) => {
+        if (msg.text && (msg.text.startsWith('/start') || msg.text.startsWith('/notificacoes') || msg.text.startsWith('/vendas'))) return;
+        await sendWelcome(msg);
+      });
+
+      notifierBotInstance.on('callback_query', async (query) => {
+        notifierBotInstance.answerCallbackQuery(query.id).catch(() => {});
+        if (query.data === 'refresh_feed') {
+          const recent = await getRecentNotificationsFeed();
+          const text =
+            `🔔 <b>DARK VENDAS — NOTIFICAÇÕES EM TEMPO REAL</b>\n\n` +
+            `✅ <b>Inscrição Ativa!</b> Alertas em tempo real ativados.\n\n` +
+            `━━━━━━━━━━━━━━━\n` +
+            `📊 <b>ÚLTIMAS NOTIFICAÇÕES (Atualizado):</b>\n` +
+            `━━━━━━━━━━━━━━━\n\n` +
+            recent;
+          const keyboard = {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '🔄 Atualizar Notificações', callback_data: 'refresh_feed' }]
+              ]
+            }
+          };
+          await notifierBotInstance.editMessageText(text, {
+            chat_id: query.message.chat.id,
+            message_id: query.message.message_id,
+            parse_mode: 'HTML',
+            ...keyboard
+          }).catch(() => {});
+        }
+      });
+
+      console.log('🤖 Bot de Notificações (Dark Vendas) ouvindo mensagens via polling.');
+    } catch (err) {
+      console.error('Falha ao inicializar notifierBotInstance:', err.message);
+    }
+  }
+}
+
 // Lê a logo da marca embutida no repositório (assets/bot-logo.jpg)
 function readLocalLogo() {
   try {
@@ -151,31 +291,8 @@ async function syncTelegramProfile() {
     const username = me.ok && me.result && me.result.username ? me.result.username : '';
     const handle = username ? '@' + username : '';
 
-    // Nome oficial da marca e comandos oficiais
-    try {
-      await telegramPost(salesToken, 'setMyName', { name: 'DarkFlix' });
-      const commands = [
-        { command: 'start', description: 'Menu Principal' },
-        { command: 'saldo', description: 'Consultar Saldo' },
-        { command: 'perfil', description: 'Meu ID de Perfil' },
-        { command: 'ajuda', description: 'Como Funciona' },
-        { command: 'recarga', description: 'Adicionar Saldo via PIX' }
-      ];
-      await telegramPost(salesToken, 'setMyCommands', { commands });
-      if (NOTIFIER_BOT_TOKEN && NOTIFIER_BOT_TOKEN !== salesToken) {
-        await telegramPost(NOTIFIER_BOT_TOKEN, 'setMyName', { name: 'Dark Vendas' });
-      }
-    } catch (e) { /* silencioso */ }
-
-    // Bio do bot de vendas (curta e completa) → bot de alertas, incluindo o @ do bot de vendas
-    const sd = await telegramGet(salesToken, 'getMyShortDescription');
-    const shortOrig = sd.ok && sd.result && sd.result.short_description ? sd.result.short_description.trim() : '';
-    const shortBio = [shortOrig, handle].filter(Boolean).join(' · ') || handle;
-    await telegramPost(NOTIFIER_BOT_TOKEN, 'setMyShortDescription', { short_description: shortBio.slice(0, 120) });
-
-    const about = await telegramGet(salesToken, 'getMyDescription');
-    const aboutOrig = about.ok && about.result && about.result.description ? about.result.description.trim() : '';
-    if (aboutOrig) await telegramPost(NOTIFIER_BOT_TOKEN, 'setMyDescription', { description: aboutOrig.slice(0, 512) });
+    // NOTA: NUNCA sobrescreve nome, bio ou descrição dos bots no startup.
+    // As informações configuradas no Telegram (@BotFather ou próprio bot) são preservadas.
 
     // Foto da MARCA → aplicada no bot de vendas E no bot de alertas
     let photoBuf = readLocalLogo();
@@ -255,11 +372,14 @@ async function autoRefund(resellerId, amount, extra = {}) {
 const _activeProcessingPayments = new Set();
 const _rechargeNotifiedKeys = new Set();
 
-// Envia alerta de nova venda para o bot de notificações do dono
+// Envia alerta de nova venda para o bot de notificações do dono e para os inscritos
 // Notifica no bot de alertas quando um revendedor recarrega o saldo (Garantia de envio único)
 async function notifyRecharge({ reseller, amountPaid, method = 'PIX', paymentId = null, externalReference = null }) {
-  if (!NOTIFIER_BOT_TOKEN || !NOTIFY_CHAT_ID) return;
+  if (!NOTIFIER_BOT_TOKEN) return;
   if (typeof fetch !== 'function') return;
+
+  const recipients = await getNotificationChatIds();
+  if (recipients.length === 0) return;
 
   // Deduplicação estrita: se a mesma recarga foi notificada nos últimos 5 minutos, bloqueia envio duplicado
   const dedupKey = (paymentId && `pid_${paymentId}`) || (externalReference && `ref_${externalReference}`) || null;
@@ -285,7 +405,11 @@ async function notifyRecharge({ reseller, amountPaid, method = 'PIX', paymentId 
     `💳 Método: ${methodLabel}`
   ];
 
-  await sendTelegramAlert(lines.join('\n'), NOTIFY_CHAT_ID, 'RECHARGE-' + (dedupKey || Date.now()));
+  for (const cid of recipients) {
+    await sendTelegramAlert(lines.join('\n'), cid, 'RECHARGE-' + (dedupKey || Date.now())).catch((err) => {
+      console.warn(`[notifyRecharge] falha ao enviar para chat ${cid}:`, err.message);
+    });
+  }
 }
 
 // ==========================================
@@ -603,8 +727,11 @@ async function notifyNewSale(opts = {}) {
     startup = false
   } = opts;
 
-  if (!NOTIFIER_BOT_TOKEN || !NOTIFY_CHAT_ID) return;
+  if (!NOTIFIER_BOT_TOKEN) return;
   if (typeof fetch !== 'function') return; // Node < 18 sem fetch global
+
+  const recipients = await getNotificationChatIds();
+  if (recipients.length === 0) return;
 
   if (startup) {
     const lines = [
@@ -613,7 +740,9 @@ async function notifyNewSale(opts = {}) {
       '🟢 Notificações de novas compras habilitadas.',
       `🕒 ${new Date().toLocaleString('pt-BR')}`
     ];
-    await sendTelegramAlert(lines.join('\n'), NOTIFY_CHAT_ID, 'INIT');
+    for (const cid of recipients) {
+      await sendTelegramAlert(lines.join('\n'), cid, 'INIT').catch(() => {});
+    }
     return;
   }
 
@@ -639,16 +768,13 @@ async function notifyNewSale(opts = {}) {
   ].filter(Boolean);
 
   const adminChatId = (process.env.NOTIFY_ADMIN_CHAT_ID || '').trim();
-  const hasSeparateAdminChat = !!adminChatId && adminChatId !== NOTIFY_CHAT_ID;
 
-  if (hasSeparateAdminChat) {
-    // Chat público/grupo: só a versão SEM revendedor
-    await sendTelegramAlert(publicLines.join('\n'), NOTIFY_CHAT_ID, orderNumber);
-    // Chat privado do admin: versão completa COM o revendedor
-    await sendTelegramAlert(adminLines.join('\n'), adminChatId, orderNumber);
-  } else {
-    // Sem chat separado, o dono é o único destinatário: envia a versão completa
-    await sendTelegramAlert(adminLines.join('\n'), NOTIFY_CHAT_ID, orderNumber);
+  for (const cid of recipients) {
+    const isDedicatedAdmin = adminChatId && cid === adminChatId;
+    const msg = isDedicatedAdmin ? adminLines.join('\n') : publicLines.join('\n');
+    await sendTelegramAlert(msg, cid, orderNumber).catch((err) => {
+      console.warn(`[notifyNewSale] falha ao enviar para chat ${cid}:`, err.message);
+    });
   }
 }
 
@@ -1314,7 +1440,7 @@ app.post('/api/reseller/recharge', resellerUserAuth, async (req, res) => {
   const { credits, amount, payment_method } = req.body;
   const paymentMethod = String(payment_method || 'PIX').trim() || 'PIX';
   const settings = await dbHelpers.getSettings();
-  const minAmount = parseFloat(settings.min_recharge_amount || '15.00');
+  const minAmount = parseFloat(settings.min_recharge_amount || '5.00');
   const costPerCredit = parseFloat(req.reseller.cost_per_link || 2.99);
 
   let amountPaid = 0;
@@ -1364,7 +1490,7 @@ app.post('/api/reseller/recharge', resellerUserAuth, async (req, res) => {
 app.post('/api/reseller/mp/create-preference', resellerUserAuth, async (req, res) => {
   const { amount } = req.body;
   const settings = await dbHelpers.getSettings();
-  const minAmount = parseFloat(settings.min_recharge_amount || '15.00');
+  const minAmount = parseFloat(settings.min_recharge_amount || '5.00');
   const amountValue = parseFloat(amount);
 
   if (isNaN(amountValue) || amountValue < minAmount) {
@@ -1401,7 +1527,7 @@ app.post('/api/reseller/mp/create-preference', resellerUserAuth, async (req, res
 app.post('/api/v1/mp/create-preference', resellerBotAuth, async (req, res) => {
   const { amount } = req.body;
   const settings = await dbHelpers.getSettings();
-  const minAmount = parseFloat(settings.min_recharge_amount || '15.00');
+  const minAmount = parseFloat(settings.min_recharge_amount || '5.00');
   const amountValue = parseFloat(amount);
 
   if (isNaN(amountValue) || amountValue < minAmount) {
@@ -1434,7 +1560,7 @@ app.post('/api/v1/mp/create-preference', resellerBotAuth, async (req, res) => {
 // Valida o valor de recarga e devolve o número já arredondado (ou lança erro tratado)
 async function parseRechargeAmount(rawAmount) {
   const settings = await dbHelpers.getSettings();
-  const minAmount = parseFloat(settings.min_recharge_amount || '15.00');
+  const minAmount = parseFloat(settings.min_recharge_amount || '5.00');
   const amountValue = parseFloat(rawAmount);
   if (isNaN(amountValue) || amountValue < minAmount) {
     return { error: `O valor mínimo para recarga é de R$ ${minAmount.toFixed(2).replace('.', ',')}.` };
@@ -3681,6 +3807,29 @@ app.get('/api/v1/bot-status', async (req, res) => {
   }
 });
 
+// Consulta pública do feed recente de notificações (vendas e recargas)
+app.get('/api/v1/notifications/feed', async (req, res) => {
+  try {
+    const feed = await getRecentNotificationsFeed();
+    res.json({ success: true, feed });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e && e.message ? e.message : 'Erro interno' });
+  }
+});
+
+// Inscreve um chat nas notificações em tempo real
+app.post('/api/v1/notifications/subscribe', express.json(), async (req, res) => {
+  try {
+    const { chat_id, first_name, username } = req.body || {};
+    if (!chat_id) return res.status(400).json({ success: false, error: 'chat_id é obrigatório' });
+    await dbHelpers.addNotificationSubscriber({ chatId: chat_id, firstName: first_name, username });
+    const feed = await getRecentNotificationsFeed();
+    res.json({ success: true, feed });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e && e.message ? e.message : 'Erro interno' });
+  }
+});
+
 // Admin atualiza o status, mensagem de manutenção e aviso fixo
 app.post('/api/admin/bot/status', adminAuth, async (req, res) => {
   try {
@@ -3837,6 +3986,12 @@ app.get('/api/admin/bot/profiles', adminAuth, async (req, res) => {
     }
     if (salesName && salesName !== settings.bot_sales_name) {
       await dbHelpers.updateSetting('bot_sales_name', salesName).catch(() => {});
+    }
+    if (notifyBio && notifyBio !== settings.bot_notify_bio) {
+      await dbHelpers.updateSetting('bot_notify_bio', notifyBio).catch(() => {});
+    }
+    if (notifyName && notifyName !== settings.bot_notify_name) {
+      await dbHelpers.updateSetting('bot_notify_name', notifyName).catch(() => {});
     }
 
     let commands = [];
@@ -4487,7 +4642,8 @@ dbHelpers.initDb()
       }
     }
     app.listen(PORT, () => {
-      console.log(`===================================================`);
+      // Inicia polling e atendimento do bot de alertas (Dark Vendas) para novos inscritos
+      initNotifierBotListener();
 
       // Copia foto + bio do bot de vendas para o bot de alertas (uma vez por boot)
       syncTelegramProfile();
