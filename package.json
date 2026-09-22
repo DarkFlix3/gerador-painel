@@ -4,7 +4,8 @@
   "description": "Gerador de Links com Painel de Administração, Dashboard com Gráficos, Logs de Erros e API para Revendedores/Bots",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node start.js",
+    "server": "node server.js",
     "bot": "node bot.js",
     "start:all": "node start.js",
     "migrate": "node scripts/migrate-to-pg.js"

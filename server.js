@@ -5884,6 +5884,16 @@ dbHelpers.initDb()
       setTimeout(checkGgsomaStock, 3000);
       setInterval(checkGgsomaStock, 4 * 60 * 1000);
 
+      // Keep-alive preventivo no Render (auto-ping público para resetar o timer de inatividade de 15min)
+      const keepAlivePublicUrl = (process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_BASE_URL || 'https://gerador-painel.onrender.com').replace(/\/+$/, '');
+      if (keepAlivePublicUrl.startsWith('http')) {
+        setInterval(async () => {
+          try {
+            await fetch(`${keepAlivePublicUrl}/health`, { signal: AbortSignal.timeout(15000) });
+          } catch (e) {}
+        }, 7 * 60 * 1000); // a cada 7 minutos
+      }
+
       console.log(`🚀 Quantum Link Generator rodando na porta ${PORT}`);
       console.log(`🔗 Gerador Público:       http://localhost:${PORT}`);
       console.log(`🛡️  Painel Admin:           http://localhost:${PORT}/admin.html`);

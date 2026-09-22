@@ -402,18 +402,32 @@ function startKeepAlive() {
     console.log('⏸️  Keep-alive desabilitado (KEEP_ALIVE_INTERVAL_MINUTES=0).');
     return;
   }
+  const publicUrl = (process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_BASE_URL || 'https://gerador-painel.onrender.com').replace(/\/+$/, '');
   const ping = async () => {
     try {
+      // 1. Pinga a URL externa pública (necessário no Render para passar pelo proxy e resetar o contador de 15 min do plano gratuito)
+      if (publicUrl && publicUrl.startsWith('http')) {
+        try {
+          const extRes = await fetch(`${publicUrl}/health`, { signal: AbortSignal.timeout(15000) });
+          if (extRes.ok) {
+            console.log(`[keep-alive] ${new Date().toISOString()} -> /health OK externo (${publicUrl})`);
+            return;
+          }
+        } catch (extErr) {
+          // fallback silencioso se offline ou local
+        }
+      }
       const r = await botApiFetch('/health', { signal: AbortSignal.timeout(10000) });
       if (!r.ok) throw new Error('HTTP ' + r.status);
-      console.log(`[keep-alive] ${new Date().toISOString()} -> /health OK (${API_BASE_URL})`);
+      console.log(`[keep-alive] ${new Date().toISOString()} -> /health OK local (${API_BASE_URL})`);
     } catch (err) {
       console.error('[keep-alive] falha ao pingar API:', err && err.message ? err.message : err);
     }
   };
   ping(); // ping imediato ao subir
-  setInterval(ping, KEEP_ALIVE_MINUTES * 60 * 1000);
-  console.log(`🔁 Keep-alive ativo: ping em /health a cada ${KEEP_ALIVE_MINUTES} min.`);
+  const intervalMs = Math.min(Math.max(KEEP_ALIVE_MINUTES, 1), 10) * 60 * 1000;
+  setInterval(ping, intervalMs);
+  console.log(`🔁 Keep-alive ativo: ping em /health a cada ${intervalMs / 60000} min (URL: ${publicUrl}).`);
 }
 
 console.log('===================================================');
